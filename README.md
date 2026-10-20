@@ -1,5 +1,11 @@
 # pdfink
 
+[![CI](https://github.com/dannyob/pdfink/actions/workflows/ci.yml/badge.svg)](https://github.com/dannyob/pdfink/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Demo](https://img.shields.io/badge/demo-pdfink.libertyh.dev-brightgreen)](https://pdfink.libertyh.dev/)
+
+**Try it:** <https://pdfink.libertyh.dev/> runs the browser-only build. Open a PDF from your device, write on it, and save it back. Nothing is uploaded.
+
 pdfink lets you write on a PDF with a stylus in the browser, and saves the ink back into the PDF as standard `/Ink` annotations that other PDF apps can show and edit. It's a good way to quickly make annotations to an uploaded PDF, and then re-export to a local PDF, or annotate a set of PDFs on a remote server. I use it scribble handwritten notes to myself.
 
 ![pdfink toolbar, strokes in different pen widths and colours, and a rectangle selection](docs/screenshot.png)
