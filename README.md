@@ -4,15 +4,13 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Demo](https://img.shields.io/badge/demo-pdfink.libertyh.dev-brightgreen)](https://pdfink.libertyh.dev/)
 
-**Try it:** <https://pdfink.libertyh.dev/> runs the browser-only build. Open a PDF from your device, write on it, and save it back. Nothing is uploaded.
+PDFink lets you write on a PDF with a stylus in the browser, and saves the ink back into the PDF as standard `/Ink` annotations that other PDF apps can show and edit. It's a good way to quickly make annotations to an uploaded PDF, and then re-export to a local PDF, or annotate a set of PDFs on a remote server. I use it scribble handwritten notes to myself.
 
-pdfink lets you write on a PDF with a stylus in the browser, and saves the ink back into the PDF as standard `/Ink` annotations that other PDF apps can show and edit. It's a good way to quickly make annotations to an uploaded PDF, and then re-export to a local PDF, or annotate a set of PDFs on a remote server. I use it scribble handwritten notes to myself.
+**Try it:** <https://pdfink.libertyh.dev/> runs the browser-only build. Open a PDF from your device, write on it, and save it back. Nothing is uploaded or shared beyond your browser. You can use a stylus or a mouse (or your finger).
 
 ![pdfink toolbar, strokes in different pen widths and colours, and a rectangle selection](docs/screenshot.png)
 
-The pen draws. The pen's eraser end or barrel button erases whole strokes. Fingers scroll. A mouse follows the selected tool, so it works on a desktop too.
-
-It can run as a small server that offers a folder of PDFs stored on the server,
+PDFink can run as a small server that offers a folder of PDFs stored on the server,
 and a browser-only mode that needs no server at all. This is the server:
 
 ```console
@@ -131,7 +129,7 @@ Server mode only. Names are plain basenames ending in `.pdf`; paths are refused.
 ## Limits
 
 - No authentication. Anyone who can reach the server can read, write and overwrite every PDF in the folder. Bind it to `127.0.0.1`, and if other devices need it, put a VPN or an authenticating proxy in front.
-- PDFs are rewritten to save space -- Pdfink may mangle your PDFs! Make backups!
+- PDFs are rewritten to save space -- PDFink may mangle your PDFs! Make backups!
 - Pasted images are flattened into page content on save. After you reopen the file they are no longer editable.
 - Encrypted PDFs are refused.
 - On tablets without pen hover, the very first pen contact may scroll instead of draw.
@@ -153,7 +151,7 @@ On macOS, `deploy/launchd.plist.example` is a launchd job that keeps the server 
 
 ### Publishing the browser-only build
 
-`npm run deploy` builds the bundle with local storage baked in (no server, no `/api` calls) into `dist-local/` and rsyncs it to any static web host. Copy `deploy.env.example` to `deploy.env` and set the rsync destination, the ssh command if the host needs a port or key, and optionally the public URL to check afterwards. `deploy.env` is gitignored. A demo built this way runs at <https://pdfink.libertyh.dev/>.
+`npm run deploy` builds the bundle with local storage baked in (no server, no `/api` calls) into `dist-local/` and rsyncs it to any static web host. Copy `deploy.env.example` to `deploy.env` and set the rsync destination, the ssh command if the host needs a port or key, and optionally the public URL to check afterwards. `deploy.env` is gitignored. This is how <https://pdfink.libertyh.dev/> is built.
 
 ## Tests
 
