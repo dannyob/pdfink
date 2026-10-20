@@ -1,12 +1,13 @@
 # pdfink
 
-pdfink lets you write on a PDF with a stylus in the browser, and saves the ink back into the PDF as standard `/Ink` annotations that other PDF apps can show and edit.
+pdfink lets you write on a PDF with a stylus in the browser, and saves the ink back into the PDF as standard `/Ink` annotations that other PDF apps can show and edit. It's a good way to quickly make annotations to an uploaded PDF, and then re-export to a local PDF, or annotate a set of PDFs on a remote server. I use it scribble handwritten notes to myself.
 
 ![pdfink toolbar, strokes in different pen widths and colours, and a rectangle selection](docs/screenshot.png)
 
 The pen draws. The pen's eraser end or barrel button erases whole strokes. Fingers scroll. A mouse follows the selected tool, so it works on a desktop too.
 
-It has a small server that keeps a folder of PDFs, and a browser-only mode that needs no server at all. This is the server:
+It can run as a small server that offers a folder of PDFs stored on the server,
+and a browser-only mode that needs no server at all. This is the server:
 
 ```console
 $ node server/index.ts --mode server --port 5198 --notebooks /path/to/notebooks --dist dist
@@ -19,7 +20,9 @@ $ curl -s http://127.0.0.1:5198/api/notebooks
 []
 ```
 
-(That folder was empty. `notebooksDir` is just the folder's name.) And browser-only mode, where the app opens and saves files on your own device:
+(That folder was empty. `notebooksDir` is just the folder's name.) 
+
+This is browser-only mode, where the app opens and saves files on your own device:
 
 ```console
 $ node server/index.ts --mode browser --port 5199 --dist dist
@@ -33,7 +36,7 @@ The app asks `/api/status` on load and picks its storage to match.
 
 ## Install
 
-Node 22.18 or later. The server is TypeScript run directly by Node's built-in type stripping, with no runtime dependencies (I developed on Node 26). The app itself uses pdf.js and pdf-lib. Any current browser works; Chromium has the best file handling in browser-only mode.
+Node 22.18 or later. The server is TypeScript run directly by Node's built-in type stripping, with no runtime dependencies (I developed on Node 26). The app itself uses pdf.js and pdf-lib. Any modern, 2026-onwards browser should work.
 
 ```sh
 npm install
@@ -56,19 +59,25 @@ Browser-only mode:
 npm start -- --mode browser
 ```
 
-You can also serve `dist/` from any static host. The toolbar has Open..., New, Save, Save as... and + Page. Chromium writes back to the file you opened through the File System Access API. Other browsers download the result.
+You can also serve the static HTML/javascript build in `dist/` from any static host. 
+
+The toolbar has Open..., New, Save, Save as... and + Page. Chromium writes back to the file you opened through the File System Access API. Other browsers download the result.
 
 In either mode, the toolbar also has pen, eraser and rectangle select; pen colour and width; copy, cut, paste; undo, redo; and zoom. New makes a blank Letter PDF.
-
-### Why a server at all
-
-Opening a 300 MB notebook in a tablet browser does not go well. In server mode the server parses the PDF on open and rebuilds it on save, so the browser only handles a small ink-free base PDF plus stroke data.
 
 Saving in server mode:
 
 - Autosave runs 10 seconds after the last change, and when the tab is hidden.
 - Before overwriting, the server compares modification times. If something else changed the file, the app asks first.
 - Writes go to a temp file and are renamed into place, so a synced folder never sees half a file.
+
+## What it does to your PDF
+
+Each stroke becomes an `/Ink` annotation with an appearance stream and per-point pressure in `PDFTron_Pressure_Thickness` arrays. Ink annotations already in a PDF you open become editable strokes. Other annotations (links, squares) are left alone and cannot be edited.
+
+Pressure is drawn as nominal width x (0.4 + pressure). That is an empirical fit to how Xodo renders, which is the app I write notes in. Mice and fingers draw at nominal width.
+
+To prevent large PDFs, on import, objects unreachable from the trailer are deleted. Xodo saves with incremental updates and keeps every superseded annotation, so one real 300 MB notebook came out at 14 MB with no visible change. `docs/design.md` has the data model and the import, render and export steps.
 
 ## Editing
 
@@ -85,14 +94,6 @@ Saving in server mode:
 | Ctrl+=, Ctrl+-, Ctrl+0 | zoom in, zoom out, fit width |
 | p, e, s | pen, eraser, select |
 | Esc | clear selection |
-
-## What it does to your PDF
-
-Each stroke becomes an `/Ink` annotation with an appearance stream and per-point pressure in `PDFTron_Pressure_Thickness` arrays. Ink annotations already in a PDF you open become editable strokes. Other annotations (links, squares) are left alone and cannot be edited.
-
-Pressure is drawn as nominal width x (0.4 + pressure). That is an empirical fit to how Xodo renders, which is the app I write notes in. Mice and fingers draw at nominal width.
-
-On import, objects unreachable from the trailer are deleted. Xodo saves with incremental updates and keeps every superseded annotation, so one real 300 MB notebook came out at 14 MB with no visible change. `docs/design.md` has the data model and the import, render and export steps.
 
 ## Options
 
@@ -124,11 +125,12 @@ Server mode only. Names are plain basenames ending in `.pdf`; paths are refused.
 ## Limits
 
 - No authentication. Anyone who can reach the server can read, write and overwrite every PDF in the folder. Bind it to `127.0.0.1`, and if other devices need it, put a VPN or an authenticating proxy in front.
+- PDFs are rewritten to save space -- Pdfink may mangle your PDFs! Make backups!
 - Pasted images are flattened into page content on save. After you reopen the file they are no longer editable.
 - Encrypted PDFs are refused.
 - On tablets without pen hover, the very first pen contact may scroll instead of draw.
 - The pressure mapping is a fit to one app, not a spec.
-- It has only been tested seriously on one person's notebooks.
+- It has only been tested seriously on one person's PDFs.
 
 ## Development
 
@@ -152,6 +154,28 @@ npm run test:e2e                  # Playwright
 ```
 
 The e2e run starts its own API server on port 5176 with a throwaway folder, and Vite on 5175, so it never touches your notebooks. It drives the app with a synthetic stylus, `src/harness/stylus-sim.ts`, which is also exposed as `window.__stylusSim` for use in the devtools console. Set `PDFINK_SAMPLES=/folder` to run extra tests against real sample notebooks.
+
+## Original Prompt
+
+Claude Fable 5.1 pretty much one-shotted this. Here was my original instruction:
+
+"I annotate PDFs and handwrite notes on a Daylight DC-1 using a stylus and
+[Xodo Mobile](https://xodo.com/mobile-apps). Take look at the PDFs I've been
+writing with a stylus that end up as output in my notebooks directory and see
+if you can write a full webapp that will allow me to do the same in a browser,
+generating the same kind of output into a PDF. You don't need to support
+much more than write with stylus, erase with stylus eraser, select
+rectangle, copy from selected rectangle, cut (delete) selected rectangle,
+and paste (either image or from the area copied from before). Maybe create
+new PDF page, and add new PDF page (letter size is fine for now). Take a
+look at the stylus detection/writing in the
+[almnck/assets/js/pen-marginalia.js](https://code.almnck.com/Almanack/almnck/src/branch/main/assets/js/pen-marginalia.js)
+to get an idea of what browser events should be detected; use these event
+to write a test harness to simulate writing with a stylus so you can see if
+the webapp works. Write in typescript. The idea here, to be clear, is
+something that will let me load up a PDF in the browser, scribble notes,
+and then write it back out with the notes included in the new PDF. I'd like
+you to keep working on this until it's done."
 
 ## License
 
