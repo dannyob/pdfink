@@ -145,6 +145,10 @@ To reach the dev server by another hostname, for example from a tablet, list it 
 
 On macOS, `deploy/launchd.plist.example` is a launchd job that keeps the server running. Replace the ALL-CAPS placeholders and load it with `launchctl bootstrap`.
 
+### Publishing the browser-only build
+
+`npm run deploy` builds the bundle with local storage baked in (no server, no `/api` calls) into `dist-local/` and rsyncs it to any static web host. Copy `deploy.env.example` to `deploy.env` and set the rsync destination, the ssh command if the host needs a port or key, and optionally the public URL to check afterwards. `deploy.env` is gitignored. A demo built this way runs at <https://pdfink.libertyh.dev/>.
+
 ## Tests
 
 ```sh

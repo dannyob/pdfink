@@ -10,7 +10,8 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "deploy": "sh scripts/deploy.sh"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1",
