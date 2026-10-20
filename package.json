@@ -1,0 +1,29 @@
+{
+  "name": "pdfink",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.ts",
+    "dev": "vite",
+    "api": "node server/index.ts --mode server --port 5174 --dist none",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.4.299"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  },
+  "description": "Write on PDFs with a stylus in the browser; ink is saved as standard PDF Ink annotations.",
+  "license": "MIT",
+  "author": "Danny O'Brien"
+}

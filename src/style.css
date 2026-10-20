@@ -1,0 +1,53 @@
+:root {
+  --bg: #d9d9d6;
+  --bar: #f3f3f1;
+  --ink: #202020;
+  --accent: #2f4a7a;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  font: 14px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink); background: var(--bg);
+}
+body { display: flex; flex-direction: column; }
+#toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: 6px 10px; background: var(--bar); border-bottom: 1px solid #bbb;
+  user-select: none; -webkit-user-select: none; touch-action: manipulation;
+}
+.group { display: flex; gap: 4px; align-items: center; }
+/* Toolbar items for one storage mode only; <body data-storage> picks. */
+body:not([data-storage="server"]) .server-only { display: none; }
+body:not([data-storage="local"]) .local-only { display: none; }
+button {
+  font: inherit; padding: 6px 10px; border: 1px solid #aaa; border-radius: 6px;
+  background: #fff; color: var(--ink); cursor: pointer; min-width: 36px;
+}
+button:hover { background: #eee; }
+select { font: inherit; padding: 5px 6px; border: 1px solid #aaa; border-radius: 6px; background: #fff; max-width: 260px; }
+button:disabled { opacity: 0.4; cursor: default; }
+button.tool.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+#status { margin-left: auto; font-size: 12px; color: #555; white-space: nowrap; }
+#pages {
+  flex: 1; overflow: auto; padding: 16px 0 60vh; outline: none;
+  touch-action: pan-x pan-y pinch-zoom;
+  -webkit-overflow-scrolling: touch;
+}
+#pages.pen-active { touch-action: none; }
+.page {
+  position: relative; margin: 0 auto 16px; background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+}
+.page canvas { position: absolute; left: 0; top: 0; display: block; }
+.page canvas.ink { touch-action: inherit; }
+.page.current { outline: 2px solid rgba(47, 74, 122, 0.4); }
+#pages.tool-pen .page canvas.ink { cursor: crosshair; }
+#pages.tool-eraser .page canvas.ink { cursor: cell; }
+#pages.tool-select .page canvas.ink { cursor: crosshair; }
+.empty {
+  margin: 20vh auto; max-width: 420px; text-align: center; color: #444;
+}
+.empty p { margin: 8px 0; }
+.empty .error { color: #b00020; }

@@ -1,0 +1,1326 @@
+import * as pdfjs from "pdfjs-dist";
+import type { PDFDocumentProxy } from "pdfjs-dist";
+import type { ClipContent, ImageItem, PageModel, Point, Rect, Stroke } from "./model";
+import { DEFAULT_PRESSURE, newId } from "./model";
+import {
+  imageBounds,
+  imageInRect,
+  normalizeRect,
+  strokeBounds,
+  strokeHit,
+  strokeInRect,
+  translateImage,
+  translateStroke,
+  unionRect,
+} from "./geometry";
+import { importPdf } from "./pdf/import";
+import { appendBlankPage, createBlankPdf, exportPdf } from "./pdf/export";
+import { PageView, drawStroke, pruneImageCache, type SelectionView } from "./render/pageview";
+import { ConflictError, listNotebooks, loadNotebook, openNotebookParsed, saveNotebook, saveNotebookParsed, type NotebookInfo } from "./api";
+
+pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
+
+export type Tool = "pen" | "eraser" | "select";
+
+interface Selection extends SelectionView {
+  page: number;
+}
+
+interface PageSnapshot {
+  strokes: Stroke[];
+  images: ImageItem[];
+}
+
+interface UndoEntry {
+  page: number;
+  before: PageSnapshot;
+  after: PageSnapshot;
+}
+
+interface Pointer {
+  pointerId: number;
+  page: number;
+  mode: "draw" | "erase" | "select";
+  stroke?: Stroke;
+  drawnUpTo?: number;
+  start?: Point;
+  snapshot?: PageSnapshot;
+  erased?: boolean;
+}
+
+type FileHandle = { name: string; createWritable(): Promise<{ write(d: Uint8Array): Promise<void>; close(): Promise<void> }>; getFile(): Promise<File> };
+declare global {
+  interface Window {
+    showOpenFilePicker?: (o?: unknown) => Promise<FileHandle[]>;
+    showSaveFilePicker?: (o?: unknown) => Promise<FileHandle>;
+  }
+}
+
+const ERASE_RADIUS = 5; // page points around the eraser tip
+
+/** Pen pressure for a pointer event; mice and fingers draw at nominal width. */
+function pressureOf(e: PointerEvent): number {
+  if (e.pointerType !== "pen") return DEFAULT_PRESSURE;
+  const p = e.pressure;
+  return p > 0 ? Math.max(0.05, Math.min(1, p)) : DEFAULT_PRESSURE;
+}
+const MIN_SELECT = 3;
+
+export class App {
+  pages: PageModel[] = [];
+  views: PageView[] = [];
+  baseBytes: Uint8Array | null = null;
+  pdfDoc: PDFDocumentProxy | null = null;
+  tool: Tool = "pen";
+  penColor = "#000000";
+  penWidth = 1;
+  scale = 1;
+  selection: Selection | null = null;
+  clip: ClipContent | null = null;
+  undoStack: UndoEntry[] = [];
+  redoStack: UndoEntry[] = [];
+  fileName = "untitled.pdf";
+  fileHandle: FileHandle | null = null;
+  /**
+   * "server": notebooks live in a folder behind the pdfink server.
+   * "local": no server; files are opened from and saved to this device.
+   */
+  storage: "server" | "local" = "local";
+  /** Where the current document lives: a notebook on the server, or only in this tab. */
+  source: { kind: "server"; name: string; mtime: number } | { kind: "local"; name: string } = { kind: "local", name: "untitled.pdf" };
+  /** Tests set this so Export never opens a native picker. */
+  forceDownload = false;
+  dirty = false;
+  saving = false;
+  lastSaved: Date | null = null;
+  /** Milliseconds of quiet after a change before a server notebook autosaves. */
+  autosaveDelay = 10_000;
+  private autosaveTimer: number | null = null;
+  /** Bumped on every change so a save knows whether edits arrived while it ran. */
+  private revision = 0;
+  /** Hooks for confirmations and names, replaceable in tests. */
+  confirmFn: (message: string) => Promise<boolean> = async (m) => window.confirm(m);
+  promptFn: (message: string, suggestion: string) => Promise<string | null> = async (m, d) => window.prompt(m, d);
+  /** Called after the notebook list on the server may have changed. */
+  onNotebooksChanged: () => void = () => {};
+  lastPointer: { page: number; x: number; y: number } | null = null;
+  currentPage = 0;
+  private pointers = new Map<number, Pointer>();
+  private observer: IntersectionObserver;
+  private status: HTMLElement;
+  /** Finger scroll done by hand while touch-action is off because a pen was near. */
+  private touchScroll: { id: number; x: number; y: number } | null = null;
+  private raf = 0;
+
+  constructor(readonly container: HTMLElement) {
+    this.status = document.getElementById("status") as HTMLElement;
+    this.observer = new IntersectionObserver((entries) => this.onIntersect(entries), {
+      root: container,
+      rootMargin: "100% 0px",
+    });
+    this.bindPointerEvents();
+    this.bindKeyboard();
+    this.bindDrop();
+    this.setTool("pen");
+    this.showEmpty();
+    this.container.addEventListener("scroll", () => this.updateCurrentPage(), { passive: true });
+    window.addEventListener("resize", () => this.fitWidth());
+  }
+
+  // ---------------------------------------------------------------- loading
+
+  private showEmpty(error?: string): void {
+    const div = document.createElement("div");
+    div.className = "empty";
+    div.innerHTML = `<p><b>pdfink</b></p><p>Open a PDF, start a new one, or drop a PDF here.</p><p>Pen writes. Pen eraser (or barrel button) erases. Fingers scroll.</p>`;
+    if (error) {
+      const p = document.createElement("p");
+      p.className = "error";
+      p.textContent = error;
+      div.appendChild(p);
+    }
+    this.container.replaceChildren(div);
+    this.setStatus();
+  }
+
+  async loadBytes(bytes: Uint8Array, name: string, handle: FileHandle | null = null): Promise<boolean> {
+    this.setStatus("Loading…");
+    this.cancelAutosave();
+    try {
+      const imported = await importPdf(bytes);
+      return await this.loadParsed(imported.baseBytes, imported.pages, name, handle);
+    } catch (err) {
+      console.error(err);
+      this.setStatus(`Could not open ${name}: ${(err as Error).message}`);
+      if (!this.views.length) this.showEmpty(`Could not open ${name}: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /** Install an already-separated document (base PDF without ink + stroke pages). */
+  async loadParsed(baseBytes: Uint8Array, pages: PageModel[], name: string, handle: FileHandle | null = null): Promise<boolean> {
+    this.cancelAutosave();
+    try {
+      await this.setDocument(baseBytes, pages);
+      this.fileName = name;
+      this.fileHandle = handle;
+      this.source = { kind: "local", name };
+      this.undoStack = [];
+      this.redoStack = [];
+      this.dirty = false;
+      this.lastSaved = null;
+      this.setStatus();
+      return true;
+    } catch (err) {
+      console.error(err);
+      this.setStatus(`Could not open ${name}: ${(err as Error).message}`);
+      if (!this.views.length) this.showEmpty(`Could not open ${name}: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /** A blank document that lives only in this tab until exported or saved as a notebook. */
+  async newDocument(): Promise<void> {
+    const bytes = await createBlankPdf(1);
+    await this.loadBytes(bytes, "untitled.pdf", null);
+  }
+
+  // ---------------------------------------------------------------- local files (browser mode)
+
+  /** Open a PDF from this device. Keeps a file handle where the browser offers one, so Save writes back. */
+  async open(): Promise<void> {
+    if (!(await this.readyToLeave())) return;
+    if (window.showOpenFilePicker && !this.forceDownload) {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: "PDF", accept: { "application/pdf": [".pdf"] } }],
+        });
+        const file = await handle.getFile();
+        await this.loadBytes(new Uint8Array(await file.arrayBuffer()), file.name, handle);
+        return;
+      } catch (err) {
+        if ((err as Error).name === "AbortError") return;
+      }
+    }
+    (document.getElementById("file-input") as HTMLInputElement).click();
+  }
+
+  async openFile(file: File): Promise<void> {
+    if (!(await this.readyToLeave())) return;
+    await this.loadBytes(new Uint8Array(await file.arrayBuffer()), file.name, null);
+  }
+
+  /** Save as: forget the current file handle so the browser asks where to put it. */
+  async saveAs(): Promise<void> {
+    this.fileHandle = null;
+    await this.exportLocal();
+  }
+
+  // ---------------------------------------------------------------- notebooks (server)
+
+  async refreshNotebooks(): Promise<NotebookInfo[]> {
+    return listNotebooks();
+  }
+
+  /** Save-or-discard check before replacing the current document. */
+  private async readyToLeave(): Promise<boolean> {
+    if (!this.dirty || !this.baseBytes) return true;
+    if (this.source.kind === "server") {
+      await this.saveToServer();
+      return !this.dirty;
+    }
+    return this.confirmFn(`${this.source.name} has unsaved changes that will be lost. Continue?`);
+  }
+
+  async openNotebook(name: string): Promise<boolean> {
+    if (!(await this.readyToLeave())) return false;
+    this.setStatus(`Loading ${name}…`);
+    let loaded: { baseBytes: Uint8Array; pages: PageModel[]; mtime: number };
+    try {
+      // The server separates ink from the PDF, so even very large notebooks
+      // arrive here as a small base PDF plus stroke data.
+      loaded = await openNotebookParsed(name);
+    } catch (err) {
+      this.setStatus((err as Error).message);
+      return false;
+    }
+    if (!(await this.loadParsed(loaded.baseBytes, loaded.pages, name))) return false;
+    this.source = { kind: "server", name, mtime: loaded.mtime };
+    this.setStatus();
+    return true;
+  }
+
+  static normalizeNotebookName(raw: string): string | null {
+    let name = raw.trim().replace(/[\/:]+/g, "-");
+    if (!name) return null;
+    if (!/\.pdf$/i.test(name)) name += ".pdf";
+    if (!/^[A-Za-z0-9][A-Za-z0-9 ._()-]*\.pdf$/i.test(name) || name.includes("..")) return null;
+    return name;
+  }
+
+  async newNotebook(): Promise<boolean> {
+    if (!(await this.readyToLeave())) return false;
+    const today = new Date().toISOString().slice(0, 10);
+    const raw = await this.promptFn("Name for the new notebook", `${today}.pdf`);
+    if (raw === null) return false;
+    const name = App.normalizeNotebookName(raw);
+    if (!name) {
+      this.setStatus(`"${raw}" is not a usable notebook name (letters, digits, spaces, . _ - ( ) only).`);
+      return false;
+    }
+    try {
+      const bytes = await createBlankPdf(1);
+      await saveNotebook(name, bytes, "new");
+    } catch (err) {
+      this.setStatus(err instanceof ConflictError ? `${name} already exists.` : (err as Error).message);
+      return false;
+    }
+    this.onNotebooksChanged();
+    return this.openNotebook(name);
+  }
+
+  /** Store the current document on the server under `name` (asking before overwriting). */
+  async saveAsNotebook(name: string): Promise<boolean> {
+    if (!this.baseBytes) return false;
+    this.setStatus(`Saving ${name}…`);
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.exportBytes();
+    } catch (err) {
+      this.setStatus(`Could not build the PDF: ${(err as Error).message}`);
+      return false;
+    }
+    const rev = this.revision;
+    try {
+      let info: NotebookInfo;
+      try {
+        info = await saveNotebook(name, bytes, "new");
+      } catch (err) {
+        if (!(err instanceof ConflictError)) throw err;
+        if (!(await this.confirmFn(`${name} already exists in the notebooks folder. Replace it?`))) {
+          this.setStatus(`Not saved: ${name} already exists.`);
+          return false;
+        }
+        info = await saveNotebook(name, bytes, null);
+      }
+      this.fileName = name;
+      this.source = { kind: "server", name, mtime: info.mtime };
+      this.lastSaved = new Date();
+      if (rev === this.revision) this.dirty = false;
+      else this.scheduleAutosave();
+      this.onNotebooksChanged();
+      this.setStatus();
+      return true;
+    } catch (err) {
+      console.error(err);
+      this.setStatus((err as Error).message);
+      return false;
+    }
+  }
+
+  /** Write the current server notebook back. Returns true when the file on disk is now current. */
+  async saveToServer(force = false): Promise<boolean> {
+    if (this.source.kind !== "server" || !this.baseBytes) return false;
+    if (this.saving) {
+      this.scheduleAutosave(500);
+      return false;
+    }
+    this.cancelAutosave();
+    this.saving = true;
+    const { name } = this.source;
+    const rev = this.revision;
+    this.setStatus(`Saving ${name}…`);
+    try {
+      // Only the ink travels; the server rebuilds the PDF from its ink-free
+      // base. On a forced overwrite our own base goes too, so the result is
+      // exactly this tab's version.
+      const info = await saveNotebookParsed(name, this.pages, force ? null : this.source.mtime, force ? this.baseBytes : null);
+      this.source = { kind: "server", name, mtime: info.mtime };
+      this.lastSaved = new Date();
+      this.saving = false;
+      if (rev === this.revision) this.dirty = false;
+      else this.scheduleAutosave();
+      this.setStatus();
+      return true;
+    } catch (err) {
+      this.saving = false;
+      if (err instanceof ConflictError) {
+        if (err.mtime === null) {
+          // The file is gone, so the server has no base to rebuild from:
+          // write a complete PDF from the browser instead.
+          if (await this.confirmFn(`${name} no longer exists in the notebooks folder. Save it again anyway?`)) {
+            return this.saveAsNotebook(name);
+          }
+          this.setStatus(`Not saved: ${name} no longer exists on disk. Export to keep this version.`);
+          return false;
+        }
+        const msg = `${name} changed in the notebooks folder since you opened it (perhaps synced from another device). Overwrite it with this version?`;
+        if (await this.confirmFn(msg)) return this.saveToServer(true);
+        this.setStatus(`Not saved: ${name} changed on disk. Export to keep this version, or Save again to overwrite.`);
+        return false;
+      }
+      console.error(err);
+      this.setStatus(`Could not save ${name}: ${(err as Error).message}`);
+      return false;
+    } finally {
+      this.saving = false;
+    }
+  }
+
+  private scheduleAutosave(delay = this.autosaveDelay): void {
+    if (this.source.kind !== "server") return;
+    this.cancelAutosave();
+    this.autosaveTimer = window.setTimeout(() => {
+      this.autosaveTimer = null;
+      if (!this.dirty) return;
+      if (this.pointers.size || this.saving) {
+        this.scheduleAutosave(1000);
+        return;
+      }
+      void this.saveToServer();
+    }, delay);
+  }
+
+  private cancelAutosave(): void {
+    if (this.autosaveTimer) {
+      clearTimeout(this.autosaveTimer);
+      this.autosaveTimer = null;
+    }
+  }
+
+  async addPage(): Promise<void> {
+    if (!this.baseBytes) return this.newDocument();
+    try {
+      const bytes = await appendBlankPage(this.baseBytes);
+      const last = this.pages[this.pages.length - 1];
+      const pages = [...this.pages, { width: last?.width ?? 612, height: last?.height ?? 792, strokes: [], images: [] }];
+      await this.setDocument(bytes, pages);
+      this.markDirty();
+      this.scrollToPage(pages.length - 1);
+      this.setStatus();
+    } catch (err) {
+      console.error(err);
+      this.setStatus(`Could not add a page: ${(err as Error).message}`);
+    }
+  }
+
+  /** Replace base bytes + models and rebuild the page views. */
+  private async setDocument(baseBytes: Uint8Array, pages: PageModel[]): Promise<void> {
+    // Parse first so a bad file leaves the current document untouched.
+    // pdf.js transfers the buffer to the worker, so give it a copy.
+    const pdfDoc = await pdfjs.getDocument({ data: baseBytes.slice() }).promise;
+    for (const v of this.views) {
+      this.observer.unobserve(v.el);
+      v.destroy();
+    }
+    this.views = [];
+    this.selection = null;
+    this.pointers.clear();
+    if (this.pdfDoc) void this.pdfDoc.loadingTask.destroy();
+    this.pdfDoc = pdfDoc;
+    this.baseBytes = baseBytes;
+    this.pages = pages;
+    pruneImageCache(new Set(pages.flatMap((p) => p.images.map((im) => im.id))));
+    this.container.innerHTML = "";
+    for (let i = 0; i < pages.length; i++) {
+      const v = new PageView(i, pages[i]);
+      this.views.push(v);
+      this.container.appendChild(v.el);
+      this.observer.observe(v.el);
+    }
+    this.fitWidth();
+  }
+
+  // ---------------------------------------------------------------- layout
+
+  fitWidth(): void {
+    if (!this.views.length) return;
+    const maxW = Math.max(...this.pages.map((p) => p.width));
+    const avail = this.container.clientWidth - 32;
+    const scale = Math.max(0.2, Math.min(avail / maxW, 3));
+    this.setScale(scale);
+  }
+
+  setScale(scale: number): void {
+    this.scale = scale;
+    for (const v of this.views) v.setScale(scale);
+    this.renderVisible();
+  }
+
+  zoom(factor: number): void {
+    this.setScale(Math.max(0.2, Math.min(this.scale * factor, 6)));
+  }
+
+  private onIntersect(entries: IntersectionObserverEntry[]): void {
+    for (const e of entries) {
+      const idx = Number((e.target as HTMLElement).dataset.page);
+      const v = this.views[idx];
+      if (!v) continue;
+      if (e.isIntersecting) {
+        void v.renderBase(this.pdfDoc!);
+        v.drawInk(this.selectionFor(idx));
+      } else if (!this.pointers.size || ![...this.pointers.values()].some((p) => p.page === idx)) {
+        v.release();
+      }
+    }
+  }
+
+  private renderVisible(): void {
+    const r = this.container.getBoundingClientRect();
+    for (const v of this.views) {
+      const b = v.el.getBoundingClientRect();
+      if (b.bottom >= r.top - r.height && b.top <= r.bottom + r.height) {
+        void v.renderBase(this.pdfDoc!);
+        v.drawInk(this.selectionFor(v.index), null, true);
+      }
+    }
+    this.updateCurrentPage();
+  }
+
+  private updateCurrentPage(): void {
+    if (!this.views.length) return;
+    const r = this.container.getBoundingClientRect();
+    const mid = r.top + r.height / 2;
+    let best = 0;
+    let bestDist = Infinity;
+    for (const v of this.views) {
+      const b = v.el.getBoundingClientRect();
+      const d = Math.abs((b.top + b.bottom) / 2 - mid);
+      if (d < bestDist) {
+        bestDist = d;
+        best = v.index;
+      }
+    }
+    if (best !== this.currentPage) {
+      this.currentPage = best;
+      this.setStatus();
+    }
+  }
+
+  scrollToPage(i: number): void {
+    const v = this.views[i];
+    if (v) v.el.scrollIntoView({ block: "start" });
+  }
+
+  setStatus(msg?: string): void {
+    if (msg !== undefined) {
+      this.status.textContent = msg;
+      return;
+    }
+    const n = this.pages.length;
+    const sel = this.selection ? ` · ${this.selection.strokeIds.size + this.selection.imageIds.size} selected` : "";
+    let state = "";
+    if (this.saving) state = " · saving…";
+    else if (this.dirty) state = this.source.kind === "server" || this.storage === "local" ? " · unsaved" : " (not in notebooks)";
+    else if (this.lastSaved) state = ` · saved ${this.lastSaved.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    else if (this.source.kind === "local" && this.storage === "server") state = " (not in notebooks)";
+    this.status.textContent = n ? `${this.fileName}${state} · page ${this.currentPage + 1}/${n}${sel}` : "";
+  }
+
+  // ---------------------------------------------------------------- tools
+
+  setTool(tool: Tool): void {
+    this.tool = tool;
+    for (const t of ["pen", "eraser", "select"] as Tool[]) {
+      document.getElementById(`tool-${t}`)?.classList.toggle("active", t === tool);
+      this.container.classList.toggle(`tool-${t}`, t === tool);
+    }
+    if (tool !== "select") this.clearSelection();
+  }
+
+  private selectionFor(page: number): SelectionView | null {
+    return this.selection && this.selection.page === page ? this.selection : null;
+  }
+
+  clearSelection(): void {
+    if (!this.selection) return;
+    const p = this.selection.page;
+    this.selection = null;
+    this.redraw(p);
+    this.setStatus();
+  }
+
+  private redraw(page: number): void {
+    const v = this.views[page];
+    if (!v) return;
+    v.invalidate();
+    v.drawInk(this.selectionFor(page));
+  }
+
+  // ---------------------------------------------------------------- undo
+
+  private snapshot(page: number): PageSnapshot {
+    const m = this.pages[page];
+    return { strokes: m.strokes, images: m.images };
+  }
+
+  private apply(page: number, snap: PageSnapshot): void {
+    const m = this.pages[page];
+    m.strokes = snap.strokes;
+    m.images = snap.images;
+    this.markDirty();
+    this.redraw(page);
+  }
+
+  private markDirty(): void {
+    this.dirty = true;
+    this.revision += 1;
+    this.scheduleAutosave();
+  }
+
+  /** Replace a page's content, recording an undo step. */
+  private commit(page: number, before: PageSnapshot, after: PageSnapshot): void {
+    if (before.strokes === after.strokes && before.images === after.images) return;
+    this.undoStack.push({ page, before, after });
+    if (this.undoStack.length > 200) this.undoStack.shift();
+    this.redoStack = [];
+    this.apply(page, after);
+    this.setStatus();
+  }
+
+  undo(): void {
+    const e = this.undoStack.pop();
+    if (!e) return;
+    this.redoStack.push(e);
+    this.clearSelection();
+    this.apply(e.page, e.before);
+    this.setStatus();
+  }
+
+  redo(): void {
+    const e = this.redoStack.pop();
+    if (!e) return;
+    this.undoStack.push(e);
+    this.clearSelection();
+    this.apply(e.page, e.after);
+    this.setStatus();
+  }
+
+  // ---------------------------------------------------------------- pointer input
+
+  private enablePenMode(): void {
+    this.container.classList.add("pen-active");
+  }
+
+  private disablePenMode(): void {
+    if (this.pointers.size) return; // a pen stroke is in progress; keep panning off
+    this.container.classList.remove("pen-active");
+  }
+
+  private viewFromEvent(e: Event): PageView | null {
+    const t = e.target as HTMLElement | null;
+    const el = t?.closest?.(".page") as HTMLElement | null;
+    if (!el) return null;
+    return this.views[Number(el.dataset.page)] ?? null;
+  }
+
+  /** Decide what a pointer wants to do, or null to let the browser have it. */
+  private classify(e: PointerEvent): Pointer["mode"] | null {
+    if (e.pointerType === "touch") return null;
+    if (e.pointerType === "pen") {
+      if (e.buttons & 32 || e.buttons & 2) return "erase";
+    } else if (e.button !== 0 && e.type === "pointerdown") {
+      return null;
+    }
+    if (this.tool === "eraser") return "erase";
+    if (this.tool === "select") return "select";
+    return "draw";
+  }
+
+  private bindPointerEvents(): void {
+    const c = this.container;
+    c.addEventListener("pointerdown", (e) => this.onPointerDown(e), { passive: false });
+    c.addEventListener("pointermove", (e) => this.onPointerMove(e), { passive: false });
+    c.addEventListener("pointerup", (e) => this.onPointerUp(e));
+    c.addEventListener("pointercancel", (e) => this.onPointerUp(e, true));
+    c.addEventListener("contextmenu", (e) => {
+      if (c.classList.contains("pen-active") || this.pointers.size) e.preventDefault();
+    });
+    // Pen proximity → stop the browser from panning with the pen; give
+    // panning back a moment after the pen goes out of range.
+    c.addEventListener("pointerover", (e) => {
+      if (e.pointerType === "pen") this.enablePenMode();
+    });
+    c.addEventListener("pointerleave", (e) => {
+      if (e.pointerType === "pen") {
+        this.endHoverErase();
+        this.disablePenMode();
+      }
+    });
+  }
+
+  private onPointerDown(e: PointerEvent): void {
+    if (e.pointerType === "pen") this.enablePenMode();
+    else if (e.pointerType === "touch") {
+      // touch-action was sampled before this event: if the pen had turned it
+      // off, the browser won't pan for this finger, so pan by hand instead.
+      if (this.container.classList.contains("pen-active") && !this.pointers.size && !this.touchScroll) {
+        this.touchScroll = { id: e.pointerId, x: e.clientX, y: e.clientY };
+      }
+      this.disablePenMode();
+      return;
+    }
+    const view = this.viewFromEvent(e);
+    if (!view) return;
+    const mode = this.classify(e);
+    if (!mode) return;
+    e.preventDefault();
+    this.container.focus({ preventScroll: true });
+    const p = view.toPage(e.clientX, e.clientY);
+    const page = view.index;
+    this.lastPointer = { page, x: p.x, y: p.y };
+    const ptr: Pointer = { pointerId: e.pointerId, page, mode };
+    try {
+      view.ink.setPointerCapture(e.pointerId);
+    } catch {
+      /* synthetic events have no active pointer */
+    }
+    if (mode !== "select" && this.selection) this.clearSelection();
+    if (mode === "draw") {
+      ptr.stroke = {
+        id: newId(),
+        points: [{ x: p.x, y: p.y, p: pressureOf(e) }],
+        color: this.penColor,
+        width: this.penWidth,
+        opacity: 1,
+      };
+      ptr.drawnUpTo = 0;
+      view.drawStrokeTail(ptr.stroke, 0);
+    } else if (mode === "erase") {
+      ptr.snapshot = this.snapshot(page);
+      this.eraseAt(page, { x: p.x, y: p.y, p: 0 }, ptr);
+    } else {
+      ptr.start = { x: p.x, y: p.y, p: 0 };
+      if (this.selection && this.selection.page !== page) this.clearSelection();
+      this.selection = { page, rect: null, strokeIds: new Set(), imageIds: new Set() };
+      this.redraw(page);
+    }
+    this.pointers.set(e.pointerId, ptr);
+  }
+
+  /** One undo step per barrel-button sweep, keyed by pointer. */
+  private hoverErase: Pointer | null = null;
+
+  private endHoverErase(): void {
+    const h = this.hoverErase;
+    if (!h) return;
+    this.hoverErase = null;
+    if (h.erased && h.snapshot) this.commit(h.page, h.snapshot, this.snapshot(h.page));
+  }
+
+  private onPointerMove(e: PointerEvent): void {
+    if (e.pointerType === "touch") {
+      const ts = this.touchScroll;
+      if (ts && ts.id === e.pointerId) {
+        this.container.scrollLeft -= e.clientX - ts.x;
+        this.container.scrollTop -= e.clientY - ts.y;
+        ts.x = e.clientX;
+        ts.y = e.clientY;
+      }
+      return;
+    }
+    if (e.pointerType === "pen") {
+      this.enablePenMode();
+      const active = this.pointers.get(e.pointerId);
+      // Barrel-button hover erase: button held, no contact.
+      if (!active && e.pressure === 0 && e.buttons & 2) {
+        const view = this.viewFromEvent(e);
+        if (view) {
+          if (this.hoverErase && this.hoverErase.page !== view.index) this.endHoverErase();
+          if (!this.hoverErase) {
+            this.hoverErase = { pointerId: e.pointerId, page: view.index, mode: "erase", snapshot: this.snapshot(view.index) };
+          }
+          const coalesced = e.getCoalescedEvents?.();
+          for (const ev of coalesced && coalesced.length ? coalesced : [e]) {
+            const p = view.toPage(ev.clientX, ev.clientY);
+            this.eraseAt(view.index, { x: p.x, y: p.y, p: 0 }, this.hoverErase);
+          }
+        }
+        return;
+      }
+      if (this.hoverErase) this.endHoverErase();
+    }
+    const ptr = this.pointers.get(e.pointerId);
+    if (!ptr) return;
+    e.preventDefault();
+    const view = this.views[ptr.page];
+    if (!view) return;
+    const coalesced = e.getCoalescedEvents?.();
+    const events = coalesced && coalesced.length ? coalesced : [e];
+    if (ptr.mode === "draw" && ptr.stroke) {
+      for (const ev of events) {
+        const p = view.toPage(ev.clientX, ev.clientY);
+        ptr.stroke.points.push({ x: p.x, y: p.y, p: pressureOf(ev) });
+      }
+      view.drawStrokeTail(ptr.stroke, ptr.drawnUpTo ?? 0);
+      ptr.drawnUpTo = ptr.stroke.points.length;
+    } else if (ptr.mode === "erase") {
+      for (const ev of events) {
+        const p = view.toPage(ev.clientX, ev.clientY);
+        this.eraseAt(ptr.page, { x: p.x, y: p.y, p: 0 }, ptr);
+      }
+    } else if (ptr.mode === "select" && ptr.start && this.selection) {
+      const p = view.toPage(e.clientX, e.clientY);
+      this.selection.rect = normalizeRect(ptr.start.x, ptr.start.y, p.x, p.y);
+      this.updateSelectionMembers();
+      this.scheduleRedraw(ptr.page);
+    }
+  }
+
+  private onPointerUp(e: PointerEvent, cancelled = false): void {
+    if (this.touchScroll && this.touchScroll.id === e.pointerId) this.touchScroll = null;
+    if (e.pointerType === "pen" && this.hoverErase) this.endHoverErase();
+    const ptr = this.pointers.get(e.pointerId);
+    if (!ptr) return;
+    this.pointers.delete(e.pointerId);
+    const page = ptr.page;
+    if (ptr.mode === "draw" && ptr.stroke) {
+      const s = ptr.stroke;
+      if (!cancelled || s.points.length > 1) {
+        const before = this.snapshot(page);
+        this.commit(page, before, { strokes: [...before.strokes, s], images: before.images });
+      } else {
+        this.redraw(page);
+      }
+    } else if (ptr.mode === "erase" && ptr.snapshot) {
+      if (ptr.erased) this.commit(page, ptr.snapshot, this.snapshot(page));
+    } else if (ptr.mode === "select" && this.selection) {
+      const r = this.selection.rect;
+      if (!r || (r.w < MIN_SELECT && r.h < MIN_SELECT)) {
+        // A tap: clear selection but remember the spot as the paste target.
+        this.selection = null;
+        this.redraw(page);
+      } else {
+        this.updateSelectionMembers();
+        this.redraw(page);
+      }
+      this.setStatus();
+    }
+  }
+
+  private scheduleRedraw(page: number): void {
+    if (this.raf) return;
+    this.raf = requestAnimationFrame(() => {
+      this.raf = 0;
+      this.redraw(page);
+    });
+  }
+
+  /** Remove strokes/images under the eraser; mutates the page's arrays immutably. */
+  private eraseAt(page: number, p: Point, ptr: Pointer): void {
+    const m = this.pages[page];
+    const keep = m.strokes.filter((s) => !strokeHit(s, p, ERASE_RADIUS));
+    const keepImages = m.images.filter((im) => !(p.x >= im.x && p.x <= im.x + im.w && p.y >= im.y && p.y <= im.y + im.h));
+    if (keep.length !== m.strokes.length || keepImages.length !== m.images.length) {
+      m.strokes = keep;
+      m.images = keepImages;
+      ptr.erased = true;
+      this.markDirty();
+      this.redraw(page);
+    }
+  }
+
+  private updateSelectionMembers(): void {
+    const sel = this.selection;
+    if (!sel || !sel.rect) return;
+    const m = this.pages[sel.page];
+    sel.strokeIds = new Set(m.strokes.filter((s) => strokeInRect(s, sel.rect!)).map((s) => s.id));
+    sel.imageIds = new Set(m.images.filter((im) => imageInRect(im, sel.rect!)).map((im) => im.id));
+  }
+
+  // ---------------------------------------------------------------- clipboard
+
+  private selectedContent(): { page: number; strokes: Stroke[]; images: ImageItem[] } | null {
+    const sel = this.selection;
+    if (!sel) return null;
+    const m = this.pages[sel.page];
+    const strokes = m.strokes.filter((s) => sel.strokeIds.has(s.id));
+    const images = m.images.filter((im) => sel.imageIds.has(im.id));
+    if (!strokes.length && !images.length) return null;
+    return { page: sel.page, strokes, images };
+  }
+
+  copy(): boolean {
+    const c = this.selectedContent();
+    if (!c) return false;
+    let bounds: Rect | null = null;
+    for (const s of c.strokes) bounds = unionRect(bounds, strokeBounds(s));
+    for (const im of c.images) bounds = unionRect(bounds, imageBounds(im));
+    const b = bounds!;
+    this.clip = {
+      strokes: c.strokes.map((s) => translateStroke(s, -b.x, -b.y)),
+      images: c.images.map((im) => translateImage(im, -b.x, -b.y)),
+      width: b.w,
+      height: b.h,
+    };
+    this.pendingClipWrite = this.copyToSystemClipboard(this.clip).finally(() => (this.pendingClipWrite = null));
+    return true;
+  }
+
+  /**
+   * What we last wrote to the system clipboard, so we can recognise it on paste.
+   * Browsers re-encode clipboard images, so compare pixel size and recency,
+   * not bytes.
+   */
+  private ownClip: { width: number; height: number; at: number } | null = null;
+  private pendingClipWrite: Promise<void> | null = null;
+  private pasteFallback: number | null = null;
+
+  /** Best-effort: also put a PNG of the selection on the system clipboard. */
+  private async copyToSystemClipboard(clip: ClipContent): Promise<void> {
+    try {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") return;
+      const size = this.clipPixelSize(clip);
+      this.ownClip = { ...size, at: Date.now() };
+      // Hand the ClipboardItem a promise so Safari keeps the user activation.
+      const png = this.renderClipToPng(clip);
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    } catch {
+      this.ownClip = null; /* clipboard permission denied or unsupported; internal clip still works */
+    }
+  }
+
+  private static readonly CLIP_PX_PER_PT = 3;
+
+  private clipPixelSize(clip: ClipContent): { width: number; height: number } {
+    const k = App.CLIP_PX_PER_PT;
+    return { width: Math.max(1, Math.ceil(clip.width * k)), height: Math.max(1, Math.ceil(clip.height * k)) };
+  }
+
+  /** True when the image is (very probably) the PNG we put on the clipboard ourselves. */
+  private async isOwnClipImage(bytes: Uint8Array, mime: string): Promise<boolean> {
+    const own = this.ownClip;
+    if (!own || !this.clip) return false;
+    try {
+      const bmp = await createImageBitmap(new Blob([bytes as BlobPart], { type: mime }));
+      const match = bmp.width === own.width && bmp.height === own.height;
+      bmp.close();
+      return match;
+    } catch {
+      return false;
+    }
+  }
+
+  private async renderClipToPng(clip: ClipContent): Promise<Blob> {
+    const pxPerPt = App.CLIP_PX_PER_PT;
+    const canvas = document.createElement("canvas");
+    const size = this.clipPixelSize(clip);
+    canvas.width = size.width;
+    canvas.height = size.height;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(pxPerPt, pxPerPt);
+    for (const im of clip.images) {
+      const bmp = await createImageBitmap(new Blob([im.bytes as BlobPart], { type: im.mime }));
+      ctx.drawImage(bmp, im.x, im.y, im.w, im.h);
+    }
+    for (const s of clip.strokes) drawStroke(ctx, s);
+    return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob"))), "image/png"));
+  }
+
+  cut(): boolean {
+    if (!this.copy()) return false;
+    this.deleteSelection();
+    return true;
+  }
+
+  deleteSelection(): void {
+    const c = this.selectedContent();
+    if (!c) return;
+    const before = this.snapshot(c.page);
+    const sIds = new Set(c.strokes.map((s) => s.id));
+    const iIds = new Set(c.images.map((i) => i.id));
+    this.selection = null;
+    this.commit(c.page, before, {
+      strokes: before.strokes.filter((s) => !sIds.has(s.id)),
+      images: before.images.filter((im) => !iIds.has(im.id)),
+    });
+  }
+
+  /** Where a paste should land: centred on the last pen/mouse position, else page centre. */
+  private pasteTarget(): { page: number; x: number; y: number } {
+    if (this.lastPointer) return this.lastPointer;
+    const page = this.currentPage;
+    const m = this.pages[page];
+    return { page, x: m.width / 2, y: m.height / 2 };
+  }
+
+  /** Paste the internal clipboard. Returns false when there is nothing to paste. */
+  pasteInternal(): boolean {
+    const clip = this.clip;
+    if (!clip || !this.pages.length) return false;
+    const t = this.pasteTarget();
+    const m = this.pages[t.page];
+    let dx = t.x - clip.width / 2;
+    let dy = t.y - clip.height / 2;
+    dx = Math.max(0, Math.min(dx, m.width - clip.width));
+    dy = Math.max(0, Math.min(dy, m.height - clip.height));
+    const strokes = clip.strokes.map((s) => ({ ...translateStroke(s, dx, dy), id: newId() }));
+    const images = clip.images.map((im) => ({ ...translateImage(im, dx, dy), id: newId("im") }));
+    const before = this.snapshot(t.page);
+    this.commit(t.page, before, { strokes: [...before.strokes, ...strokes], images: [...before.images, ...images] });
+    this.selection = {
+      page: t.page,
+      rect: { x: dx, y: dy, w: clip.width, h: clip.height },
+      strokeIds: new Set(strokes.map((s) => s.id)),
+      imageIds: new Set(images.map((im) => im.id)),
+    };
+    this.redraw(t.page);
+    this.setStatus();
+    return true;
+  }
+
+  /** Paste an encoded image (PNG/JPEG bytes) centred on the paste target. */
+  async pasteImage(bytes: Uint8Array, mime: string): Promise<boolean> {
+    if (!this.pages.length) return false;
+    let data = bytes;
+    let type: ImageItem["mime"] = mime === "image/jpeg" ? "image/jpeg" : "image/png";
+    if (mime !== "image/png" && mime !== "image/jpeg") {
+      // Convert anything else (gif, webp, bmp…) to PNG via a canvas.
+      const bmp = await createImageBitmap(new Blob([bytes as BlobPart], { type: mime }));
+      const canvas = document.createElement("canvas");
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      canvas.getContext("2d")!.drawImage(bmp, 0, 0);
+      const blob: Blob = await new Promise((res, rej) => canvas.toBlob((b) => (b ? res(b) : rej(new Error("toBlob"))), "image/png"));
+      data = new Uint8Array(await blob.arrayBuffer());
+      type = "image/png";
+    }
+    const bmp = await createImageBitmap(new Blob([data as BlobPart], { type }));
+    const t = this.pasteTarget();
+    const m = this.pages[t.page];
+    // Natural size at 96 dpi → points, capped to fit the page.
+    let w = (bmp.width * 72) / 96;
+    let h = (bmp.height * 72) / 96;
+    const fit = Math.min(1, (m.width * 0.9) / w, (m.height * 0.9) / h);
+    w *= fit;
+    h *= fit;
+    bmp.close();
+    const x = Math.max(0, Math.min(t.x - w / 2, m.width - w));
+    const y = Math.max(0, Math.min(t.y - h / 2, m.height - h));
+    const im: ImageItem = { id: newId("im"), x, y, w, h, mime: type, bytes: data };
+    const before = this.snapshot(t.page);
+    this.commit(t.page, before, { strokes: before.strokes, images: [...before.images, im] });
+    this.selection = { page: t.page, rect: { x, y, w, h }, strokeIds: new Set(), imageIds: new Set([im.id]) };
+    this.redraw(t.page);
+    this.setStatus();
+    return true;
+  }
+
+  /** Paste button: prefer a system-clipboard image, else the internal clip. */
+  async pasteFromButton(): Promise<void> {
+    if (this.pendingClipWrite) await this.pendingClipWrite;
+    try {
+      if (navigator.clipboard?.read) {
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          const type = item.types.find((t) => t.startsWith("image/"));
+          if (type) {
+            const blob = await item.getType(type);
+            const bytes = new Uint8Array(await blob.arrayBuffer());
+            if (await this.isOwnClipImage(bytes, type)) break;
+            await this.pasteImage(bytes, type);
+            return;
+          }
+        }
+      }
+    } catch {
+      /* no permission / nothing readable; fall through */
+    }
+    this.pasteInternal();
+  }
+
+  /** Handle a DOM paste event (Ctrl+V / Cmd+V). */
+  async pasteFromEvent(e: ClipboardEvent): Promise<void> {
+    if (this.pasteFallback) {
+      clearTimeout(this.pasteFallback);
+      this.pasteFallback = null;
+    }
+    const dt = e.clipboardData;
+    if (dt) {
+      for (const item of Array.from(dt.items)) {
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const f = item.getAsFile();
+          if (f) {
+            e.preventDefault();
+            const bytes = new Uint8Array(await f.arrayBuffer());
+            if (await this.isOwnClipImage(bytes, f.type)) break;
+            await this.pasteImage(bytes, f.type);
+            return;
+          }
+        }
+      }
+    }
+    if (this.pasteInternal()) e.preventDefault();
+  }
+
+  // ---------------------------------------------------------------- files
+
+  async exportBytes(): Promise<Uint8Array> {
+    if (!this.baseBytes) throw new Error("No document");
+    return exportPdf(this.baseBytes, this.pages);
+  }
+
+  /** Import: pick a PDF on this device, load it, and store it in the notebooks folder. */
+  async importLocal(): Promise<void> {
+    if (window.showOpenFilePicker && !this.forceDownload) {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: "PDF", accept: { "application/pdf": [".pdf"] } }],
+        });
+        await this.importFile(await handle.getFile());
+        return;
+      } catch (err) {
+        if ((err as Error).name === "AbortError") return;
+      }
+    }
+    (document.getElementById("file-input") as HTMLInputElement).click();
+  }
+
+  async importFile(file: File): Promise<void> {
+    if (!(await this.readyToLeave())) return;
+    const raw = await this.promptFn("Save the imported PDF in the notebooks folder as", file.name);
+    if (raw === null) {
+      // Tab-only: parse in the browser.
+      const ok = await this.loadBytes(new Uint8Array(await file.arrayBuffer()), file.name, null);
+      if (ok) this.setStatus(`${file.name} imported but not saved to notebooks (Export to keep it).`);
+      return;
+    }
+    const name = App.normalizeNotebookName(raw);
+    if (!name) {
+      this.setStatus(`"${raw}" is not a usable notebook name.`);
+      return;
+    }
+    // Upload the file untouched and let the server parse it, so big PDFs
+    // never have to be parsed in the browser.
+    this.setStatus(`Uploading ${file.name}…`);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    try {
+      try {
+        await saveNotebook(name, bytes, "new");
+      } catch (err) {
+        if (!(err instanceof ConflictError)) throw err;
+        if (!(await this.confirmFn(`${name} already exists in the notebooks folder. Replace it?`))) {
+          this.setStatus(`Not imported: ${name} already exists.`);
+          return;
+        }
+        await saveNotebook(name, bytes, null);
+      }
+    } catch (err) {
+      this.setStatus((err as Error).message);
+      return;
+    }
+    this.onNotebooksChanged();
+    await this.openNotebook(name);
+  }
+
+  /**
+   * Save: server notebooks go back to the notebooks folder; in local mode the
+   * file is written to this device; a tab-only document in server mode is
+   * offered a place in the notebooks folder.
+   */
+  async save(): Promise<void> {
+    if (!this.baseBytes) return;
+    if (this.source.kind === "server") {
+      await this.saveToServer();
+      return;
+    }
+    if (this.storage === "local") {
+      await this.exportLocal();
+      return;
+    }
+    const raw = await this.promptFn("Save in the notebooks folder as", this.fileName);
+    if (raw === null) return;
+    const name = App.normalizeNotebookName(raw);
+    if (!name) {
+      this.setStatus(`"${raw}" is not a usable notebook name.`);
+      return;
+    }
+    await this.saveAsNotebook(name);
+  }
+
+  /** Export: write the current document to a file on this device. */
+  async exportLocal(): Promise<void> {
+    if (!this.baseBytes) return;
+    this.setStatus("Exporting…");
+    let bytes: Uint8Array;
+    try {
+      if (this.source.kind === "server") {
+        // Let the server build it (it may be far too big to build here);
+        // make sure the file is current first.
+        if (this.dirty && !(await this.saveToServer())) return;
+        bytes = (await loadNotebook(this.source.name)).bytes;
+      } else {
+        bytes = await this.exportBytes();
+      }
+    } catch (err) {
+      console.error(err);
+      this.setStatus(`Could not build the PDF: ${(err as Error).message}`);
+      return;
+    }
+    if (!this.forceDownload) {
+      try {
+        if (!this.fileHandle && window.showSaveFilePicker) {
+          this.fileHandle = await window.showSaveFilePicker({
+            suggestedName: this.fileName,
+            types: [{ description: "PDF", accept: { "application/pdf": [".pdf"] } }],
+          });
+        }
+        if (this.fileHandle) {
+          const w = await this.fileHandle.createWritable();
+          await w.write(bytes);
+          await w.close();
+          this.afterExport();
+          return;
+        }
+      } catch (err) {
+        if ((err as Error).name === "AbortError") {
+          this.setStatus();
+          return;
+        }
+        console.error(err);
+        this.fileHandle = null;
+      }
+    }
+    const blob = new Blob([bytes as BlobPart], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = this.fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    this.afterExport();
+  }
+
+  private afterExport(): void {
+    // For a tab-only document the export is its save; a server notebook stays
+    // whatever it was.
+    if (this.source.kind === "local") {
+      this.dirty = false;
+      this.lastSaved = new Date();
+    }
+    this.setStatus();
+  }
+
+  private bindDrop(): void {
+    const c = this.container;
+    c.addEventListener("dragover", (e) => {
+      e.preventDefault();
+    });
+    c.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const f = e.dataTransfer?.files?.[0];
+      if (f && (f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"))) {
+        void (this.storage === "server" ? this.importFile(f) : this.openFile(f));
+      }
+      else if (f && f.type.startsWith("image/")) void f.arrayBuffer().then((b) => this.pasteImage(new Uint8Array(b), f.type));
+    });
+  }
+
+  // ---------------------------------------------------------------- keyboard
+
+  private bindKeyboard(): void {
+    document.addEventListener("keydown", (e) => {
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod) {
+        switch (e.key.toLowerCase()) {
+          case "z":
+            e.preventDefault();
+            e.shiftKey ? this.redo() : this.undo();
+            return;
+          case "y":
+            e.preventDefault();
+            this.redo();
+            return;
+          case "c":
+            if (this.copy()) e.preventDefault();
+            return;
+          case "x":
+            if (this.cut()) e.preventDefault();
+            return;
+          case "s":
+            e.preventDefault();
+            void this.save();
+            return;
+          case "o":
+            e.preventDefault();
+            void (this.storage === "server" ? this.importLocal() : this.open());
+            return;
+          case "=":
+          case "+":
+            e.preventDefault();
+            this.zoom(1.25);
+            return;
+          case "-":
+            e.preventDefault();
+            this.zoom(0.8);
+            return;
+          case "0":
+            e.preventDefault();
+            this.fitWidth();
+            return;
+        }
+        if (e.key.toLowerCase() === "v" && this.clip) {
+          // The paste event normally follows and handles this; if the browser
+          // never sends one (no editable focus, some WebViews), paste the
+          // internal clipboard ourselves.
+          if (this.pasteFallback) clearTimeout(this.pasteFallback);
+          this.pasteFallback = window.setTimeout(() => {
+            this.pasteFallback = null;
+            this.pasteInternal();
+          }, 150);
+        }
+        return;
+      }
+      switch (e.key) {
+        case "p": case "P": this.setTool("pen"); break;
+        case "e": case "E": this.setTool("eraser"); break;
+        case "s": case "S": this.setTool("select"); break;
+        case "Escape": this.clearSelection(); break;
+        case "Delete": case "Backspace":
+          if (this.selection) {
+            e.preventDefault();
+            this.deleteSelection();
+          }
+          break;
+      }
+    });
+    document.addEventListener("paste", (e) => {
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      void this.pasteFromEvent(e);
+    });
+  }
+
+  /** Compact state for tests. */
+  getState() {
+    return {
+      fileName: this.fileName,
+      storage: this.storage,
+      source: this.source,
+      saving: this.saving,
+      lastSaved: this.lastSaved ? this.lastSaved.getTime() : null,
+      tool: this.tool,
+      scale: this.scale,
+      dirty: this.dirty,
+      currentPage: this.currentPage,
+      pages: this.pages.map((p) => ({
+        width: p.width,
+        height: p.height,
+        strokes: p.strokes.map((s) => ({ id: s.id, n: s.points.length, color: s.color, width: s.width, bounds: strokeBounds(s) })),
+        images: p.images.map((im) => ({ id: im.id, x: im.x, y: im.y, w: im.w, h: im.h, mime: im.mime })),
+      })),
+      selection: this.selection
+        ? { page: this.selection.page, rect: this.selection.rect, strokes: [...this.selection.strokeIds], images: [...this.selection.imageIds] }
+        : null,
+      clip: this.clip ? { strokes: this.clip.strokes.length, images: this.clip.images.length, width: this.clip.width, height: this.clip.height } : null,
+      undo: this.undoStack.length,
+      redo: this.redoStack.length,
+    };
+  }
+}

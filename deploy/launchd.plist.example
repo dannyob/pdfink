@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd job that keeps the pdfink server running for the logged-in
+  user. Copy to ~/Library/LaunchAgents/com.example.pdfink.plist, replace the
+  ALL-CAPS placeholders, then:
+
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.pdfink.plist
+
+  To change the configuration later, edit the plist, then `launchctl bootout`
+  and `bootstrap` it again. Logs go to the StandardOutPath below.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.pdfink</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/PATH/TO/node</string>
+    <string>/PATH/TO/pdfink/server/index.ts</string>
+    <string>--mode</string>
+    <string>server</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>5173</string>
+    <string>--notebooks</string>
+    <string>/PATH/TO/notebooks</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/PATH/TO/pdfink</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/PATH/TO/logs/pdfink.log</string>
+  <key>StandardErrorPath</key>
+  <string>/PATH/TO/logs/pdfink.log</string>
+</dict>
+</plist>
