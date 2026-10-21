@@ -28,6 +28,8 @@ button {
 button:hover { background: #eee; }
 select { font: inherit; padding: 5px 6px; border: 1px solid #aaa; border-radius: 6px; background: #fff; max-width: 260px; }
 button:disabled { opacity: 0.4; cursor: default; }
+.opt { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #333; margin-left: 6px; }
+.opt input { margin: 0; }
 button.tool.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 #status { margin-left: auto; font-size: 12px; color: #555; white-space: nowrap; }
 #src-link { font-size: 12px; color: #555; text-decoration: none; border-bottom: 1px dotted #999; }

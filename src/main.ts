@@ -15,6 +15,21 @@ $("btn-export").onclick = () => void app.exportLocal();
 $("tool-pen").onclick = () => app.setTool("pen");
 $("tool-eraser").onclick = () => app.setTool("eraser");
 $("tool-select").onclick = () => app.setTool("select");
+const barrel = $("barrel-erase") as HTMLInputElement;
+try {
+  barrel.checked = localStorage.getItem("pdfink.barrelErase") !== "0";
+} catch {
+  /* storage blocked */
+}
+app.setBarrelHeuristic(barrel.checked);
+barrel.onchange = () => {
+  app.setBarrelHeuristic(barrel.checked);
+  try {
+    localStorage.setItem("pdfink.barrelErase", barrel.checked ? "1" : "0");
+  } catch {
+    /* storage blocked */
+  }
+};
 $("btn-copy").onclick = () => app.copy();
 $("btn-cut").onclick = () => app.cut();
 $("btn-paste").onclick = () => void app.pasteFromButton();

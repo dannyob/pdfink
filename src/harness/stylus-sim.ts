@@ -17,12 +17,13 @@ export interface SimOptions {
   shiftKey?: boolean;
 }
 
-export type SimPoint = [number, number];
+/** [x, y] or [x, y, pressure] to override the pressure for that sample. */
+export type SimPoint = [number, number] | [number, number, number];
 
-function fire(target: Element, type: string, x: number, y: number, o: Required<Pick<SimOptions, "pointerType" | "pointerId">> & SimOptions, down: boolean): void {
+function fire(target: Element, type: string, x: number, y: number, o: Required<Pick<SimOptions, "pointerType" | "pointerId">> & SimOptions, down: boolean, pointPressure?: number): void {
   const buttons = down ? (o.buttons ?? 1) : 0;
   // 0.6 is the pressure that gives a stroke its nominal width.
-  const pressure = down ? (o.pressure ?? 0.6) : 0;
+  const pressure = down ? (pointPressure ?? o.pressure ?? 0.6) : 0;
   let button = -1;
   if (type === "pointerdown" || type === "pointerup") {
     button = buttons & 32 ? 5 : buttons & 2 ? 2 : 0;
@@ -64,14 +65,17 @@ export function hover(x: number, y: number, opts: SimOptions = {}): void {
   fire(el, "pointermove", x, y, o, false);
 }
 
-/** Hover with a button held (barrel button erase gesture): buttons=2, pressure=0. */
+/**
+ * Hover with a button held: pressure 0 and `buttons` set (default 2, the spec's
+ * barrel bit; pass 1 for pens that only toggle the contact bit).
+ */
 export function barrelHover(path: SimPoint[], opts: SimOptions = {}): void {
-  const o = defaults({ ...opts, buttons: 2 });
+  const o = defaults({ ...opts, buttons: opts.buttons ?? 2 });
   for (const [x, y] of path) {
     const ev = new PointerEvent("pointermove", {
       bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y,
       pointerType: o.pointerType, pointerId: o.pointerId, isPrimary: true,
-      pressure: 0, buttons: 2, button: -1,
+      pressure: 0, buttons: o.buttons, button: -1,
     });
     elementAt(x, y).dispatchEvent(ev);
   }
@@ -81,15 +85,15 @@ export function barrelHover(path: SimPoint[], opts: SimOptions = {}): void {
 export function stroke(path: SimPoint[], opts: SimOptions = {}): void {
   if (!path.length) return;
   const o = defaults(opts);
-  const [x0, y0] = path[0];
+  const [x0, y0, p0] = path[0];
   const target = elementAt(x0, y0);
   hover(x0, y0, o);
-  fire(target, "pointerdown", x0, y0, o, true);
+  fire(target, "pointerdown", x0, y0, o, true, p0);
   for (let i = 1; i < path.length; i++) {
-    const [x, y] = path[i];
+    const [x, y, p] = path[i];
     // After pointer capture the browser would keep delivering to `target`;
     // synthetic events need to be sent there explicitly.
-    fire(target, "pointermove", x, y, o, true);
+    fire(target, "pointermove", x, y, o, true, p);
   }
   const [xn, yn] = path[path.length - 1];
   fire(target, "pointerup", xn, yn, o, false);

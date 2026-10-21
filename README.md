@@ -85,7 +85,7 @@ To prevent large PDFs, on import, objects unreachable from the trailer are delet
 
 ## Editing
 
-- Pen draws. Eraser end or barrel button erases whole strokes.
+- Pen draws. Eraser end or barrel button erases whole strokes. Many EMR pens don't report their barrel button to the browser; with **barrel erases** ticked (the default), a pen whose pressure is pinned to exactly 0 while hovering or exactly 1 while touching is taken as a barrel press. Untick it if your pen can really reach full pressure. `/stylus-test.html` shows what your pen reports.
 - Select drags a rectangle and picks every stroke with a point inside it. Ctrl+C, Ctrl+X and Ctrl+V work on the selection. Delete removes it.
 - Paste an image from the system clipboard, or drop an image file on the page.
 - Dropping a PDF imports it (server mode) or opens it (browser mode).

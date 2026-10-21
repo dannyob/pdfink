@@ -143,3 +143,76 @@ test.describe("pen drawing", () => {
     expect(nums[3]).toBeCloseTo(692.5, 1);
   });
 });
+
+test.describe("barrel-button heuristic", () => {
+  // Observed on a Daylight DC-1: pens that never set the spec's barrel bit.
+
+  test("no-eraser EMR pen: full pressure with the contact bit erases", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 100, 300, 100));
+    await penStroke(page, 0, line(100, 200, 300, 200));
+    await penStroke(page, 0, line(100, 300, 300, 300));
+    await penStroke(page, 0, line(200, 170, 200, 230), { pressure: 1 });
+    const s = await state(page);
+    expect(s.pages[0].strokes).toHaveLength(2);
+    expect(s.pages[0].strokes.map((x) => Math.round(x.bounds.y / 10) * 10)).toEqual([100, 300]);
+    expect(s.undo).toBe(4);
+  });
+
+  test("King Write: contact bit with zero pressure while hovering erases", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 100, 300, 100));
+    await penStroke(page, 0, line(100, 140, 300, 140));
+    await penStroke(page, 0, line(100, 300, 300, 300));
+    await page.evaluate(() => {
+      const v = window.__pdfink.views[0];
+      const pts = [] as [number, number][];
+      for (let y = 80; y <= 160; y += 5) {
+        const c = v.toClient(200, y);
+        pts.push([c.clientX, c.clientY]);
+      }
+      window.__stylusSim.barrelHover(pts, { buttons: 1 });
+      window.__stylusSim.hover(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+    });
+    const s = await state(page);
+    expect(s.pages[0].strokes).toHaveLength(1);
+    expect(s.undo).toBe(4); // one undo step for the sweep
+  });
+
+  test("pressing the barrel mid-stroke erases, releasing it draws again", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 200, 300, 200));
+    // Down the page through the existing stroke: light, then pinned to 1, then light.
+    const path = line(200, 100, 200, 300, 40).map(([x, y]) => [x, y, y >= 170 && y <= 230 ? 1 : 0.6] as [number, number, number]);
+    await penStroke(page, 0, path);
+    const s = await state(page);
+    const ys = s.pages[0].strokes.map((x) => Math.round(x.bounds.y / 5) * 5).sort((a, b) => a - b);
+    expect(ys).toEqual([100, 235]); // two drawn segments; the crossed stroke is gone
+    expect(s.undo).toBe(4); // original, first segment, erase, second segment
+    expect((await inkPixel(page, 0, 150, 200))[3]).toBe(0);
+  });
+
+  test("a first sample with zero pressure does not erase under the tip", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 100, 300, 100));
+    // Starts on the existing stroke with pressure 0, then writes normally.
+    const path = line(200, 100, 300, 180, 20).map(([x, y], i) => [x, y, i === 0 ? 0 : 0.6] as [number, number, number]);
+    await penStroke(page, 0, path);
+    const s = await state(page);
+    expect(s.pages[0].strokes).toHaveLength(2);
+    expect(s.pages[0].strokes[1].n).toBe(20);
+  });
+
+  test("switched off, full pressure just draws", async ({ page }) => {
+    await openApp(page);
+    await page.locator("#barrel-erase").uncheck();
+    expect((await state(page)).barrelHeuristic).toBe(false);
+    await penStroke(page, 0, line(100, 200, 300, 200));
+    await penStroke(page, 0, line(200, 170, 200, 230), { pressure: 1 });
+    expect((await state(page)).pages[0].strokes).toHaveLength(2);
+    // The choice survives a reload.
+    await page.reload();
+    await page.waitForFunction(() => window.__pdfink && window.__pdfink.views.length > 0);
+    await expect(page.locator("#barrel-erase")).not.toBeChecked();
+  });
+});

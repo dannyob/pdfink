@@ -2,6 +2,7 @@ import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { ClipContent, ImageItem, PageModel, Point, Rect, Stroke } from "./model";
 import { DEFAULT_PRESSURE, newId } from "./model";
+import { barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
 import {
   imageBounds,
   imageInRect,
@@ -46,6 +47,12 @@ interface Pointer {
   start?: Point;
   snapshot?: PageSnapshot;
   erased?: boolean;
+  /** Erase mode came from the barrel heuristic, so pressure may flip it back to drawing. */
+  heuristic?: boolean;
+  /** Down with contact bit but no pressure: wait for a move before erasing anything. */
+  pending?: boolean;
+  /** Stroke finished just before switching to erase; the eraser starts on top of it, so spare it. */
+  keep?: string;
 }
 
 type FileHandle = { name: string; createWritable(): Promise<{ write(d: Uint8Array): Promise<void>; close(): Promise<void> }>; getFile(): Promise<File> };
@@ -72,6 +79,8 @@ export class App {
   baseBytes: Uint8Array | null = null;
   pdfDoc: PDFDocumentProxy | null = null;
   tool: Tool = "pen";
+  /** Treat pressure pinned to 0 or 1 with the contact bit as a barrel-button press. See stylus.ts. */
+  barrelHeuristic = true;
   penColor = "#000000";
   penWidth = 1;
   scale = 1;
@@ -519,6 +528,10 @@ export class App {
 
   // ---------------------------------------------------------------- tools
 
+  setBarrelHeuristic(on: boolean): void {
+    this.barrelHeuristic = on;
+  }
+
   setTool(tool: Tool): void {
     this.tool = tool;
     for (const t of ["pen", "eraser", "select"] as Tool[]) {
@@ -618,7 +631,7 @@ export class App {
   private classify(e: PointerEvent): Pointer["mode"] | null {
     if (e.pointerType === "touch") return null;
     if (e.pointerType === "pen") {
-      if (e.buttons & 32 || e.buttons & 2) return "erase";
+      if (wantsErase(e, this.barrelHeuristic)) return "erase";
     } else if (e.button !== 0 && e.type === "pointerdown") {
       return null;
     }
@@ -688,7 +701,13 @@ export class App {
       view.drawStrokeTail(ptr.stroke, 0);
     } else if (mode === "erase") {
       ptr.snapshot = this.snapshot(page);
-      this.eraseAt(page, { x: p.x, y: p.y, p: 0 }, ptr);
+      if (e.pointerType === "pen" && heuristicOnly(e, this.barrelHeuristic)) {
+        ptr.heuristic = true;
+        // Contact bit with zero pressure might be a pen that reports 0 on its
+        // first sample; don't erase under the tip until a move confirms it.
+        if (e.pressure === 0) ptr.pending = true;
+      }
+      if (!ptr.pending) this.eraseAt(page, { x: p.x, y: p.y, p: 0 }, ptr);
     } else {
       ptr.start = { x: p.x, y: p.y, p: 0 };
       if (this.selection && this.selection.page !== page) this.clearSelection();
@@ -723,7 +742,7 @@ export class App {
       this.enablePenMode();
       const active = this.pointers.get(e.pointerId);
       // Barrel-button hover erase: button held, no contact.
-      if (!active && e.pressure === 0 && e.buttons & 2) {
+      if (!active && hoverErase(e, this.barrelHeuristic)) {
         const view = this.viewFromEvent(e);
         if (view) {
           if (this.hoverErase && this.hoverErase.page !== view.index) this.endHoverErase();
@@ -747,23 +766,65 @@ export class App {
     if (!view) return;
     const coalesced = e.getCoalescedEvents?.();
     const events = coalesced && coalesced.length ? coalesced : [e];
-    if (ptr.mode === "draw" && ptr.stroke) {
+    if (ptr.mode !== "select") {
       for (const ev of events) {
         const p = view.toPage(ev.clientX, ev.clientY);
-        ptr.stroke.points.push({ x: p.x, y: p.y, p: pressureOf(ev) });
+        if (e.pointerType === "pen" && this.barrelHeuristic && this.tool === "pen") {
+          // Barrel press/release mid-gesture on pens that only pin the pressure.
+          if (ptr.mode === "draw" && barrelHeuristic(ev) && ev.pressure >= 1) {
+            this.switchMode(ptr, "erase", p);
+          } else if (ptr.mode === "erase" && ptr.heuristic && writingPressure(ev)) {
+            this.switchMode(ptr, "draw", p);
+            continue; // the new stroke already starts at p
+          } else if (ptr.pending && ev.pressure === 0) {
+            ptr.pending = false; // still no pressure: it really is a button hover
+          }
+        }
+        if (ptr.pending) continue;
+        if (ptr.mode === "draw" && ptr.stroke) ptr.stroke.points.push({ x: p.x, y: p.y, p: pressureOf(ev) });
+        else if (ptr.mode === "erase") this.eraseAt(ptr.page, { x: p.x, y: p.y, p: 0 }, ptr);
       }
-      view.drawStrokeTail(ptr.stroke, ptr.drawnUpTo ?? 0);
-      ptr.drawnUpTo = ptr.stroke.points.length;
-    } else if (ptr.mode === "erase") {
-      for (const ev of events) {
-        const p = view.toPage(ev.clientX, ev.clientY);
-        this.eraseAt(ptr.page, { x: p.x, y: p.y, p: 0 }, ptr);
+      if (ptr.mode === "draw" && ptr.stroke) {
+        view.drawStrokeTail(ptr.stroke, ptr.drawnUpTo ?? 0);
+        ptr.drawnUpTo = ptr.stroke.points.length;
       }
     } else if (ptr.mode === "select" && ptr.start && this.selection) {
       const p = view.toPage(e.clientX, e.clientY);
       this.selection.rect = normalizeRect(ptr.start.x, ptr.start.y, p.x, p.y);
       this.updateSelectionMembers();
       this.scheduleRedraw(ptr.page);
+    }
+  }
+
+  /** Finish the gesture in progress and continue it in another mode from `p`. */
+  private switchMode(ptr: Pointer, mode: "draw" | "erase", p: { x: number; y: number }): void {
+    const page = ptr.page;
+    if (ptr.mode === "draw" && ptr.stroke) {
+      const s = ptr.stroke;
+      if (s.points.length > 1) {
+        const before = this.snapshot(page);
+        this.commit(page, before, { strokes: [...before.strokes, s], images: before.images });
+        ptr.keep = s.id;
+      } else {
+        this.redraw(page);
+      }
+      ptr.stroke = undefined;
+      ptr.drawnUpTo = undefined;
+    } else if (ptr.mode === "erase" && ptr.snapshot) {
+      if (ptr.erased) this.commit(page, ptr.snapshot, this.snapshot(page));
+      ptr.snapshot = undefined;
+      ptr.erased = false;
+      ptr.keep = undefined;
+    }
+    ptr.mode = mode;
+    ptr.pending = false;
+    if (mode === "draw") {
+      ptr.heuristic = false;
+      ptr.stroke = { id: newId(), points: [{ x: p.x, y: p.y, p: DEFAULT_PRESSURE }], color: this.penColor, width: this.penWidth, opacity: 1 };
+      ptr.drawnUpTo = 0;
+    } else {
+      ptr.heuristic = true;
+      ptr.snapshot = this.snapshot(page);
     }
   }
 
@@ -809,7 +870,7 @@ export class App {
   /** Remove strokes/images under the eraser; mutates the page's arrays immutably. */
   private eraseAt(page: number, p: Point, ptr: Pointer): void {
     const m = this.pages[page];
-    const keep = m.strokes.filter((s) => !strokeHit(s, p, ERASE_RADIUS));
+    const keep = m.strokes.filter((s) => s.id === ptr.keep || !strokeHit(s, p, ERASE_RADIUS));
     const keepImages = m.images.filter((im) => !(p.x >= im.x && p.x <= im.x + im.w && p.y >= im.y && p.y <= im.y + im.h));
     if (keep.length !== m.strokes.length || keepImages.length !== m.images.length) {
       m.strokes = keep;
@@ -1306,6 +1367,7 @@ export class App {
       saving: this.saving,
       lastSaved: this.lastSaved ? this.lastSaved.getTime() : null,
       tool: this.tool,
+      barrelHeuristic: this.barrelHeuristic,
       scale: this.scale,
       dirty: this.dirty,
       currentPage: this.currentPage,

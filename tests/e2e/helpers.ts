@@ -32,6 +32,7 @@ export interface State {
   saving: boolean;
   lastSaved: number | null;
   tool: string;
+  barrelHeuristic: boolean;
   scale: number;
   dirty: boolean;
   currentPage: number;
@@ -128,7 +129,7 @@ export async function toClient(page: Page, idx: number, x: number, y: number): P
 }
 
 /** Simulate a pen stroke through page-space points on page `idx`. */
-export async function penStroke(page: Page, idx: number, pts: [number, number][], opts: Record<string, unknown> = {}): Promise<void> {
+export async function penStroke(page: Page, idx: number, pts: ([number, number] | [number, number, number])[], opts: Record<string, unknown> = {}): Promise<void> {
   await page.evaluate(
     ([i, points, o]) => {
       const v = window.__pdfink.views[i];
@@ -137,9 +138,9 @@ export async function penStroke(page: Page, idx: number, pts: [number, number][]
       if (first.clientY < 0 || first.clientY > window.innerHeight || first.clientX < 0 || first.clientX > window.innerWidth) {
         v.el.scrollIntoView({ block: "start" });
       }
-      const client = points.map(([x, y]) => {
+      const client = points.map(([x, y, p]) => {
         const c = v.toClient(x, y);
-        return [c.clientX, c.clientY] as [number, number];
+        return (p === undefined ? [c.clientX, c.clientY] : [c.clientX, c.clientY, p]) as [number, number] | [number, number, number];
       });
       window.__stylusSim.stroke(client, o);
     },
