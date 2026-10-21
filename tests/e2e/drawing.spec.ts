@@ -280,3 +280,62 @@ test.describe("erase feedback", () => {
     expect(result.afterWait).toBe(0); // erasable after the grace period
   });
 });
+
+test.describe("finger drawing", () => {
+  test("off by default where a fine pointer exists; on, a finger draws", async ({ page }) => {
+    await openApp(page);
+    expect((await state(page)).fingerDraws).toBe(false);
+    await page.locator("#finger-draws").check();
+    await expect(page.locator("#pages")).toHaveClass(/finger-draws/);
+    await penStroke(page, 0, line(100, 100, 300, 120), { pointerType: "touch" });
+    const s = await state(page);
+    expect(s.pages[0].strokes).toHaveLength(1);
+    expect(s.pages[0].strokes[0].n).toBe(21);
+  });
+
+  test("a second finger cancels the stroke and pans", async ({ page }) => {
+    await openApp(page);
+    await page.click("#btn-addpage");
+    await page.waitForFunction(() => window.__pdfink.pages.length === 2);
+    await page.locator("#finger-draws").check();
+    const before = await page.evaluate(() => document.getElementById("pages")!.scrollTop);
+    const moved = await page.evaluate(() => {
+      const v = window.__pdfink.views[0];
+      const el = v.ink;
+      const ev = (type: string, id: number, x: number, y: number, down: boolean) =>
+        el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "touch", pointerId: id, isPrimary: id === 11, clientX: x, clientY: y, pressure: down ? 0.5 : 0, buttons: down ? 1 : 0, button: type === "pointermove" ? -1 : 0, width: 20, height: 20 }));
+      const a = v.toClient(100, 100);
+      ev("pointerdown", 11, a.clientX, a.clientY, true);
+      ev("pointermove", 11, a.clientX + 40, a.clientY, true);
+      // second finger lands and drags upward by 150px
+      const b = v.toClient(300, 400);
+      ev("pointerdown", 12, b.clientX, b.clientY, true);
+      ev("pointermove", 12, b.clientX, b.clientY - 150, true);
+      ev("pointerup", 12, b.clientX, b.clientY - 150, false);
+      ev("pointerup", 11, a.clientX + 40, a.clientY, false);
+      return document.getElementById("pages")!.scrollTop;
+    });
+    expect(moved - before).toBe(150);
+    expect((await state(page)).pages[0].strokes).toHaveLength(0);
+  });
+
+  test("a pen appearing hands scrolling back to fingers", async ({ page }) => {
+    await openApp(page);
+    await page.locator("#finger-draws").check();
+    await page.evaluate(() => {
+      const c = window.__pdfink.views[0].toClient(200, 200);
+      window.__stylusSim.hover(c.clientX, c.clientY);
+    });
+    // User ticked it themselves, so it stays.
+    expect((await state(page)).fingerDraws).toBe(true);
+    await page.evaluate(() => {
+      window.__pdfink.fingerDrawsPinned = false;
+      const c = window.__pdfink.views[0].toClient(220, 200);
+      window.__stylusSim.hover(c.clientX, c.clientY);
+    });
+    expect((await state(page)).fingerDraws).toBe(false);
+    await expect(page.locator("#finger-draws")).not.toBeChecked();
+    await penStroke(page, 0, line(100, 100, 300, 120), { pointerType: "touch" });
+    expect((await state(page)).pages[0].strokes).toHaveLength(0);
+  });
+});

@@ -38,7 +38,10 @@ button.tool.active { background: var(--accent); color: #fff; border-color: var(-
   flex: 1; overflow: auto; padding: 16px 0 60vh; outline: none;
   touch-action: pan-x pan-y pinch-zoom;
   -webkit-overflow-scrolling: touch;
+  /* No iOS long-press callout or text selection on the pages. */
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
 }
+#pages.finger-draws { touch-action: none; overscroll-behavior: none; }
 #pages.pen-active { touch-action: none; }
 .page {
   position: relative; margin: 0 auto 16px; background: #fff;

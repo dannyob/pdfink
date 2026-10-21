@@ -22,6 +22,31 @@ try {
   /* storage blocked */
 }
 app.setBarrelHeuristic(barrel.checked);
+const finger = $("finger-draws") as HTMLInputElement;
+{
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem("pdfink.fingerDraws");
+  } catch {
+    /* storage blocked */
+  }
+  // Default on where there is nothing finer than a finger (phones, pen-less tablets).
+  finger.checked = stored !== null ? stored === "1" : !matchMedia("(any-pointer: fine)").matches;
+  app.fingerDrawsPinned = stored === "1";
+  app.setFingerDraws(finger.checked);
+}
+finger.onchange = () => {
+  app.setFingerDraws(finger.checked);
+  app.fingerDrawsPinned = finger.checked;
+  try {
+    localStorage.setItem("pdfink.fingerDraws", finger.checked ? "1" : "0");
+  } catch {
+    /* storage blocked */
+  }
+};
+app.onFingerDrawsChanged = (on) => {
+  finger.checked = on;
+};
 barrel.onchange = () => {
   app.setBarrelHeuristic(barrel.checked);
   try {

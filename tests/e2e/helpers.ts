@@ -33,6 +33,7 @@ export interface State {
   lastSaved: number | null;
   tool: string;
   barrelHeuristic: boolean;
+  fingerDraws: boolean;
   scale: number;
   dirty: boolean;
   currentPage: number;

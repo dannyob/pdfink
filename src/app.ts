@@ -54,6 +54,8 @@ interface Pointer {
   /** Stroke finished just before switching to erase; the eraser starts on top of it, so spare it briefly. */
   keep?: string;
   keepUntil?: number;
+  /** A finger, in finger-draws mode. */
+  touch?: boolean;
 }
 
 type FileHandle = { name: string; createWritable(): Promise<{ write(d: Uint8Array): Promise<void>; close(): Promise<void> }>; getFile(): Promise<File> };
@@ -115,6 +117,10 @@ export class App {
   promptFn: (message: string, suggestion: string) => Promise<string | null> = async (m, d) => window.prompt(m, d);
   /** Called after the notebook list on the server may have changed. */
   onNotebooksChanged: () => void = () => {};
+  /** Fingers draw instead of scrolling (phones and tablets without a pen). */
+  fingerDraws = false;
+  /** Called when the app itself turns finger drawing off because a pen appeared. */
+  onFingerDrawsChanged: (on: boolean) => void = () => {};
   lastPointer: { page: number; x: number; y: number } | null = null;
   currentPage = 0;
   private pointers = new Map<number, Pointer>();
@@ -144,7 +150,7 @@ export class App {
   private showEmpty(error?: string): void {
     const div = document.createElement("div");
     div.className = "empty";
-    div.innerHTML = `<p><b>pdfink</b></p><p>Open a PDF, start a new one, or drop a PDF here.</p><p>Pen writes. Pen eraser (or barrel button) erases. Fingers scroll.</p>`;
+    div.innerHTML = `<p><b>pdfink</b></p><p>Open a PDF, start a new one, or drop a PDF here.</p><p>Pen writes. Pen eraser (or barrel button) erases. Fingers scroll, or draw when <i>finger draws</i> is on.</p>`;
     if (error) {
       const p = document.createElement("p");
       p.className = "error";
@@ -535,6 +541,22 @@ export class App {
     this.barrelHeuristic = on;
   }
 
+  setFingerDraws(on: boolean): void {
+    this.fingerDraws = on;
+    this.container.classList.toggle("finger-draws", on);
+  }
+
+  /** A pen is present: hand scrolling back to fingers unless the user insisted. */
+  private penSeen(): void {
+    if (this.fingerDraws && !this.fingerDrawsPinned) {
+      this.setFingerDraws(false);
+      this.onFingerDrawsChanged(false);
+    }
+  }
+
+  /** Set when the user ticked "finger draws" themselves, so a pen doesn't undo it. */
+  fingerDrawsPinned = false;
+
   setTool(tool: Tool): void {
     this.tool = tool;
     for (const t of ["pen", "eraser", "select"] as Tool[]) {
@@ -647,10 +669,10 @@ export class App {
 
   /** Decide what a pointer wants to do, or null to let the browser have it. */
   private classify(e: PointerEvent): Pointer["mode"] | null {
-    if (e.pointerType === "touch") return null;
+    if (e.pointerType === "touch" && !this.fingerDraws) return null;
     if (e.pointerType === "pen") {
       if (wantsErase(e, this.barrelHeuristic)) return "erase";
-    } else if (e.button !== 0 && e.type === "pointerdown") {
+    } else if (e.pointerType === "mouse" && e.button !== 0 && e.type === "pointerdown") {
       return null;
     }
     if (this.tool === "eraser") return "erase";
@@ -665,12 +687,15 @@ export class App {
     c.addEventListener("pointerup", (e) => this.onPointerUp(e));
     c.addEventListener("pointercancel", (e) => this.onPointerUp(e, true));
     c.addEventListener("contextmenu", (e) => {
-      if (c.classList.contains("pen-active") || this.pointers.size) e.preventDefault();
+      if (c.classList.contains("pen-active") || this.pointers.size || this.fingerDraws) e.preventDefault();
     });
     // Pen proximity → stop the browser from panning with the pen; give
     // panning back a moment after the pen goes out of range.
     c.addEventListener("pointerover", (e) => {
-      if (e.pointerType === "pen") this.enablePenMode();
+      if (e.pointerType === "pen") {
+        this.enablePenMode();
+        this.penSeen();
+      }
     });
     c.addEventListener("pointerleave", (e) => {
       if (e.pointerType === "pen") {
@@ -681,15 +706,31 @@ export class App {
   }
 
   private onPointerDown(e: PointerEvent): void {
-    if (e.pointerType === "pen") this.enablePenMode();
-    else if (e.pointerType === "touch") {
-      // touch-action was sampled before this event: if the pen had turned it
-      // off, the browser won't pan for this finger, so pan by hand instead.
-      if (this.container.classList.contains("pen-active") && !this.pointers.size && !this.touchScroll) {
-        this.touchScroll = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    if (e.pointerType === "pen") {
+      this.enablePenMode();
+      this.penSeen();
+    } else if (e.pointerType === "touch") {
+      if (this.fingerDraws) {
+        // One finger draws. A second finger cancels that stroke and pans instead.
+        const drawing = [...this.pointers.values()].find((p) => p.touch);
+        if (drawing) {
+          this.pointers.delete(drawing.pointerId);
+          this.paintToolButtons();
+          if (drawing.mode === "erase" && drawing.snapshot) this.apply(drawing.page, drawing.snapshot);
+          else this.redraw(drawing.page);
+          if (!this.touchScroll) this.touchScroll = { id: e.pointerId, x: e.clientX, y: e.clientY };
+          return;
+        }
+        if (this.touchScroll) return;
+      } else {
+        // touch-action was sampled before this event: if the pen had turned it
+        // off, the browser won't pan for this finger, so pan by hand instead.
+        if (this.container.classList.contains("pen-active") && !this.pointers.size && !this.touchScroll) {
+          this.touchScroll = { id: e.pointerId, x: e.clientX, y: e.clientY };
+        }
+        this.disablePenMode();
+        return;
       }
-      this.disablePenMode();
-      return;
     }
     const view = this.viewFromEvent(e);
     if (!view) return;
@@ -700,7 +741,7 @@ export class App {
     const p = view.toPage(e.clientX, e.clientY);
     const page = view.index;
     this.lastPointer = { page, x: p.x, y: p.y };
-    const ptr: Pointer = { pointerId: e.pointerId, page, mode };
+    const ptr: Pointer = { pointerId: e.pointerId, page, mode, touch: e.pointerType === "touch" };
     try {
       view.ink.setPointerCapture(e.pointerId);
     } catch {
@@ -755,8 +796,9 @@ export class App {
         this.container.scrollTop -= e.clientY - ts.y;
         ts.x = e.clientX;
         ts.y = e.clientY;
+        return;
       }
-      return;
+      if (!this.pointers.has(e.pointerId)) return;
     }
     if (e.pointerType === "pen") {
       this.enablePenMode();
@@ -1394,6 +1436,7 @@ export class App {
       lastSaved: this.lastSaved ? this.lastSaved.getTime() : null,
       tool: this.tool,
       barrelHeuristic: this.barrelHeuristic,
+      fingerDraws: this.fingerDraws,
       scale: this.scale,
       dirty: this.dirty,
       currentPage: this.currentPage,
