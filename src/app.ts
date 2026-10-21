@@ -51,8 +51,9 @@ interface Pointer {
   heuristic?: boolean;
   /** Down with contact bit but no pressure: wait for a move before erasing anything. */
   pending?: boolean;
-  /** Stroke finished just before switching to erase; the eraser starts on top of it, so spare it. */
+  /** Stroke finished just before switching to erase; the eraser starts on top of it, so spare it briefly. */
   keep?: string;
+  keepUntil?: number;
 }
 
 type FileHandle = { name: string; createWritable(): Promise<{ write(d: Uint8Array): Promise<void>; close(): Promise<void> }>; getFile(): Promise<File> };
@@ -64,6 +65,8 @@ declare global {
 }
 
 const ERASE_RADIUS = 5; // page points around the eraser tip
+/** How long the segment written just before a barrel press is spared from the eraser. */
+const KEEP_MS = 250;
 
 /** Pen pressure for a pointer event; mice and fingers draw at nominal width. */
 function pressureOf(e: PointerEvent): number {
@@ -535,10 +538,25 @@ export class App {
   setTool(tool: Tool): void {
     this.tool = tool;
     for (const t of ["pen", "eraser", "select"] as Tool[]) {
-      document.getElementById(`tool-${t}`)?.classList.toggle("active", t === tool);
       this.container.classList.toggle(`tool-${t}`, t === tool);
     }
+    this.paintToolButtons();
     if (tool !== "select") this.clearSelection();
+  }
+
+  /** True while any pen gesture is erasing (eraser end, barrel button, or heuristic). */
+  get erasing(): boolean {
+    if (this.hoverErase) return true;
+    for (const p of this.pointers.values()) if (p.mode === "erase" && !p.pending) return true;
+    return false;
+  }
+
+  /** Highlight the tool in effect: the Eraser button lights up while erasing with the pen. */
+  private paintToolButtons(): void {
+    const shown: Tool = this.erasing ? "eraser" : this.tool;
+    for (const t of ["pen", "eraser", "select"] as Tool[]) {
+      document.getElementById(`tool-${t}`)?.classList.toggle("active", t === shown);
+    }
   }
 
   private selectionFor(page: number): SelectionView | null {
@@ -715,6 +733,7 @@ export class App {
       this.redraw(page);
     }
     this.pointers.set(e.pointerId, ptr);
+    this.paintToolButtons();
   }
 
   /** One undo step per barrel-button sweep, keyed by pointer. */
@@ -725,6 +744,7 @@ export class App {
     if (!h) return;
     this.hoverErase = null;
     if (h.erased && h.snapshot) this.commit(h.page, h.snapshot, this.snapshot(h.page));
+    this.paintToolButtons();
   }
 
   private onPointerMove(e: PointerEvent): void {
@@ -748,6 +768,7 @@ export class App {
           if (this.hoverErase && this.hoverErase.page !== view.index) this.endHoverErase();
           if (!this.hoverErase) {
             this.hoverErase = { pointerId: e.pointerId, page: view.index, mode: "erase", snapshot: this.snapshot(view.index) };
+            this.paintToolButtons();
           }
           const coalesced = e.getCoalescedEvents?.();
           for (const ev of coalesced && coalesced.length ? coalesced : [e]) {
@@ -778,6 +799,7 @@ export class App {
             continue; // the new stroke already starts at p
           } else if (ptr.pending && ev.pressure === 0) {
             ptr.pending = false; // still no pressure: it really is a button hover
+            this.paintToolButtons();
           }
         }
         if (ptr.pending) continue;
@@ -805,6 +827,7 @@ export class App {
         const before = this.snapshot(page);
         this.commit(page, before, { strokes: [...before.strokes, s], images: before.images });
         ptr.keep = s.id;
+        ptr.keepUntil = performance.now() + KEEP_MS;
       } else {
         this.redraw(page);
       }
@@ -818,6 +841,7 @@ export class App {
     }
     ptr.mode = mode;
     ptr.pending = false;
+    this.paintToolButtons();
     if (mode === "draw") {
       ptr.heuristic = false;
       ptr.stroke = { id: newId(), points: [{ x: p.x, y: p.y, p: DEFAULT_PRESSURE }], color: this.penColor, width: this.penWidth, opacity: 1 };
@@ -834,6 +858,7 @@ export class App {
     const ptr = this.pointers.get(e.pointerId);
     if (!ptr) return;
     this.pointers.delete(e.pointerId);
+    this.paintToolButtons();
     const page = ptr.page;
     if (ptr.mode === "draw" && ptr.stroke) {
       const s = ptr.stroke;
@@ -870,6 +895,7 @@ export class App {
   /** Remove strokes/images under the eraser; mutates the page's arrays immutably. */
   private eraseAt(page: number, p: Point, ptr: Pointer): void {
     const m = this.pages[page];
+    if (ptr.keep && performance.now() > (ptr.keepUntil ?? 0)) ptr.keep = undefined;
     const keep = m.strokes.filter((s) => s.id === ptr.keep || !strokeHit(s, p, ERASE_RADIUS));
     const keepImages = m.images.filter((im) => !(p.x >= im.x && p.x <= im.x + im.w && p.y >= im.y && p.y <= im.y + im.h));
     if (keep.length !== m.strokes.length || keepImages.length !== m.images.length) {

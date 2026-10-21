@@ -1,6 +1,6 @@
 import { test } from "@playwright/test";
 import { PDFArray, PDFName, PDFNumber } from "pdf-lib";
-import { expect, exportedPdf, inkAnnots, inkPathCount, inkPixel, line, openApp, penStroke, state } from "./helpers";
+import { expect, exportedPdf, inkAnnots, inkPathCount, inkPixel, line, openApp, penStroke, state, toClient } from "./helpers";
 
 test.describe("pen drawing", () => {
   test("new document shows one Letter page", async ({ page }) => {
@@ -214,5 +214,69 @@ test.describe("barrel-button heuristic", () => {
     await page.reload();
     await page.waitForFunction(() => window.__pdfink && window.__pdfink.views.length > 0);
     await expect(page.locator("#barrel-erase")).not.toBeChecked();
+  });
+});
+
+test.describe("erase feedback", () => {
+  test("the Eraser button lights up during a pen erase and Pen comes back after", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 100, 300, 100));
+    const [cx, cy] = await toClient(page, 0, 200, 150);
+    const fire = (type: string, o: Record<string, unknown>) =>
+      page.evaluate(
+        ([t, x, y, init]) => {
+          const el = document.elementFromPoint(x, y)!;
+          el.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerType: "pen", pointerId: 9, isPrimary: true, clientX: x, clientY: y, ...init }));
+        },
+        [type, cx, cy, o] as const,
+      );
+    await fire("pointerdown", { button: 5, buttons: 32, pressure: 0.5 });
+    await expect(page.locator("#tool-eraser")).toHaveClass(/active/);
+    await expect(page.locator("#tool-pen")).not.toHaveClass(/active/);
+    await fire("pointerup", { button: 5, buttons: 0, pressure: 0 });
+    await expect(page.locator("#tool-pen")).toHaveClass(/active/);
+    await expect(page.locator("#tool-eraser")).not.toHaveClass(/active/);
+    expect((await state(page)).tool).toBe("pen");
+  });
+
+  test("hover erase lights the Eraser button until the button is released", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 100, 300, 100));
+    await page.evaluate(() => {
+      const c = window.__pdfink.views[0].toClient(200, 150);
+      window.__stylusSim.barrelHover([[c.clientX, c.clientY]]);
+    });
+    await expect(page.locator("#tool-eraser")).toHaveClass(/active/);
+    await page.evaluate(() => {
+      const c = window.__pdfink.views[0].toClient(200, 150);
+      window.__stylusSim.hover(c.clientX, c.clientY);
+    });
+    await expect(page.locator("#tool-pen")).toHaveClass(/active/);
+  });
+
+  test("the segment written before a barrel press is spared only briefly", async ({ page }) => {
+    await openApp(page);
+    // One gesture, driven by hand so we can wait mid-way: write left to right,
+    // then press the barrel (pressure 1) and sweep back over what was just written.
+    const result = await page.evaluate(async () => {
+      const v = window.__pdfink.views[0];
+      const el = v.ink;
+      const ev = (type: string, x: number, y: number, pressure: number, buttons = 1) => {
+        const c = v.toClient(x, y);
+        el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "pen", pointerId: 4, isPrimary: true, clientX: c.clientX, clientY: c.clientY, pressure, buttons, button: type === "pointermove" ? -1 : 0 }));
+      };
+      ev("pointerdown", 100, 200, 0.6);
+      for (let x = 110; x <= 300; x += 10) ev("pointermove", x, 200, 0.6);
+      // barrel pressed: sweep back immediately over the fresh segment
+      for (let x = 300; x >= 200; x -= 10) ev("pointermove", x, 200, 1);
+      const afterImmediate = window.__pdfink.pages[0].strokes.length;
+      await new Promise((r) => setTimeout(r, 400));
+      for (let x = 200; x >= 100; x -= 10) ev("pointermove", x, 200, 1);
+      const afterWait = window.__pdfink.pages[0].strokes.length;
+      ev("pointerup", 100, 200, 0, 0);
+      return { afterImmediate, afterWait };
+    });
+    expect(result.afterImmediate).toBe(1); // spared while fresh
+    expect(result.afterWait).toBe(0); // erasable after the grace period
   });
 });
