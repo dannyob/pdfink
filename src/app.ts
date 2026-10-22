@@ -112,6 +112,10 @@ export class App {
   private autosaveTimer: number | null = null;
   /** Bumped on every change so a save knows whether edits arrived while it ran. */
   private revision = 0;
+  /** Bumped when the base PDF itself changes in the browser (a page added); the
+   *  server only has our base once a save has carried it. */
+  private baseRevision = 0;
+  private baseSaved = 0;
   /** Hooks for confirmations and names, replaceable in tests. */
   confirmFn: (message: string) => Promise<boolean> = async (m) => window.confirm(m);
   promptFn: (message: string, suggestion: string) => Promise<string | null> = async (m, d) => window.prompt(m, d);
@@ -264,6 +268,7 @@ export class App {
     }
     if (!(await this.loadParsed(loaded.baseBytes, loaded.pages, name))) return false;
     this.source = { kind: "server", name, mtime: loaded.mtime };
+    this.baseSaved = this.baseRevision;
     this.setStatus();
     return true;
   }
@@ -323,6 +328,7 @@ export class App {
       }
       this.fileName = name;
       this.source = { kind: "server", name, mtime: info.mtime };
+      this.baseSaved = this.baseRevision; // the upload carried our base
       this.lastSaved = new Date();
       if (rev === this.revision) this.dirty = false;
       else this.scheduleAutosave();
@@ -350,10 +356,14 @@ export class App {
     this.setStatus(`Saving ${name}…`);
     try {
       // Only the ink travels; the server rebuilds the PDF from its ink-free
-      // base. On a forced overwrite our own base goes too, so the result is
-      // exactly this tab's version.
-      const info = await saveNotebookParsed(name, this.pages, force ? null : this.source.mtime, force ? this.baseBytes : null);
+      // base. Our own base goes too when it differs from the server's (a page
+      // was added here) or on a forced overwrite, so the result is exactly
+      // this tab's version.
+      const baseRev = this.baseRevision;
+      const sendBase = force || baseRev !== this.baseSaved;
+      const info = await saveNotebookParsed(name, this.pages, force ? null : this.source.mtime, sendBase ? this.baseBytes : null);
       this.source = { kind: "server", name, mtime: info.mtime };
+      if (sendBase) this.baseSaved = baseRev;
       this.lastSaved = new Date();
       this.saving = false;
       if (rev === this.revision) this.dirty = false;
@@ -413,6 +423,7 @@ export class App {
       const last = this.pages[this.pages.length - 1];
       const pages = [...this.pages, { width: last?.width ?? 612, height: last?.height ?? 792, strokes: [], images: [] }];
       await this.setDocument(bytes, pages);
+      this.baseRevision += 1;
       this.markDirty();
       this.scrollToPage(pages.length - 1);
       this.setStatus();

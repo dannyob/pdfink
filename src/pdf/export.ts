@@ -143,7 +143,12 @@ async function drawImageItem(doc: PDFDocument, pageIndex: number, geom: PageGeom
 export async function exportPdf(baseBytes: Uint8Array, pages: PageModel[]): Promise<Uint8Array> {
   const doc = await PDFDocument.load(baseBytes, { ignoreEncryption: true, updateMetadata: false });
   const count = doc.getPageCount();
-  for (let i = 0; i < pages.length && i < count; i++) {
+  if (pages.length > count) {
+    // Never drop ink silently: the caller's base is missing pages (for
+    // example a page added in the browser that the server never received).
+    throw new Error(`ink for ${pages.length} pages but the PDF has ${count}`);
+  }
+  for (let i = 0; i < pages.length; i++) {
     const geom = pageGeom(doc.getPage(i));
     for (const im of pages[i].images) await drawImageItem(doc, i, geom, im);
     for (const g of groupStrokes(pages[i].strokes)) addInkAnnotation(doc, i, geom, g);

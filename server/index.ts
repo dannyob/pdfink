@@ -362,7 +362,14 @@ async function handleApi(opts: ServerOptions, req: http.IncomingMessage, res: ht
     else if (hit && hit.mtime === mtime && hit.size === existing.size) baseBytes = hit.baseBytes;
     else baseBytes = (await importPdf(new Uint8Array(await fsp.readFile(file)))).baseBytes;
     const t0 = Date.now();
-    const out = await exportPdf(baseBytes, pages);
+    let out: Uint8Array;
+    try {
+      out = await exportPdf(baseBytes, pages);
+    } catch (err) {
+      // e.g. more pages of ink than the base has: the client must send its base.
+      send(res, 422, { error: (err as Error).message });
+      return;
+    }
     await atomicWrite(file, out);
     openCache.delete(name);
     const st = await fsp.stat(file);

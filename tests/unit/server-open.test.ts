@@ -7,7 +7,7 @@ import { PDFDocument } from "pdf-lib";
 import { createServer, encodeOpened } from "../../server/index";
 import { decodeOpened, encodeSaveEnvelope } from "../../src/api";
 import { PDFDict, PDFName } from "pdf-lib";
-import { createBlankPdf, exportPdf } from "../../src/pdf/export";
+import { createBlankPdf, exportPdf, appendBlankPage } from "../../src/pdf/export";
 import type { PageModel } from "../../src/model";
 
 let dir: string;
@@ -103,5 +103,29 @@ describe("server-side open", () => {
     const again = decodeOpened(await res.arrayBuffer());
     expect(again.pages[0].strokes).toHaveLength(0);
     expect(again.pages[1].strokes[0].points[1].p).toBe(1);
+  });
+
+  it("PUT /save refuses more pages of ink than the base has unless the base comes too", async () => {
+    fs.writeFileSync(path.join(dir, "grow.pdf"), await createBlankPdf(1));
+    let res = await fetch(`${base}/api/notebooks/grow.pdf/open`);
+    const mtime = Number(res.headers.get("x-mtime"));
+    const opened = decodeOpened(await res.arrayBuffer());
+    // The client added a page and wrote on it.
+    const pages = [...opened.pages, page()];
+    pages[1].strokes.push({ id: "p2", color: "#000000", width: 1, opacity: 1, points: [{ x: 10, y: 10, p: 0.6 }, { x: 50, y: 10, p: 0.6 }] });
+    const grownBase = await appendBlankPage(opened.baseBytes);
+
+    // Without its base the server cannot build page 2: it must say so, not drop the ink.
+    res = await fetch(`${base}/api/notebooks/grow.pdf/save`, { method: "PUT", headers: { "X-If-Mtime": String(mtime) }, body: encodeSaveEnvelope(pages) as BodyInit });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { error: string }).error).toMatch(/2 pages/);
+    expect((await PDFDocument.load(fs.readFileSync(path.join(dir, "grow.pdf")), { updateMetadata: false })).getPageCount()).toBe(1);
+
+    // With the base it works and the file grows.
+    res = await fetch(`${base}/api/notebooks/grow.pdf/save`, { method: "PUT", headers: { "X-If-Mtime": String(mtime) }, body: encodeSaveEnvelope(pages, grownBase) as BodyInit });
+    expect(res.status).toBe(200);
+    const doc = await PDFDocument.load(fs.readFileSync(path.join(dir, "grow.pdf")), { updateMetadata: false });
+    expect(doc.getPageCount()).toBe(2);
+    expect(doc.getPage(1).node.Annots()!.size()).toBe(1);
   });
 });

@@ -26,6 +26,12 @@ describe("geom", () => {
 });
 
 describe("pdf export/import", () => {
+  it("refuses to export more pages of ink than the base has", async () => {
+    const base = await createBlankPdf(1);
+    const pages = [{ width: 612, height: 792, strokes: [], images: [] }, { width: 612, height: 792, strokes: [], images: [] }];
+    await expect(exportPdf(base, pages)).rejects.toThrow(/2 pages but the PDF has 1/);
+  });
+
   it("creates a blank Letter PDF and appends pages", async () => {
     const bytes = await createBlankPdf();
     const doc = await PDFDocument.load(bytes);

@@ -146,3 +146,37 @@ test.describe("notebooks folder", () => {
     expect(inkAnnots(await readNotebook(a), 0)).toHaveLength(1);
   });
 });
+
+test.describe("pages added in the browser", () => {
+  test("a page added to a server notebook survives save and reopen, with its ink", async ({ page }) => {
+    const name = unique("grow");
+    await putNotebook(name, await createBlankPdf(1));
+    await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
+    expect((await state(page)).pages).toHaveLength(1);
+
+    await page.click("#btn-addpage");
+    await page.waitForFunction(() => window.__pdfink.pages.length === 2 && window.__pdfink.views.length === 2);
+    await penStroke(page, 1, line(100, 100, 300, 100));
+    await page.click("#btn-save");
+    await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
+    await expect(page.locator("#status")).toContainText("saved");
+
+    let doc = await readNotebook(name);
+    expect(doc.getPageCount()).toBe(2);
+    expect(inkPathCount(inkAnnots(doc, 1)[0])).toBe(1);
+
+    // A later save without further page changes rebuilds from the server's copy and keeps both pages.
+    await penStroke(page, 0, line(100, 200, 300, 200));
+    await page.click("#btn-save");
+    await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
+    doc = await readNotebook(name);
+    expect(doc.getPageCount()).toBe(2);
+    expect(inkPathCount(inkAnnots(doc, 0)[0])).toBe(1);
+    expect(inkPathCount(inkAnnots(doc, 1)[0])).toBe(1);
+
+    await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
+    const s = await state(page);
+    expect(s.pages).toHaveLength(2);
+    expect(s.pages[1].strokes).toHaveLength(1);
+  });
+});
