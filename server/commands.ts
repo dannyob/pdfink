@@ -24,6 +24,11 @@
  *     ROTATE       the page's /Rotate (0, 90, 180, 270)
  *
  * The file is re-read whenever the menu asks for it, so edits apply at once.
+ *
+ * Commands run headless. On macOS they must stay out of Desktop, Documents
+ * and Downloads (and symlinks into them): the system gates those behind a
+ * consent dialog that a child of a launchd service cannot show, so open()
+ * blocks until the timeout kills the command.
  */
 import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";

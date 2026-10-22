@@ -9,6 +9,10 @@
 #   $PAGE_WIDTH $PAGE_HEIGHT $ROTATE
 # Flags: reload (reopen the notebook afterwards), confirm (ask first),
 # timeout (seconds, default 60).
+#
+# Commands run with no screen. On macOS, keep them out of Desktop, Documents
+# and Downloads (and symlinks into them): the system wants a consent dialog
+# for those, nobody can click it, and the command hangs until its timeout.
 
 [Draw a star here]
 command = uv run --script tools/star.py "$PDF" "$PAGE" "$X" "$Y"

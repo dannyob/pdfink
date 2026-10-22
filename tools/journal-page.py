@@ -18,7 +18,10 @@ works from a shell too. Steps:
    entries and you want one). Give it the entry's first page: it keeps
    reading onto following pages until a new dated entry starts, the topic
    plainly changes, the words "Journal ends" appear, or --max-pages is hit.
-2. Save the markdown under ~/tmp (or --out DIR).
+2. Save the markdown under ~/.cache/pdfink/journal (or --out DIR). Not under
+   Desktop, Documents or Downloads: macOS gates those behind a consent
+   dialog, and a process the pdfink server spawned has no screen to show it
+   on, so its open() just hangs. (~/tmp pointing at Downloads cost a day.)
 3. Run `claude -p` in the life directory to merge it into that day's journal
    entry. `--dry-run` stops after step 2 and prints the markdown.
 
@@ -177,7 +180,12 @@ def transcribe(pdf: Path, page: int, model_id: str, date: str | None, batch: int
 
 If the first page has writing but no legible date, use the heading `## UNDATED`. If there is no journal writing on the first page at all, output exactly `NO ENTRY`."""
     log(f"reading pages {page}-{last_attached}…")
-    text = ask(model, prompt, pages_pdf(pdf, page, last_attached))
+    first = pages_pdf(pdf, page, last_attached)
+    text = ask(model, prompt, first)
+    if text != "NO ENTRY" and not DATE_RE.search(text):
+        # Vision models occasionally answer with noise; one more go before giving up.
+        log("answer had no dated heading; asking again…")
+        text = ask(model, prompt, first)
     if text == "NO ENTRY" or not text:
         return text, page
     text, last = pages_used(text, page)
@@ -206,13 +214,18 @@ Continue transcribing that same entry from the first attached page. {STOP_RULES}
 
 
 def main() -> int:
+    if os.environ.get("PDFINK_JOURNAL_DEBUG"):
+        # Where is it stuck? Dump all thread stacks to stderr every 30 s.
+        import faulthandler
+
+        faulthandler.dump_traceback_later(30, repeat=True)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pdf", type=Path)
     ap.add_argument("page", type=int, help="1-based page number")
     ap.add_argument("--date", help="YYYY-MM-DD: the entry to pick, and the date to file it under")
     ap.add_argument("--model", default=os.environ.get("PDFINK_JOURNAL_MODEL", DEFAULT_MODEL))
     ap.add_argument("--life-dir", help="life system directory (default: `life path`)")
-    ap.add_argument("--out", type=Path, help="where to keep the markdown (default ~/tmp, else a temp dir)")
+    ap.add_argument("--out", type=Path, help="where to keep the markdown (default ~/.cache/pdfink/journal)")
     ap.add_argument("--dry-run", action="store_true", help="transcribe and print; do not touch the journal")
     ap.add_argument("--claude", default=os.environ.get("PDFINK_JOURNAL_CLAUDE", shutil.which("claude") or "/opt/homebrew/bin/claude"))
     ap.add_argument("--timeout", type=int, default=900, help="seconds allowed for claude")
@@ -260,7 +273,7 @@ def main() -> int:
             return 1
     dates = list(dict.fromkeys(dates))
 
-    out_dir = a.out or (Path.home() / "tmp" if (Path.home() / "tmp").is_dir() else Path(tempfile.gettempdir()))
+    out_dir = a.out or Path.home() / ".cache" / "pdfink" / "journal"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"journal-{dates[0]}-{pdf.stem}-p{a.page}.md"
     out.write_text(text + "\n", encoding="utf8")
