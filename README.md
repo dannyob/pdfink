@@ -111,7 +111,7 @@ reload = true
 
 The notebook is saved first, then the command runs under `sh -c` in the config file's folder with the notebook and the pen position in its environment: `$PDF` (path), `$NAME`, `$NOTEBOOKS`, `$PAGE` (1-based), `$PAGES`, `$X` and `$Y` in PDF points with the origin at the bottom left (rotation accounted for), `$DX`/`$DY` in top-left display points, `$PAGE_WIDTH`, `$PAGE_HEIGHT` and `$ROTATE`. Flags: `reload` reopens the notebook afterwards at the same zoom and scroll, `confirm` asks first, `timeout` is in seconds (default 60). The file is re-read every time the menu opens. The first line of the command's output shows in the status bar.
 
-`tools/star.py` is the demo: it stamps a small star at the pen tip as an `/Ink` annotation, so after the reload pdfink treats it as a stroke you can select or erase. It needs only [uv](https://docs.astral.sh/uv/), which fetches pypdf from the script's inline metadata. `pdfink-commands.conf.example` has more.
+`tools/star.py` is the demo: it stamps a small star at the pen tip as an `/Ink` annotation, so after the reload pdfink treats it as a stroke you can select or erase. It needs only [uv](https://docs.astral.sh/uv/), which fetches pypdf from the script's inline metadata. `tools/journal-page.py` is a second, longer one: it extracts the page, has a vision model (through [llm](https://llm.datasette.io/)) transcribe the entry as markdown under a `## YYYY-MM-DD` heading read from the page itself, and then runs `claude -p` in a [life](https://github.com/dannyob/life) directory to file it in that day's journal. `--dry-run` prints the markdown instead. `pdfink-commands.conf.example` has more.
 
 ## Options
 

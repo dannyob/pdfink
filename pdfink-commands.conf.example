@@ -14,6 +14,13 @@
 command = uv run --script tools/star.py "$PDF" "$PAGE" "$X" "$Y"
 reload = true
 
+[Journal this page]
+# Transcribes the page with a vision model (simonw's llm) and files it in a
+# journal; see tools/journal-page.py. Slow, so it asks first and gets time.
+command = uv run --script tools/journal-page.py "$PDF" "$PAGE"
+confirm = true
+timeout = 900
+
 [Copy page number to a note]
 command = printf 'page %s of %s at %s,%s\n' "$PAGE" "$PAGES" "$X" "$Y" >> "$NOTEBOOKS/notes.txt"
 
