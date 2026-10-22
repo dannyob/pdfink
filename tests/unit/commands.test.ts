@@ -42,5 +42,10 @@ command = echo again
     const slow = await runCommand({ id: "s", label: "s", command: "sleep 5", reload: false, confirm: false, timeout: 0.3 }, ctx, "/tmp");
     expect(slow.timedOut).toBe(true);
     expect(slow.status).not.toBe(0);
+    // A grandchild holding the pipes must not keep the request hanging.
+    const t0 = Date.now();
+    const tree = await runCommand({ id: "t", label: "t", command: "sh -c 'sleep 30' & wait", reload: false, confirm: false, timeout: 0.3 }, ctx, "/tmp");
+    expect(tree.timedOut).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(6000);
   });
 });

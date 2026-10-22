@@ -24,6 +24,8 @@ works from a shell too. Steps:
 
 Keys come from `llm keys set ...` as usual (the shared llm user directory).
 Model: --model, else $PDFINK_JOURNAL_MODEL, else openrouter/google/gemini-3.7-flash.
+Each model call is given $PDFINK_JOURNAL_LLM_TIMEOUT seconds (default 240) and
+one retry; the whole run should stay inside the pen menu's timeout.
 """
 from __future__ import annotations
 
@@ -36,6 +38,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 DEFAULT_MODEL = "openrouter/google/gemini-3.7-flash"
@@ -94,14 +97,40 @@ def year_hint(pdf: Path) -> int:
     return dt.datetime.fromtimestamp(pdf.stat().st_mtime).year
 
 
-def ask(model, prompt: str, pdf_bytes: bytes) -> str:
+LLM_TIMEOUT = int(os.environ.get("PDFINK_JOURNAL_LLM_TIMEOUT", "240"))
+
+
+def ask(model, prompt: str, pdf_bytes: bytes, attempts: int = 2) -> str:
+    """One model call with a hard timeout. The HTTP client underneath can sit
+    on a half-closed connection for ten minutes per retry, so the call runs
+    in a daemon thread we are free to abandon and try again."""
     import llm
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         f.write(pdf_bytes)
         tmp = f.name
     try:
-        text = model.prompt(prompt, attachments=[llm.Attachment(path=tmp)], stream=False).text()
+        text = ""
+        for attempt in range(1, attempts + 1):
+            box: dict[str, object] = {}
+
+            def call() -> None:
+                try:
+                    box["text"] = model.prompt(prompt, attachments=[llm.Attachment(path=tmp)], stream=False).text()
+                except Exception as e:  # noqa: BLE001 - reported below
+                    box["error"] = e
+
+            t = threading.Thread(target=call, daemon=True)
+            t.start()
+            t.join(LLM_TIMEOUT)
+            if "text" in box:
+                text = str(box["text"])
+                break
+            why = f"{box['error']}" if "error" in box else f"no answer after {LLM_TIMEOUT}s"
+            if attempt < attempts:
+                log(f"model call failed ({why}); trying again…")
+            else:
+                raise SystemExit(f"model call failed: {why}")
     finally:
         os.unlink(tmp)
     text = text.strip()

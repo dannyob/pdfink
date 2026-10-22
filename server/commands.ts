@@ -147,25 +147,38 @@ export function runCommand(spec: CommandSpec, ctx: CommandContext, cwd: string):
     ROTATE: String(ctx.rotate),
   };
   return new Promise((resolve) => {
-    const child = spawn("/bin/sh", ["-c", spec.command], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    // Own process group, so a timeout can kill the whole tree: killing just
+    // `sh` would leave its child running and holding our pipes open.
+    const child = spawn("/bin/sh", ["-c", spec.command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let done = false;
+    const finish = (r: CommandResult) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
     const take = (cur: string, chunk: Buffer) => (cur.length < OUTPUT_CAP ? cur + chunk.toString("utf8") : cur);
     child.stdout.on("data", (c: Buffer) => (stdout = take(stdout, c)));
     child.stderr.on("data", (c: Buffer) => (stderr = take(stderr, c)));
+    const killTree = (sig: NodeJS.Signals) => {
+      try {
+        if (child.pid) process.kill(-child.pid, sig);
+      } catch {
+        child.kill(sig);
+      }
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killTree("SIGTERM");
+      setTimeout(() => killTree("SIGKILL"), 2000);
+      // Even if something survives and keeps a pipe open, answer the client.
+      setTimeout(() => finish({ status: null, signal: "SIGKILL", stdout, stderr: stderr + `\n(killed after ${spec.timeout}s)`, timedOut }), 4000);
     }, spec.timeout * 1000);
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({ status: null, signal: null, stdout, stderr: stderr + err.message, timedOut });
-    });
-    child.on("close", (status, signal) => {
-      clearTimeout(timer);
-      resolve({ status, signal, stdout, stderr, timedOut });
-    });
+    child.on("error", (err) => finish({ status: null, signal: null, stdout, stderr: stderr + err.message, timedOut }));
+    child.on("close", (status, signal) => finish({ status, signal, stdout, stderr, timedOut }));
   });
 }
 
