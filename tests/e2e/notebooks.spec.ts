@@ -2,7 +2,7 @@ import { test } from "@playwright/test";
 import fs from "node:fs";
 import { PDFDocument } from "pdf-lib";
 import { createBlankPdf, exportPdf } from "../../src/pdf/export";
-import { expect, fakeClipboard, inkAnnots, inkPathCount, line, notebookFixture, openApp, penStroke, state, waitReady } from "./helpers";
+import { expect, fakeClipboard, inkAnnots, inkPathCount, line, notebookFixture, openApp, penStroke, state, toClient, waitReady } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -178,5 +178,63 @@ test.describe("pages added in the browser", () => {
     const s = await state(page);
     expect(s.pages).toHaveLength(2);
     expect(s.pages[1].strokes).toHaveLength(1);
+  });
+});
+
+test.describe("pen-menu commands", () => {
+  test("commands from the file appear in the menu and run with the pen's point, after saving", async ({ page }) => {
+    const name = unique("cmd");
+    await putNotebook(name, await createBlankPdf(2));
+    fs.writeFileSync(`${DIR}/two-pages.pdf`, await createBlankPdf(2));
+    fs.rmSync(`${DIR}/where.txt`, { force: true });
+    fs.rmSync(`${DIR}/snapshot.pdf`, { force: true });
+    await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
+    await page.waitForFunction(() => window.__pdfink.commands.length === 3);
+
+    // Draw, then open the menu with a right-click on page 2 at page point (100, 100), unsaved.
+    await penStroke(page, 0, line(100, 100, 300, 100));
+    await page.evaluate(() => window.__pdfink.views[1].el.scrollIntoView({ block: "start" }));
+    const [cx, cy] = await toClient(page, 1, 100, 100);
+    await page.mouse.click(cx, cy, { button: "right" });
+    await expect(page.locator("#ctx-menu button", { hasText: "Where am I" })).toBeVisible();
+    await page.locator("#ctx-menu button", { hasText: "Where am I" }).click();
+    await expect(page.locator("#status")).toContainText("Where am I done");
+    const [whereName, whereP, whereX, whereY] = fs.readFileSync(`${DIR}/where.txt`, "utf8").split(" ");
+    expect(whereName).toBe(name);
+    expect(whereP).toBe("2");
+    expect(Number(whereX)).toBeCloseTo(100, 0); // the click lands on whole pixels
+    expect(Number(whereY)).toBeCloseTo(692, 0);
+
+    // Snapshot proves the notebook was saved before the command ran.
+    await page.mouse.click(cx, cy, { button: "right" });
+    await page.locator("#ctx-menu button", { hasText: "Snapshot the file" }).click();
+    await expect(page.locator("#status")).toContainText("Snapshot the file done");
+    const snap = await PDFDocument.load(fs.readFileSync(`${DIR}/snapshot.pdf`), { updateMetadata: false });
+    expect(inkPathCount(inkAnnots(snap, 0)[0])).toBe(1);
+  });
+
+  test("a command with reload reopens the notebook in place, keeping zoom and scroll", async ({ page }) => {
+    const name = unique("reload");
+    await putNotebook(name, await createBlankPdf(1));
+    fs.writeFileSync(`${DIR}/two-pages.pdf`, await createBlankPdf(2));
+    await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
+    await page.waitForFunction(() => window.__pdfink.commands.length === 3);
+    await page.click("#btn-zoom-out");
+    const scale = (await state(page)).scale;
+    await page.evaluate(() => (document.getElementById("pages")!.scrollTop = 120));
+
+    const [cx, cy] = await toClient(page, 0, 200, 300);
+    await page.mouse.click(cx, cy, { button: "right" });
+    await page.locator("#ctx-menu button", { hasText: "Replace with two pages" }).click();
+    await page.waitForFunction(() => window.__pdfink.pages.length === 2);
+    const s = await state(page);
+    expect(s.scale).toBeCloseTo(scale, 5);
+    expect(s.dirty).toBe(false);
+    expect(await page.evaluate(() => document.getElementById("pages")!.scrollTop)).toBe(120);
+    // The reopened file's mtime is now ours: a further save goes through without a conflict.
+    await penStroke(page, 1, line(100, 100, 300, 100));
+    await page.click("#btn-save");
+    await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
+    expect((await readNotebook(name)).getPageCount()).toBe(2);
   });
 });

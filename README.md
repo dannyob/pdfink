@@ -99,6 +99,20 @@ To prevent large PDFs, on import, objects unreachable from the trailer are delet
 | p, e, s | pen, eraser, select |
 | Esc | clear selection |
 
+## Pen-menu commands
+
+In server mode the pen menu can run your own programs on the notebook. Put a `pdfink-commands.conf` in the notebooks folder (or pass `--commands FILE`), one section per menu item:
+
+```ini
+[Draw a star here]
+command = uv run --script tools/star.py "$PDF" "$PAGE" "$X" "$Y"
+reload = true
+```
+
+The notebook is saved first, then the command runs under `sh -c` in the config file's folder with the notebook and the pen position in its environment: `$PDF` (path), `$NAME`, `$NOTEBOOKS`, `$PAGE` (1-based), `$PAGES`, `$X` and `$Y` in PDF points with the origin at the bottom left (rotation accounted for), `$DX`/`$DY` in top-left display points, `$PAGE_WIDTH`, `$PAGE_HEIGHT` and `$ROTATE`. Flags: `reload` reopens the notebook afterwards at the same zoom and scroll, `confirm` asks first, `timeout` is in seconds (default 60). The file is re-read every time the menu opens. The first line of the command's output shows in the status bar.
+
+`tools/star.py` is the demo: it stamps a small star at the pen tip as an `/Ink` annotation, so after the reload pdfink treats it as a stroke you can select or erase. It needs only [uv](https://docs.astral.sh/uv/), which fetches pypdf from the script's inline metadata. `pdfink-commands.conf.example` has more.
+
 ## Options
 
 Flags win over environment variables.
@@ -110,6 +124,7 @@ Flags win over environment variables.
 | `--port` | `PORT` | `5173` | Port to listen on. |
 | `--notebooks` | `NOTEBOOKS_DIR` | `./notebooks` | Folder of PDFs. Created if missing. |
 | `--dist` | `DIST_DIR` | `./dist` | Built app to serve. `none` serves the API only. |
+| `--commands` | `PDFINK_COMMANDS` | `<notebooks>/pdfink-commands.conf` | Pen-menu commands file. `none` disables the menu's commands. |
 
 To force the app's storage mode, add `?storage=local` or `?storage=server` to the URL, or set `VITE_STORAGE=local|server` at build time.
 
@@ -125,6 +140,8 @@ Server mode only. Names are plain basenames ending in `.pdf`; paths are refused.
 | PUT | `/api/notebooks/<name>` | Body is a PDF. `X-If-Mtime: <ms>` must match the file on disk, or be `new` to require that it does not exist. Otherwise 409. |
 | GET | `/api/notebooks/<name>/open` | The notebook parsed on the server: stroke data plus the PDF with ink removed. |
 | PUT | `/api/notebooks/<name>/save` | Stroke and image data. The server rebuilds the PDF and writes it. Same `X-If-Mtime` rules. |
+| GET | `/api/commands` | `[{ id, label, reload, confirm }]` from the commands file, re-read each time. |
+| POST | `/api/commands/<id>` | Body `{ name, page, x, y }` (page 0-based, x and y in display points). Runs the command; returns its exit status, output, and whether the file changed. |
 
 ## Limits
 

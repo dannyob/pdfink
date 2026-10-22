@@ -156,6 +156,7 @@ if (params.has("nofs")) app.forceDownload = true;
 void detectStorage(params).then((mode) => {
   app.storage = mode;
   document.body.dataset.storage = mode;
+  void app.refreshCommands();
   if (mode === "server") void refreshNotebooks();
   if (params.has("new")) void app.newDocument();
   const openName = params.get("open");

@@ -16,7 +16,7 @@ let server: ReturnType<typeof createServer>;
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdfink-open-"));
-  server = createServer({ mode: "server", notebooksDir: dir, distDir: null, host: "127.0.0.1", port: 0 });
+  server = createServer({ mode: "server", notebooksDir: dir, distDir: null, host: "127.0.0.1", port: 0, commandsFile: null });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });

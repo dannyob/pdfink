@@ -35,6 +35,7 @@ export interface State {
   barrelHeuristic: boolean;
   fingerDraws: boolean;
   menuOpen: boolean;
+  commands: string[];
   scale: number;
   dirty: boolean;
   currentPage: number;

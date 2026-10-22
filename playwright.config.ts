@@ -14,7 +14,7 @@ export default defineConfig({
   // they never touch a running production server or the real notebooks.
   webServer: [
     {
-      command: "rm -rf test-results/notebooks && mkdir -p test-results/notebooks && NOTEBOOKS_DIR=test-results/notebooks DIST_DIR= PORT=5176 node server/index.ts",
+      command: "rm -rf test-results/notebooks && mkdir -p test-results/notebooks && NOTEBOOKS_DIR=test-results/notebooks DIST_DIR= PORT=5176 PDFINK_COMMANDS=tests/fixtures/pdfink-commands.conf node server/index.ts",
       url: "http://127.0.0.1:5176/api/notebooks",
       reuseExistingServer: false,
       timeout: 30_000,

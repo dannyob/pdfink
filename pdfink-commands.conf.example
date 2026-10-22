@@ -1,0 +1,22 @@
+# Commands for pdfink's pen menu (server mode). Copy this file to
+# pdfink-commands.conf in the notebooks folder, or point --commands at it.
+#
+# One section per menu item. The command runs under `sh -c` in this file's
+# folder, after the notebook has been saved, with these variables set:
+#   $PDF (path)  $NAME  $NOTEBOOKS  $PAGE (1-based)  $PAGES
+#   $X $Y        pen position in PDF points, origin bottom-left
+#   $DX $DY      the same in display points, origin top-left
+#   $PAGE_WIDTH $PAGE_HEIGHT $ROTATE
+# Flags: reload (reopen the notebook afterwards), confirm (ask first),
+# timeout (seconds, default 60).
+
+[Draw a star here]
+command = uv run --script tools/star.py "$PDF" "$PAGE" "$X" "$Y"
+reload = true
+
+[Copy page number to a note]
+command = printf 'page %s of %s at %s,%s\n' "$PAGE" "$PAGES" "$X" "$Y" >> "$NOTEBOOKS/notes.txt"
+
+[Print this page]
+command = lp -o page-ranges="$PAGE" "$PDF"
+confirm = true

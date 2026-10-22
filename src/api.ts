@@ -152,3 +152,39 @@ export async function saveNotebook(name: string, bytes: Uint8Array, ifMtime: num
   if (!res.ok) throw new Error(`Could not save ${name}: ${await errorMessage(res)}`);
   return (await res.json()) as NotebookInfo;
 }
+
+/** A pen-menu command the server offers (from its commands file). */
+export interface CommandInfo {
+  id: string;
+  label: string;
+  reload: boolean;
+  confirm: boolean;
+}
+
+export interface CommandRun {
+  status: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  changed: boolean;
+  mtime: number | null;
+  reload: boolean;
+}
+
+export async function listCommands(): Promise<CommandInfo[]> {
+  const res = await fetch("/api/commands", { cache: "no-store" });
+  if (!res.ok) throw new Error(`Could not list commands: ${await errorMessage(res)}`);
+  return (await res.json()) as CommandInfo[];
+}
+
+/** Run command `id` for display point (x, y) on page index `page` of notebook `name`. */
+export async function runCommand(id: string, name: string, page: number, x: number, y: number): Promise<CommandRun> {
+  const res = await fetch(`/api/commands/${encodeURIComponent(id)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, page, x, y }),
+  });
+  if (!res.ok) throw new Error(`Could not run command: ${await errorMessage(res)}`);
+  return (await res.json()) as CommandRun;
+}

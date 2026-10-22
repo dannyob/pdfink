@@ -18,7 +18,7 @@ import {
 import { importPdf } from "./pdf/import";
 import { appendBlankPage, createBlankPdf, exportPdf } from "./pdf/export";
 import { PageView, drawStroke, pruneImageCache, type SelectionView } from "./render/pageview";
-import { ConflictError, listNotebooks, loadNotebook, openNotebookParsed, saveNotebook, saveNotebookParsed, type NotebookInfo } from "./api";
+import { ConflictError, listCommands, listNotebooks, loadNotebook, openNotebookParsed, runCommand, saveNotebook, saveNotebookParsed, type CommandInfo, type NotebookInfo } from "./api";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
@@ -575,8 +575,82 @@ export class App {
   private menuPointer: number | null = null;
   private lastPointerType = "";
 
+  /** Commands from the server's commands file (server mode). */
+  commands: CommandInfo[] = [];
+  /** Where the menu was opened, in page space, for commands. */
+  private menuPoint: { page: number; x: number; y: number } | null = null;
+
+  async refreshCommands(): Promise<void> {
+    if (this.storage !== "server") return;
+    try {
+      this.commands = await listCommands();
+    } catch {
+      this.commands = [];
+    }
+  }
+
+  /** Run a configured command at the point the menu was opened. */
+  async runMenuCommand(cmd: CommandInfo): Promise<void> {
+    const at = this.menuPoint ?? this.lastPointer;
+    if (!at || this.source.kind !== "server") {
+      this.setStatus("Commands need a notebook saved in the notebooks folder.");
+      return;
+    }
+    if (cmd.confirm && !(await this.confirmFn(`Run "${cmd.label}" on page ${at.page + 1} of ${this.source.name}?`))) return;
+    // The command works on the file, so it must see what is on screen.
+    if (this.dirty && !(await this.saveToServer())) return;
+    const { name } = this.source;
+    this.setStatus(`Running ${cmd.label}…`);
+    let run;
+    try {
+      run = await runCommand(cmd.id, name, at.page, at.x, at.y);
+    } catch (err) {
+      this.setStatus((err as Error).message);
+      return;
+    }
+    const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
+    if (run.status !== 0) {
+      const why = run.timedOut ? "timed out" : firstLine(run.stderr) || firstLine(run.stdout) || `exit ${run.status ?? run.signal}`;
+      this.setStatus(`${cmd.label} failed: ${why}`);
+      if (run.changed) this.noteExternalChange(name, run.mtime);
+      return;
+    }
+    if (run.changed) {
+      if (run.reload) {
+        await this.reloadNotebook(name);
+      } else {
+        this.noteExternalChange(name, run.mtime);
+      }
+    }
+    const said = firstLine(run.stdout);
+    this.setStatus(said ? `${cmd.label}: ${said}` : `${cmd.label} done`);
+  }
+
+  /** The file changed under us (by a command we ran): accept its new mtime so the next save doesn't conflict. */
+  private noteExternalChange(name: string, mtime: number | null): void {
+    if (this.source.kind === "server" && this.source.name === name && mtime !== null) {
+      this.source = { kind: "server", name, mtime };
+      this.baseSaved = this.baseRevision;
+    }
+  }
+
+  /** Reopen the notebook from disk, keeping zoom and scroll position. */
+  async reloadNotebook(name: string): Promise<boolean> {
+    const scale = this.scale;
+    const { scrollTop, scrollLeft } = this.container;
+    const ok = await this.openNotebook(name);
+    if (!ok) return false;
+    if (this.scale !== scale) this.setScale(scale);
+    this.container.scrollTop = scrollTop;
+    this.container.scrollLeft = scrollLeft;
+    return true;
+  }
+
   private penMenuItems(): MenuItem[] {
     const sel = !!this.selectedContent();
+    const commands: MenuItem[] = this.commands.length
+      ? [{ separator: true, label: "" }, ...this.commands.map((c) => ({ label: c.label, disabled: this.source.kind !== "server", action: () => void this.runMenuCommand(c) }))]
+      : [];
     return [
       { label: "Pen", checked: this.tool === "pen", action: () => this.setTool("pen") },
       { label: "Eraser", checked: this.tool === "eraser", action: () => this.setTool("eraser") },
@@ -592,11 +666,26 @@ export class App {
       { separator: true, label: "" },
       { label: "Add page", action: () => void this.addPage() },
       { label: "Save", action: () => void this.save() },
+      ...commands,
     ];
   }
 
   openPenMenu(x: number, y: number, pointerId: number | null = null): void {
+    this.menuPoint = this.pagePointAt(x, y);
     this.menu.show(x, y, this.penMenuItems(), pointerId);
+    void this.refreshCommands(); // for next time; the file may have been edited
+  }
+
+  /** Page index and page-space point under a client point, if it is on a page. */
+  private pagePointAt(clientX: number, clientY: number): { page: number; x: number; y: number } | null {
+    for (const v of this.views) {
+      const r = v.el.getBoundingClientRect();
+      if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+        const p = v.toPage(clientX, clientY);
+        return { page: v.index, x: p.x, y: p.y };
+      }
+    }
+    return null;
   }
 
   /** Barrel pressed while the button is not set to erase: that opens the menu. */
@@ -1522,6 +1611,7 @@ export class App {
       barrelHeuristic: this.barrelHeuristic,
       fingerDraws: this.fingerDraws,
       menuOpen: this.menu.open,
+      commands: this.commands.map((c) => c.label),
       scale: this.scale,
       dirty: this.dirty,
       currentPage: this.currentPage,

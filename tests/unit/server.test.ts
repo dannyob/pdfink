@@ -12,7 +12,7 @@ let server: ReturnType<typeof createServer>;
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdfink-"));
-  server = createServer({ mode: "server", notebooksDir: dir, distDir: null, host: "127.0.0.1", port: 0 });
+  server = createServer({ mode: "server", notebooksDir: dir, distDir: null, host: "127.0.0.1", port: 0, commandsFile: null });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -114,12 +114,56 @@ describe("command line", () => {
 
 describe("browser mode", () => {
   it("serves no notebook API", async () => {
-    const srv = createServer({ mode: "browser", notebooksDir: dir, distDir: null, host: "127.0.0.1", port: 0 });
+    const srv = createServer({ mode: "browser", notebooksDir: dir, distDir: null, host: "127.0.0.1", port: 0, commandsFile: null });
     await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
     const b = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
     expect(await (await fetch(`${b}/api/status`)).json()).toEqual({ mode: "browser" });
     expect((await fetch(`${b}/api/notebooks`)).status).toBe(404);
     expect((await fetch(`${b}/api/notebooks/a.pdf`, { method: "PUT", body: "%PDF-" })).status).toBe(404);
     await new Promise((r) => srv.close(r));
+  });
+});
+
+describe("pen-menu commands API", () => {
+  it("lists commands from the file and runs one with the point in PDF space", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdfink-cmd-"));
+    const conf = path.join(dir, "pdfink-commands.conf");
+    fs.writeFileSync(conf, `[Where]\ncommand = printf "%s %s %s %s %s" "$NAME" "$PAGE" "$X" "$Y" "$ROTATE" > where.txt; cat where.txt\n\n[Touch]\ncommand = printf "%%" >> "$PDF"\nreload = true\n`);
+    fs.writeFileSync(path.join(dir, "a.pdf"), await createBlankPdf(2));
+    const srv = createServer({ mode: "server", notebooksDir: dir, distDir: null, host: "127.0.0.1", port: 0, commandsFile: conf });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    try {
+      let res = await fetch(`${base}/api/commands`);
+      expect(await res.json()).toEqual([
+        { id: "Where", label: "Where", reload: false, confirm: false },
+        { id: "Touch", label: "Touch", reload: true, confirm: false },
+      ]);
+      // display point (100, 100) on a Letter page → PDF (100, 692)
+      res = await fetch(`${base}/api/commands/Where`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "a.pdf", page: 1, x: 100, y: 100 }) });
+      expect(res.status).toBe(200);
+      let out = (await res.json()) as { status: number; stdout: string; changed: boolean; reload: boolean };
+      expect(out.status).toBe(0);
+      expect(out.stdout).toBe("a.pdf 2 100 692 0");
+      expect(out.changed).toBe(false);
+      expect(fs.existsSync(path.join(dir, "where.txt"))).toBe(true); // cwd is the config's folder
+
+      res = await fetch(`${base}/api/commands/Touch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "a.pdf", page: 0, x: 1, y: 1 }) });
+      out = (await res.json()) as typeof out;
+      expect(out).toMatchObject({ status: 0, changed: true, reload: true });
+
+      res = await fetch(`${base}/api/commands/Nope`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "a.pdf", page: 0, x: 1, y: 1 }) });
+      expect(res.status).toBe(404);
+      res = await fetch(`${base}/api/commands/Where`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "a.pdf", page: 7, x: 1, y: 1 }) });
+      expect(res.status).toBe(400);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("--commands and PDFINK_COMMANDS pick the file; the default sits beside the notebooks", () => {
+    expect(optionsFrom(["--commands", "/tmp/c.conf"], {}).commandsFile).toBe("/tmp/c.conf");
+    expect(optionsFrom([], { PDFINK_COMMANDS: "none" }).commandsFile).toBeNull();
+    expect(optionsFrom(["--notebooks", "/tmp/nb"], {}).commandsFile).toBe("/tmp/nb/pdfink-commands.conf");
   });
 });

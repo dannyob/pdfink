@@ -8,9 +8,11 @@
  *   --host, --port  where to listen (default 127.0.0.1:5173)
  *   --notebooks DIR folder of PDFs for the API (default ./notebooks)
  *   --dist DIR      built app to serve (default ./dist; "none" for API only)
+ *   --commands FILE pen-menu commands (default <notebooks>/pdfink-commands.conf;
+ *                   "none" to disable). See server/commands.ts for the format.
  *
- * Environment variables PDFINK_MODE, HOST, PORT, NOTEBOOKS_DIR and DIST_DIR
- * are used when a flag is not given.
+ * Environment variables PDFINK_MODE, HOST, PORT, NOTEBOOKS_DIR, DIST_DIR and
+ * PDFINK_COMMANDS are used when a flag is not given.
  *
  * API (server mode)
  *   GET /api/status               → { mode, notebooksDir }
@@ -28,13 +30,24 @@
  *                                   the page/stroke JSON and the PDF with the
  *                                   ink stripped out. Keeps the browser from
  *                                   parsing 300 MB files.
+ *   GET  /api/commands             → [{ id, label, reload, confirm }] from the
+ *                                   commands file (re-read each time)
+ *   POST /api/commands/<id>        → body { name, page (0-based), x, y } with x,y
+ *                                   in display points; runs the command with
+ *                                   the notebook's path and the point (also in
+ *                                   PDF space) in its environment. Returns
+ *                                   { status, stdout, stderr, changed, mtime,
+ *                                   reload }.
  */
 import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { importPdf, type ImportedDocument } from "../src/pdf/import.ts";
+import { PDFDocument } from "pdf-lib";
+import { importPdf, pageGeom, type ImportedDocument } from "../src/pdf/import.ts";
+import { displayToPdf } from "../src/pdf/geom.ts";
+import { defaultCommandsFile, loadCommands, runCommand } from "./commands.ts";
 import { exportPdf } from "../src/pdf/export.ts";
 import type { ImageItem, PageModel } from "../src/model.ts";
 
@@ -46,6 +59,8 @@ export interface ServerOptions {
   distDir: string | null;
   host: string;
   port: number;
+  /** Pen-menu commands file, or null for none. */
+  commandsFile: string | null;
 }
 
 export interface NotebookInfo {
@@ -254,6 +269,81 @@ async function serveStatic(distDir: string, urlPath: string, res: http.ServerRes
   fs.createReadStream(target).pipe(res);
 }
 
+/** POST /api/commands/<id>: run a configured command for a point on a page. */
+async function handleCommand(opts: ServerOptions, req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+  const cmds = await loadCommands(opts.commandsFile);
+  const spec = cmds.find((c) => c.id === id);
+  if (!spec || !opts.commandsFile) {
+    send(res, 404, { error: `no such command: ${id}` });
+    return;
+  }
+  let body: { name?: unknown; page?: unknown; x?: unknown; y?: unknown };
+  try {
+    body = JSON.parse((await readBody(req)).toString("utf8")) as typeof body;
+  } catch (err) {
+    send(res, 400, { error: `bad request body: ${(err as Error).message}` });
+    return;
+  }
+  const { name, page, x, y } = body;
+  if (typeof name !== "string" || !validName(name) || !Number.isInteger(page) || (page as number) < 0 || !Number.isFinite(x) || !Number.isFinite(y)) {
+    send(res, 400, { error: "need name, page (integer ≥ 0), x and y (numbers)" });
+    return;
+  }
+  const file = path.join(opts.notebooksDir, name);
+  const before = await fsp.stat(file).catch(() => null);
+  if (!before) {
+    send(res, 404, { error: "no such notebook" });
+    return;
+  }
+  // Page geometry for the PDF-space point, from the (cached) ink-free base.
+  const opened = await openNotebook(opts.notebooksDir, name);
+  if (!opened) {
+    send(res, 404, { error: "no such notebook" });
+    return;
+  }
+  const baseBytes = openCache.get(name)?.baseBytes ?? (await importPdf(new Uint8Array(await fsp.readFile(file)))).baseBytes;
+  const doc = await PDFDocument.load(baseBytes, { ignoreEncryption: true, updateMetadata: false });
+  const pages = doc.getPageCount();
+  if ((page as number) >= pages) {
+    send(res, 400, { error: `page ${page} out of range; the PDF has ${pages}` });
+    return;
+  }
+  const geom = pageGeom(doc.getPage(page as number));
+  const p = displayToPdf(geom, x as number, y as number);
+  const result = await runCommand(
+    spec,
+    {
+      pdf: file,
+      name,
+      notebooks: opts.notebooksDir,
+      page: (page as number) + 1,
+      pages,
+      x: p.x,
+      y: p.y,
+      dx: x as number,
+      dy: y as number,
+      pageWidth: geom.cw,
+      pageHeight: geom.ch,
+      rotate: geom.rotate,
+    },
+    path.dirname(opts.commandsFile),
+  );
+  const after = await fsp.stat(file).catch(() => null);
+  const changed = !after || after.mtimeMs !== before.mtimeMs || after.size !== before.size;
+  if (changed) openCache.delete(name);
+  console.log(`pdfink: ran "${spec.label}" on ${name} p${(page as number) + 1}: exit ${result.status}${changed ? ", file changed" : ""}`);
+  send(res, 200, {
+    status: result.status,
+    signal: result.signal,
+    timedOut: result.timedOut,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    changed,
+    mtime: after ? Math.round(after.mtimeMs) : null,
+    reload: spec.reload && changed,
+  });
+}
+
 async function handleApi(opts: ServerOptions, req: http.IncomingMessage, res: http.ServerResponse, urlPath: string): Promise<void> {
   if (urlPath === "/api/status") {
     send(res, 200, opts.mode === "server" ? { mode: "server", notebooksDir: path.basename(opts.notebooksDir) } : { mode: "browser" });
@@ -261,6 +351,20 @@ async function handleApi(opts: ServerOptions, req: http.IncomingMessage, res: ht
   }
   if (opts.mode !== "server") {
     send(res, 404, { error: "notebook API is off (browser mode)" });
+    return;
+  }
+  if (urlPath === "/api/commands" && req.method === "GET") {
+    const cmds = await loadCommands(opts.commandsFile);
+    send(res, 200, cmds.map((c) => ({ id: c.id, label: c.label, reload: c.reload, confirm: c.confirm })));
+    return;
+  }
+  const cm = /^\/api\/commands\/([^/]+)$/.exec(urlPath);
+  if (cm) {
+    if (req.method !== "POST") {
+      send(res, 405, { error: "method not allowed" });
+      return;
+    }
+    await handleCommand(opts, req, res, decodeURIComponent(cm[1]));
     return;
   }
   const m = /^\/api\/notebooks(?:\/([^/]+)(\/open|\/save)?)?$/.exec(urlPath);
@@ -440,24 +544,28 @@ export function optionsFrom(argv: string[], env: NodeJS.ProcessEnv = process.env
       port: { type: "string" },
       notebooks: { type: "string" },
       dist: { type: "string" },
+      commands: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
     strict: true,
   });
   if (values.help) {
-    console.log("usage: node server/index.ts [--mode server|browser] [--host H] [--port P] [--notebooks DIR] [--dist DIR|none]");
+    console.log("usage: node server/index.ts [--mode server|browser] [--host H] [--port P] [--notebooks DIR] [--dist DIR|none] [--commands FILE|none]");
     process.exit(0);
   }
   const here = path.dirname(new URL(import.meta.url).pathname);
   const mode = (values.mode ?? env.PDFINK_MODE ?? "server") as Mode;
   if (mode !== "server" && mode !== "browser") throw new Error(`--mode must be "server" or "browser", not "${mode}"`);
   const dist = values.dist ?? (env.DIST_DIR === "" ? "none" : env.DIST_DIR) ?? path.resolve(here, "..", "dist");
+  const notebooksDir = path.resolve(values.notebooks ?? env.NOTEBOOKS_DIR ?? "notebooks");
+  const commands = values.commands ?? env.PDFINK_COMMANDS ?? defaultCommandsFile(notebooksDir);
   return {
     mode,
-    notebooksDir: path.resolve(values.notebooks ?? env.NOTEBOOKS_DIR ?? "notebooks"),
+    notebooksDir,
     distDir: dist === "none" ? null : path.resolve(dist),
     host: values.host ?? env.HOST ?? "127.0.0.1",
     port: Number(values.port ?? env.PORT ?? 5173),
+    commandsFile: commands === "none" || commands === "" ? null : path.resolve(commands),
   };
 }
 
