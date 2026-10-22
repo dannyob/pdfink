@@ -203,13 +203,15 @@ test.describe("barrel-button heuristic", () => {
     expect(s.pages[0].strokes[1].n).toBe(20);
   });
 
-  test("switched off, full pressure just draws", async ({ page }) => {
+  test("switched off, full pressure no longer erases, and the choice is remembered", async ({ page }) => {
     await openApp(page);
     await page.locator("#barrel-erase").uncheck();
     expect((await state(page)).barrelHeuristic).toBe(false);
     await penStroke(page, 0, line(100, 200, 300, 200));
     await penStroke(page, 0, line(200, 170, 200, 230), { pressure: 1 });
-    expect((await state(page)).pages[0].strokes).toHaveLength(2);
+    expect((await state(page)).pages[0].strokes).toHaveLength(1); // untouched; the press opened the menu
+    expect((await state(page)).menuOpen).toBe(true);
+    await page.keyboard.press("Escape");
     // The choice survives a reload.
     await page.reload();
     await page.waitForFunction(() => window.__pdfink && window.__pdfink.views.length > 0);
@@ -337,5 +339,69 @@ test.describe("finger drawing", () => {
     await expect(page.locator("#finger-draws")).not.toBeChecked();
     await penStroke(page, 0, line(100, 100, 300, 120), { pointerType: "touch" });
     expect((await state(page)).pages[0].strokes).toHaveLength(0);
+  });
+});
+
+test.describe("barrel-button menu", () => {
+  const penEvent = (page: import("@playwright/test").Page, type: string, x: number, y: number, init: Record<string, unknown>) =>
+    page.evaluate(
+      ([t, px, py, o]) => {
+        const c = window.__pdfink.views[0].toClient(px, py);
+        const el = document.elementFromPoint(c.clientX, c.clientY)!;
+        el.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerType: "pen", pointerId: 21, isPrimary: true, clientX: c.clientX, clientY: c.clientY, ...o }));
+      },
+      [type, x, y, init] as const,
+    );
+
+  test("with barrel erase off, a barrel press opens the menu instead of erasing", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 200, 300, 200));
+    await page.locator("#barrel-erase").uncheck();
+    // No-brand pen: barrel while touching pins pressure to 1.
+    await penEvent(page, "pointerdown", 200, 200, { button: 0, buttons: 1, pressure: 1 });
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    expect((await state(page)).pages[0].strokes).toHaveLength(1); // nothing erased
+    await expect(page.locator("#ctx-menu button.checked")).toHaveText("Pen");
+    await penEvent(page, "pointerup", 200, 200, { button: 0, buttons: 0, pressure: 0 });
+    await page.locator("#ctx-menu button", { hasText: "Eraser" }).click();
+    await expect(page.locator("#ctx-menu")).toBeHidden();
+    expect((await state(page)).tool).toBe("eraser");
+  });
+
+  test("King Write: barrel held while hovering opens the menu once; Escape closes it", async ({ page }) => {
+    await openApp(page);
+    await page.locator("#barrel-erase").uncheck();
+    await penEvent(page, "pointermove", 200, 200, { buttons: 1, pressure: 0, button: -1 });
+    await penEvent(page, "pointermove", 210, 200, { buttons: 1, pressure: 0, button: -1 });
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    expect((await state(page)).menuOpen).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#ctx-menu")).toBeHidden();
+    // Still held: does not pop straight back up.
+    await penEvent(page, "pointermove", 220, 200, { buttons: 1, pressure: 0, button: -1 });
+    await expect(page.locator("#ctx-menu")).toBeHidden();
+    // Released and pressed again: it does.
+    await penEvent(page, "pointermove", 220, 200, { buttons: 0, pressure: 0, button: -1 });
+    await penEvent(page, "pointermove", 230, 200, { buttons: 1, pressure: 0, button: -1 });
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+  });
+
+  test("mouse right-click opens the menu; a pen stroke elsewhere closes it", async ({ page }) => {
+    await openApp(page);
+    const [cx, cy] = await toClient(page, 0, 300, 300);
+    await page.mouse.click(cx, cy, { button: "right" });
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    await expect(page.locator("#ctx-menu button", { hasText: "Copy" })).toBeDisabled();
+    await penStroke(page, 0, line(100, 100, 200, 100));
+    await expect(page.locator("#ctx-menu")).toBeHidden();
+    expect((await state(page)).pages[0].strokes).toHaveLength(1);
+  });
+
+  test("with barrel erase on, a barrel press still erases and no menu appears", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 200, 300, 200));
+    await penStroke(page, 0, line(200, 170, 200, 230), { pressure: 1 });
+    expect((await state(page)).pages[0].strokes).toHaveLength(0);
+    await expect(page.locator("#ctx-menu")).toBeHidden();
   });
 });

@@ -2,7 +2,8 @@ import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { ClipContent, ImageItem, PageModel, Point, Rect, Stroke } from "./model";
 import { DEFAULT_PRESSURE, newId } from "./model";
-import { barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
+import { barrelBit, barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
+import { ContextMenu, type MenuItem } from "./menu";
 import {
   imageBounds,
   imageInRect,
@@ -568,6 +569,41 @@ export class App {
   /** Set when the user ticked "finger draws" themselves, so a pen doesn't undo it. */
   fingerDrawsPinned = false;
 
+  /** The pen's context menu: barrel button (when it isn't set to erase) or right-click. */
+  readonly menu = new ContextMenu();
+  /** Pointer whose held barrel button already opened the menu, so a hover doesn't reopen it. */
+  private menuPointer: number | null = null;
+  private lastPointerType = "";
+
+  private penMenuItems(): MenuItem[] {
+    const sel = !!this.selectedContent();
+    return [
+      { label: "Pen", checked: this.tool === "pen", action: () => this.setTool("pen") },
+      { label: "Eraser", checked: this.tool === "eraser", action: () => this.setTool("eraser") },
+      { label: "Select", checked: this.tool === "select", action: () => this.setTool("select") },
+      { separator: true, label: "" },
+      { label: "Copy", disabled: !sel, action: () => void this.copy() },
+      { label: "Cut", disabled: !sel, action: () => void this.cut() },
+      { label: "Paste", action: () => void this.pasteFromButton() },
+      { label: "Delete", disabled: !sel, action: () => this.deleteSelection() },
+      { separator: true, label: "" },
+      { label: "Undo", disabled: this.undoStack.length === 0, action: () => this.undo() },
+      { label: "Redo", disabled: this.redoStack.length === 0, action: () => this.redo() },
+      { separator: true, label: "" },
+      { label: "Add page", action: () => void this.addPage() },
+      { label: "Save", action: () => void this.save() },
+    ];
+  }
+
+  openPenMenu(x: number, y: number, pointerId: number | null = null): void {
+    this.menu.show(x, y, this.penMenuItems(), pointerId);
+  }
+
+  /** Barrel pressed while the button is not set to erase: that opens the menu. */
+  private barrelMenuPress(e: { pointerType: string; buttons: number; pressure: number }): boolean {
+    return !this.barrelHeuristic && e.pointerType === "pen" && (barrelBit(e) || barrelHeuristic(e));
+  }
+
   setTool(tool: Tool): void {
     this.tool = tool;
     for (const t of ["pen", "eraser", "select"] as Tool[]) {
@@ -698,7 +734,12 @@ export class App {
     c.addEventListener("pointerup", (e) => this.onPointerUp(e));
     c.addEventListener("pointercancel", (e) => this.onPointerUp(e, true));
     c.addEventListener("contextmenu", (e) => {
-      if (c.classList.contains("pen-active") || this.pointers.size || this.fingerDraws) e.preventDefault();
+      e.preventDefault();
+      // A pen's barrel press can also fire contextmenu; when that press means
+      // "erase", or a gesture is in progress, the browser's event is noise.
+      if (this.lastPointerType === "pen" && this.barrelHeuristic) return;
+      if (this.erasing || this.pointers.size) return;
+      this.openPenMenu(e.clientX, e.clientY);
     });
     // Pen proximity → stop the browser from panning with the pen; give
     // panning back a moment after the pen goes out of range.
@@ -717,9 +758,18 @@ export class App {
   }
 
   private onPointerDown(e: PointerEvent): void {
+    this.lastPointerType = e.pointerType;
     if (e.pointerType === "pen") {
       this.enablePenMode();
       this.penSeen();
+      if (this.barrelMenuPress(e)) {
+        e.preventDefault();
+        if (this.menuPointer !== e.pointerId || !this.menu.open) {
+          this.menuPointer = e.pointerId;
+          this.openPenMenu(e.clientX, e.clientY, e.pointerId);
+        }
+        return;
+      }
     } else if (e.pointerType === "touch") {
       if (this.fingerDraws) {
         // One finger draws. A second finger cancels that stroke and pans instead.
@@ -812,8 +862,18 @@ export class App {
       if (!this.pointers.has(e.pointerId)) return;
     }
     if (e.pointerType === "pen") {
+      this.lastPointerType = "pen";
       this.enablePenMode();
       const active = this.pointers.get(e.pointerId);
+      if (!active && e.buttons === 0) this.menuPointer = null; // button released
+      // Barrel held while hovering, with the button set to open the menu.
+      if (!active && !this.barrelHeuristic && hoverErase(e, true)) {
+        if (this.menuPointer !== e.pointerId && !this.menu.open) {
+          this.menuPointer = e.pointerId;
+          this.openPenMenu(e.clientX, e.clientY, e.pointerId);
+        }
+        return;
+      }
       // Barrel-button hover erase: button held, no contact.
       if (!active && hoverErase(e, this.barrelHeuristic)) {
         const view = this.viewFromEvent(e);
@@ -843,6 +903,14 @@ export class App {
     if (ptr.mode !== "select") {
       for (const ev of events) {
         const p = view.toPage(ev.clientX, ev.clientY);
+        if (e.pointerType === "pen" && !this.barrelHeuristic && ptr.mode === "draw" && barrelHeuristic(ev) && ev.pressure >= 1) {
+          // Barrel pressed mid-stroke, set to open the menu: finish the stroke first.
+          this.pointers.delete(ptr.pointerId);
+          this.finishPointer(ptr, false);
+          this.menuPointer = e.pointerId;
+          this.openPenMenu(ev.clientX, ev.clientY, e.pointerId);
+          return;
+        }
         if (e.pointerType === "pen" && this.barrelHeuristic && this.tool === "pen") {
           // Barrel press/release mid-gesture on pens that only pin the pressure.
           if (ptr.mode === "draw" && barrelHeuristic(ev) && ev.pressure >= 1) {
@@ -911,6 +979,11 @@ export class App {
     const ptr = this.pointers.get(e.pointerId);
     if (!ptr) return;
     this.pointers.delete(e.pointerId);
+    this.finishPointer(ptr, cancelled);
+  }
+
+  /** Commit whatever a finished gesture did (the pointer is already removed). */
+  private finishPointer(ptr: Pointer, cancelled: boolean): void {
     this.paintToolButtons();
     const page = ptr.page;
     if (ptr.mode === "draw" && ptr.stroke) {
@@ -1448,6 +1521,7 @@ export class App {
       tool: this.tool,
       barrelHeuristic: this.barrelHeuristic,
       fingerDraws: this.fingerDraws,
+      menuOpen: this.menu.open,
       scale: this.scale,
       dirty: this.dirty,
       currentPage: this.currentPage,

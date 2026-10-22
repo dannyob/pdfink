@@ -32,6 +32,22 @@ button:disabled { opacity: 0.4; cursor: default; }
 .opt input { margin: 0; }
 button.tool.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 #status { margin-left: auto; font-size: 12px; color: #555; white-space: nowrap; }
+/* Pen context menu (barrel button when it isn't set to erase, or right-click). */
+#ctx-menu {
+  position: fixed; z-index: 50; min-width: 150px; padding: 4px;
+  background: #fff; border: 1px solid #aaa; border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.18); display: flex; flex-direction: column;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+#ctx-menu button {
+  border: 0; border-radius: 5px; background: none; text-align: left; min-height: 40px;
+  padding: 8px 12px 8px 30px; position: relative; min-width: 0; font-size: 15px;
+}
+#ctx-menu button:hover:not(:disabled) { background: #eef1f6; }
+#ctx-menu button:disabled { opacity: .4; cursor: default; }
+#ctx-menu button.checked::before { content: "✓"; position: absolute; left: 10px; color: var(--accent); }
+#ctx-menu[hidden] { display: none; }
+#ctx-menu .sep { border: 0; border-top: 1px solid #ddd; margin: 4px 6px; }
 #src-link { font-size: 12px; color: #555; text-decoration: none; border-bottom: 1px dotted #999; }
 #src-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
 #pages {
