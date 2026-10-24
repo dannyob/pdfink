@@ -38,6 +38,7 @@ class FakeBridge:
         self.received: list[dict[str, Any]] = []
         self.conns: list[socket.socket] = []
         self.lock = threading.Lock()
+        self.stopping = threading.Event()
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(self.path)
         self.listener.listen()
@@ -55,6 +56,10 @@ class FakeBridge:
                 conn, _ = self.listener.accept()
             except OSError:
                 return
+            if self.stopping.is_set():  # close()'s wake-up connection
+                conn.close()
+                return
+            conn.settimeout(10)  # a stuck test fails rather than hangs
             with self.lock:
                 self.conns.append(conn)
             self._spawn(self._serve, conn)
@@ -73,12 +78,18 @@ class FakeBridge:
         self._spawn(fire)
 
     def _serve(self, conn: socket.socket) -> None:
-        with conn.makefile("rb") as f:
-            for line in f:
-                msg = json.loads(line)
-                with self.lock:
-                    self.received.append(msg)
-                self._answer(conn, msg)
+        try:
+            with conn.makefile("rb") as f:
+                for line in f:
+                    try:
+                        msg = json.loads(line)
+                    except ValueError:
+                        continue
+                    with self.lock:
+                        self.received.append(msg)
+                    self._answer(conn, msg)
+        except OSError:
+            pass  # dropped, closed or timed out: this connection is done
 
     def _answer(self, conn: socket.socket, msg: dict[str, Any]) -> None:
         if "subscribe" in msg:
@@ -109,7 +120,14 @@ class FakeBridge:
         with self.lock:
             return [m for m in self.received if m.get("call") == name][-1]
 
-    def drop_clients(self) -> None:
+    def drop_clients(self, wait: bool = True) -> None:
+        """Cut every client off; with `wait`, first wait for one to have been accepted."""
+        deadline = time.monotonic() + 5
+        while wait and time.monotonic() < deadline:
+            with self.lock:
+                if self.conns:
+                    break
+            time.sleep(0.005)
         with self.lock:
             conns, self.conns = self.conns, []
         for c in conns:
@@ -120,8 +138,16 @@ class FakeBridge:
             c.close()
 
     def close(self) -> None:
+        # Closing the listener from another thread need not wake accept()
+        # (it doesn't on Linux): connect to it instead, with the flag set.
+        self.stopping.set()
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as wake:
+                wake.connect(self.path)
+        except OSError:
+            pass
         self.listener.close()
-        self.drop_clients()
+        self.drop_clients(wait=False)
         for t in self.threads:
             t.join(timeout=2)
         try:
