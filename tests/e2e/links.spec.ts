@@ -305,10 +305,30 @@ test.describe("links", () => {
     const [ox, oy] = await toClient(page, 0, 400, 400);
     await page.evaluate(([x, y]) => window.__stylusSim.tap(x, y, { pointerType: "touch" }), [ox, oy] as const);
     expect(await openCalls(page)).toEqual([]);
-    // Moved under 8 px still counts.
-    await touchEvent(page, "pointerdown", cx, cy);
-    await touchEvent(page, "pointermove", cx + 5, cy + 3);
-    await touchEvent(page, "pointerup", cx + 5, cy + 3);
+    // Moved under 8 px still counts (sent in one go so a slow runner stays under 300 ms).
+    await page.evaluate(([x, y]) => window.__stylusSim.stroke([[x, y], [x + 5, y + 3]], { pointerType: "touch" }), [cx, cy] as const);
+    expect(await openCalls(page)).toEqual([["https://example.org/tap", "_blank", "noopener,noreferrer"]]);
+
+    // A palm touch while the pen is writing, or while it is in range, opens nothing.
+    await recordOpens(page);
+    const [px, py] = await toClient(page, 0, 400, 450);
+    await page.evaluate(([x, y]) => {
+      window.__stylusSim.hover(x, y);
+      const el = document.elementFromPoint(x, y)!;
+      el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType: "pen", pointerId: 2, isPrimary: true, pressure: 0.6, buttons: 1, button: 0 }));
+    }, [px, py] as const);
+    await page.evaluate(([x, y]) => window.__stylusSim.tap(x, y, { pointerType: "touch" }), [cx, cy] as const);
+    expect(await openCalls(page)).toEqual([]);
+    await page.evaluate(([x, y]) => {
+      const el = document.elementFromPoint(x, y)!;
+      el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType: "pen", pointerId: 2, isPrimary: true, pressure: 0, buttons: 0, button: 0 }));
+      window.__stylusSim.hover(x, y); // lifted but still hovering in range
+    }, [px, py] as const);
+    await page.evaluate(([x, y]) => window.__stylusSim.tap(x, y, { pointerType: "touch" }), [cx, cy] as const);
+    expect(await openCalls(page)).toEqual([]);
+    // Out of range: taps follow links again.
+    await page.evaluate(() => window.__pdfink.container.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "pen", pointerId: 2 })));
+    await page.evaluate(([x, y]) => window.__stylusSim.tap(x, y, { pointerType: "touch" }), [cx, cy] as const);
     expect(await openCalls(page)).toEqual([["https://example.org/tap", "_blank", "noopener,noreferrer"]]);
 
     // Held 400 ms: a long press, not a tap (the one deliberate wait).

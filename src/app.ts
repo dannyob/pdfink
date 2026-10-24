@@ -929,6 +929,11 @@ export class App {
     this.container.classList.add("pen-active");
   }
 
+  /** A pen (or mouse) gesture is in progress, or the pen is in range. */
+  private penBusy(): boolean {
+    return this.container.classList.contains("pen-active") || [...this.pointers.values()].some((p) => !p.touch);
+  }
+
   private disablePenMode(): void {
     if (this.pointers.size) return; // a pen stroke is in progress; keep panning off
     this.container.classList.remove("pen-active");
@@ -999,8 +1004,9 @@ export class App {
       }
     } else if (e.pointerType === "touch") {
       this.touchesDown.add(e.pointerId);
-      // One finger, fingers scrolling: it may be a tap on a link. A second finger is a pinch.
-      this.touchTap = !this.fingerDraws && this.touchesDown.size === 1 ? { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() } : null;
+      // One finger, fingers scrolling: it may be a tap on a link. A second finger is a pinch;
+      // a touch while the pen is down or near is a palm.
+      this.touchTap = !this.fingerDraws && this.touchesDown.size === 1 && !this.penBusy() ? { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() } : null;
       if (this.fingerDraws) {
         // One finger draws. A second finger cancels that stroke and pans instead.
         const drawing = [...this.pointers.values()].find((p) => p.touch);
@@ -1212,7 +1218,7 @@ export class App {
       const tap = this.touchTap;
       if (tap && tap.id === e.pointerId) {
         this.touchTap = null;
-        if (!cancelled && !this.fingerDraws && performance.now() - tap.t <= TAP_MS && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) <= TAP_SLOP_PX) {
+        if (!cancelled && !this.fingerDraws && !this.penBusy() && performance.now() - tap.t <= TAP_MS && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) <= TAP_SLOP_PX) {
           const at = this.pagePointAt(tap.x, tap.y);
           const link = at && this.linkAt(at.page, at.x, at.y);
           if (link) this.openLink(link);
