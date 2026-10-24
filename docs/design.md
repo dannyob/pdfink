@@ -49,6 +49,37 @@ is nominal width × (0.4 + pressure); 0.6 gives the nominal width and is what
 mice and fingers use. The factor was fitted against Xodo's own appearance
 streams, measured in a rasterised page.
 
+## Page bridge
+
+Pen-menu commands can drive the open page while they run. `server/bridge.ts`
+holds two kinds of socket and relays between them.
+
+- **Run sockets**: each command run gets a fresh Unix socket (mode 0600, in a
+  0700 folder under the system temp directory), passed to it as
+  `$PDFINK_SOCKET`. Clients speak newline-delimited JSON: `call` a page
+  function, `eval` JavaScript, or `subscribe` to page events.
+- **Page WebSocket**: each browser tab opens `/api/page?session=<id>`; the
+  session id lives in `sessionStorage`, so it survives a reload. A session has
+  at most one page: a newer one closes the older with code 4001, and a tab
+  closed that way (a duplicated tab that copied the id) picks a fresh id.
+- **Relay**: the server rewrites each request's id to
+  `<connection>:<client id>` and tags it with the run, so replies go back to
+  the connection that asked; page events fan out to subscribers on the
+  session. With no live page a request is answered at once with "page gone".
+- **Page API**: requests land on `window.pdfink` (`src/pdfink-api.ts`), a thin,
+  documented layer over the app and its dialogs; `eval` reaches everything
+  else. `src/bridge-client.ts` is the page's end and draws the chips for
+  detached runs.
+- **Lifetimes**: a normal run belongs to its HTTP request and is never killed
+  for want of a page. A detached run ends on dismiss, on a switch to another
+  notebook, 5 s after the page says goodbye (a refresh reconnects inside
+  that and keeps it), after 10 minutes with no page for its session, on its
+  timeout, or at server shutdown; a new run of the same detached command
+  from the same session replaces it. Before a kill its connections get an
+  `exit` event. On reconnect the server replays `started` for every live run
+  of the session, so the page drops chips for runs that ended while it was
+  away.
+
 ## Non-goals (for now)
 
 - Editing non-ink annotations, text, forms.

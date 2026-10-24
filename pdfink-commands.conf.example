@@ -7,16 +7,29 @@
 #   $X $Y        pen position in PDF points, origin bottom-left
 #   $DX $DY      the same in display points, origin top-left
 #   $PAGE_WIDTH $PAGE_HEIGHT $ROTATE
+#   $SELECTED    number of selected items, empty without a selection
+#   $SEL_PAGE $SEL_X $SEL_Y $SEL_W $SEL_H   the selection's box, PDF points
+#   $PDFINK_SOCKET  a socket for talking to the page (tools/pdfink_page.py)
+#   $PDFINK_RUN  this run's identifier
 # Flags: reload (reopen the notebook afterwards), confirm (ask first),
-# timeout (seconds, default 60).
+# timeout (seconds, default 60; 0 = none), detach (keep running after the
+# menu returns, with a chip in the toolbar; no timeout unless one is set).
 #
 # Commands run with no screen. On macOS, keep them out of Desktop, Documents
 # and Downloads (and symlinks into them): the system wants a consent dialog
 # for those, nobody can click it, and the command hangs until its timeout.
 
 [Draw a star here]
+# Draws in the browser through the page bridge; without a page it rewrites
+# the file instead, and reload shows the result.
 command = uv run --script tools/star.py "$PDF" "$PAGE" "$X" "$Y"
 reload = true
+
+[Describe selection]
+# Sends a PNG of the selection (or the page) to a vision model through llm
+# and offers the answer in a dialog; see tools/describe-selection.py.
+command = uv run --script tools/describe-selection.py
+timeout = 300
 
 [Journal this page]
 # Transcribes the page with a vision model (simonw's llm) and files it in a
@@ -24,6 +37,12 @@ reload = true
 command = uv run --script tools/journal-page.py "$PDF" "$PAGE"
 confirm = true
 timeout = 900
+
+[Remind me in five minutes]
+# Detached: the menu returns at once and a chip in the toolbar shows the run;
+# dismiss the chip to cancel. Speaks to the page with nc instead of Python.
+command = sleep 300 && printf '{"id":1,"call":"toast","args":["five minutes are up"]}\n' | nc -U "$PDFINK_SOCKET"
+detach = true
 
 [Copy page number to a note]
 command = printf 'page %s of %s at %s,%s\n' "$PAGE" "$PAGES" "$X" "$Y" >> "$NOTEBOOKS/notes.txt"

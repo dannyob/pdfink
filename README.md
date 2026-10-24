@@ -109,11 +109,44 @@ command = uv run --script tools/star.py "$PDF" "$PAGE" "$X" "$Y"
 reload = true
 ```
 
-The notebook is saved first, then the command runs under `sh -c` in the config file's folder with the notebook and the pen position in its environment: `$PDF` (path), `$NAME`, `$NOTEBOOKS`, `$PAGE` (1-based), `$PAGES`, `$X` and `$Y` in PDF points with the origin at the bottom left (rotation accounted for), `$DX`/`$DY` in top-left display points, `$PAGE_WIDTH`, `$PAGE_HEIGHT` and `$ROTATE`. Flags: `reload` reopens the notebook afterwards at the same zoom and scroll, `confirm` asks first, `timeout` is in seconds (default 60). The file is re-read every time the menu opens. The first line of the command's output shows in the status bar.
+The notebook is saved first, then the command runs under `sh -c` in the config file's folder with the notebook and the pen position in its environment: `$PDF` (path), `$NAME`, `$NOTEBOOKS`, `$PAGE` (1-based), `$PAGES`, `$X` and `$Y` in PDF points with the origin at the bottom left (rotation accounted for), `$DX`/`$DY` in top-left display points, `$PAGE_WIDTH`, `$PAGE_HEIGHT` and `$ROTATE`. Flags: `reload` reopens the notebook afterwards at the same zoom and scroll, `confirm` asks first, `timeout` is in seconds (default 60; 0 means none), and `detach` lets the command keep running after the menu returns (see below). The file is re-read every time the menu opens. The first line of the command's output shows in the status bar.
 
 Commands run headless. On macOS that means they must not touch Desktop, Documents or Downloads (or anything symlinked into them): the system gates those folders behind a consent dialog, the server's child has no screen to show it on, and the open call hangs until the command times out. Keep scratch files under `~/.cache` or the notebooks folder.
 
 `tools/star.py` is the demo: it stamps a small star at the pen tip as an `/Ink` annotation, so after the reload pdfink treats it as a stroke you can select or erase. It needs only [uv](https://docs.astral.sh/uv/), which fetches pypdf from the script's inline metadata. `tools/journal-page.py` is a second, longer one: it extracts the page, has a vision model (through [llm](https://llm.datasette.io/)) transcribe the entry as markdown under a `## YYYY-MM-DD` heading read from the page itself, and then runs `claude -p` in a [life](https://github.com/dannyob/life) directory to file it in that day's journal. `--dry-run` prints the markdown instead. `pdfink-commands.conf.example` has more.
+
+### Talking to the page
+
+While a command runs it can talk to the browser tab it was started from: read the selection, take a PNG of it, ask a question, draw strokes, show progress. These variables join the ones above:
+
+| Variable | Meaning |
+| --- | --- |
+| `SELECTED` | Number of selected items (strokes and images); empty when nothing is selected. |
+| `SEL_PAGE` | Page of the selection, 1-based; empty without one. |
+| `SEL_X`, `SEL_Y`, `SEL_W`, `SEL_H` | The selection's bounding box in PDF points, origin bottom-left; empty without one. |
+| `PDFINK_SOCKET` | A Unix socket that relays requests to the page. |
+| `PDFINK_RUN` | This run's identifier. |
+
+The socket speaks newline-delimited JSON. Each request names a function of `window.pdfink` (listed in `src/pdfink-api.ts`, which is the supported API) and gets back `{"id":…,"result":…}` or `{"id":…,"error":…}`; `{"id":…,"eval":"js"}` evaluates any JavaScript in the page, as an escape hatch. From the shell:
+
+```sh
+printf '{"id":1,"call":"toast","args":["hello from sh"]}\n' | nc -U "$PDFINK_SOCKET"
+```
+
+From Python, `tools/pdfink_page.py` wraps it, using only the standard library:
+
+```python
+import pdfink_page
+page = pdfink_page.connect()
+sel = page.selection()
+page.toast(f"{len(sel['strokeIds'])} strokes selected" if sel else "nothing selected")
+```
+
+The module sits next to the uv scripts in `tools/`; a script there finds it by adding its own directory to `sys.path` before the import (`sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`). Its methods are the `window.pdfink` ones in snake_case, plus `call(name, *args)`, `eval(js)` and `events(*names)` for page events such as `selection`, `notebook` and `button`. `connect()` raises `PageGone` when there is no page to talk to; `connect(optional=True)` returns `None` instead when `$PDFINK_SOCKET` is unset, for scripts that can also work on the file alone. Any call can raise `PageGone` if the page goes away mid-run. A call the page rejects raises `PageError`.
+
+The demos use it. `tools/star.py` draws its star in the browser as one undoable stroke, and falls back to rewriting the file when there is no page, which is why its entry keeps `reload = true`. `tools/describe-selection.py` sends a PNG of the selection (or of the page, when nothing is selected) to a vision model and offers the answer in a dialog. `tools/journal-page.py` shows each stage as a progress line and asks for the date when it cannot read one off the page.
+
+A normal run is never killed because its page went away; its requests just fail with "page gone" until the page returns. A `detach = true` command answers the menu at once and keeps going, with a chip in the toolbar and no timeout unless one is set. It ends when it exits, when you dismiss its chip, when you switch to another notebook, five seconds after its tab closes (a refresh reconnects in time and keeps it), when its session has had no page for ten minutes, when it times out, or when the server stops. Starting the same detached command again from the same tab replaces the old run.
 
 ## Options
 
@@ -142,8 +175,9 @@ Server mode only. Names are plain basenames ending in `.pdf`; paths are refused.
 | PUT | `/api/notebooks/<name>` | Body is a PDF. `X-If-Mtime: <ms>` must match the file on disk, or be `new` to require that it does not exist. Otherwise 409. |
 | GET | `/api/notebooks/<name>/open` | The notebook parsed on the server: stroke data plus the PDF with ink removed. |
 | PUT | `/api/notebooks/<name>/save` | Stroke and image data. The server rebuilds the PDF and writes it. Same `X-If-Mtime` rules. |
-| GET | `/api/commands` | `[{ id, label, reload, confirm }]` from the commands file, re-read each time. |
-| POST | `/api/commands/<id>` | Body `{ name, page, x, y }` (page 0-based, x and y in display points). Runs the command; returns its exit status, output, and whether the file changed. |
+| GET | `/api/commands` | `[{ id, label, reload, confirm, detach }]` from the commands file, re-read each time. |
+| POST | `/api/commands/<id>` | Body `{ name, page, x, y, session?, selection? }` (pages 0-based, coordinates in display points). Runs the command; returns its run id, exit status, output, and whether the file changed. A detached command answers at once with `detached: true`. |
+| GET | `/api/page?session=<id>` | WebSocket upgrade: the page's end of the command bridge (see `server/bridge.ts`). |
 
 ## Limits
 
