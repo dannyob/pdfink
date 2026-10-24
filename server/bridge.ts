@@ -48,7 +48,8 @@
  *                           are killed.
  *   - a new detached run with the same label and session as a live detached
  *     run kills the old one first.
- *   - shutdown() kills every run and removes every socket.
+ *   - shutdown() kills every run and removes every socket; afterwards pages
+ *     are ignored (a new one is closed at once) and no timer is started.
  *
  * Killing a run sends {"event":"exit"} to its connections and calls its onKill
  * once; the run stays until closeRun.
@@ -167,6 +168,8 @@ export class Bridge {
   private readonly runs = new Map<string, Run>();
   private readonly sessions = new Map<string, Session>();
   private connCount = 0;
+  /** shutdown() has been called: pages are turned away and start no timers. */
+  private closed = false;
 
   constructor(opts: BridgeOptions = {}) {
     this.socketDir = opts.socketDir ?? path.join(os.tmpdir(), "pdfink");
@@ -174,6 +177,7 @@ export class Bridge {
   }
 
   addPage(session: string, socket: PageSocket): void {
+    if (this.closed) return socket.close();
     let s = this.sessions.get(session);
     if (!s) this.sessions.set(session, (s = { socket: null, graceTimer: null }));
     const entry = s;
@@ -245,7 +249,12 @@ export class Bridge {
   }
 
   async shutdown(): Promise<void> {
-    for (const s of this.sessions.values()) if (s.graceTimer) clearTimeout(s.graceTimer);
+    this.closed = true;
+    for (const s of this.sessions.values()) {
+      if (s.graceTimer) clearTimeout(s.graceTimer);
+      // Detach the page so its later close (the server tears it down) starts no timer.
+      s.socket = null;
+    }
     this.sessions.clear();
     const runs = [...this.runs.values()];
     for (const r of runs) this.killRun(r.info.id);

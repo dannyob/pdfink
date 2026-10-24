@@ -480,4 +480,16 @@ describe("Bridge sessions", () => {
     expect(bridge.runsFor("s1")).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("a page closing after shutdown starts no timer, and a later page is turned away", async () => {
+    fakeTimers();
+    await bridge.shutdown();
+    page.close();
+    expect(vi.getTimerCount()).toBe(0);
+    const late = new FakePage();
+    bridge.addPage("s1", late);
+    expect(late.closed).toBe(true);
+    expect(bridge.hasPage("s1")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
