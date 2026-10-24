@@ -213,6 +213,26 @@ test.describe("pen-menu commands", () => {
     expect(inkPathCount(inkAnnots(snap, 0)[0])).toBe(1);
   });
 
+  test("a page added while a command touches the file still saves", async ({ page }) => {
+    const name = unique("touch");
+    await putNotebook(name, await createBlankPdf(1));
+    await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
+    await page.waitForFunction(() => window.__pdfink.commands.some((c) => c.label === "Touch the file"));
+    const [cx, cy] = await toClient(page, 0, 200, 300);
+    await page.mouse.click(cx, cy, { button: "right" });
+    const ran = page.waitForResponse((r) => r.url().includes("/api/commands/") && r.request().method() === "POST", { timeout: 10_000 });
+    await page.locator("#ctx-menu button", { hasText: "Touch the file" }).click();
+    await expect(page.locator("#status")).toContainText("Running Touch the file");
+    // The command is still running (it sleeps first): add a page meanwhile.
+    await page.click("#btn-addpage");
+    await page.waitForFunction(() => window.__pdfink.pages.length === 2 && window.__pdfink.views.length === 2);
+    expect(((await (await ran).json()) as { changed: boolean }).changed).toBe(true);
+    // The new page's base has not been sent yet: the save must carry it.
+    await page.click("#btn-save");
+    await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving, null, { timeout: 10_000 });
+    expect((await readNotebook(name)).getPageCount()).toBe(2);
+  });
+
   test("a command with reload reopens the notebook in place, keeping zoom and scroll", async ({ page }) => {
     const name = unique("reload");
     await putNotebook(name, await createBlankPdf(1));

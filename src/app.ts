@@ -687,8 +687,8 @@ export class App {
   /** The file changed under us (by a command we ran): accept its new mtime so the next save doesn't conflict. */
   noteExternalChange(name: string, mtime: number | null): void {
     if (this.source.kind === "server" && this.source.name === name && mtime !== null) {
+      // Only the mtime: a page added here since the last save has still not reached the server.
       this.source = { kind: "server", name, mtime };
-      this.baseSaved = this.baseRevision;
     }
   }
 
