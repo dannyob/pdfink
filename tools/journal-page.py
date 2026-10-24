@@ -25,6 +25,10 @@ works from a shell too. Steps:
 3. Run `claude -p` in the life directory to merge it into that day's journal
    entry. `--dry-run` stops after step 2 and prints the markdown.
 
+From the pen menu ($PDFINK_SOCKET set) it also shows each stage as a progress
+line in the page, and when the page has no legible date and --date was not
+given it asks for the day instead of giving up.
+
 Keys come from `llm keys set ...` as usual (the shared llm user directory).
 Model: --model, else $PDFINK_JOURNAL_MODEL, else openrouter/google/gemini-3.7-flash.
 Each model call is given $PDFINK_JOURNAL_LLM_TIMEOUT seconds (default 240) and
@@ -44,6 +48,9 @@ import tempfile
 import threading
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pdfink_page  # noqa: E402
+
 DEFAULT_MODEL = "openrouter/google/gemini-3.7-flash"
 DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2}|UNDATED)\s*$", re.M)
 PAGES_RE = re.compile(r"<!--\s*pages?\s*:\s*(\d+)\s*(?:[-–]\s*(\d+))?\s*-->")
@@ -56,6 +63,27 @@ STOP_RULES = """Stop at the end of this entry, which is the first of:
 
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+PAGE: pdfink_page.Page | None = None  # the page bridge, when run from the pen menu
+
+
+def progress(msg: str | None) -> None:
+    """Show a stage in the page's progress line (None clears it); a no-op without a page."""
+    if PAGE is not None:
+        PAGE.progress(msg)
+
+
+def ask_date(today: str) -> str | None:
+    """Ask the page which day an undated entry is for; None without a page or an answer."""
+    if PAGE is None:
+        return None
+    try:
+        answer = PAGE.ask("No date found on the page. Which day is this entry for?", default=today)
+    except (pdfink_page.PageGone, pdfink_page.PageError, TimeoutError) as e:
+        log(f"could not ask the page for a date: {e}")
+        return None
+    return answer.strip() if isinstance(answer, str) and answer.strip() else None
 
 
 def life_dir(explicit: str | None) -> Path:
@@ -180,6 +208,7 @@ def transcribe(pdf: Path, page: int, model_id: str, date: str | None, batch: int
 
 If the first page has writing but no legible date, use the heading `## UNDATED`. If there is no journal writing on the first page at all, output exactly `NO ENTRY`."""
     log(f"reading pages {page}-{last_attached}…")
+    progress(f"Transcribing pages {page}–{last_attached}…")
     first = pages_pdf(pdf, page, last_attached)
     text = ask(model, prompt, first)
     if text != "NO ENTRY" and not DATE_RE.search(text):
@@ -203,6 +232,7 @@ Continue transcribing that same entry from the first attached page. {STOP_RULES}
 
 {rules} Output only the continuation, with no heading. If the first attached page does not continue the entry, output exactly `ENTRY ENDED`."""
         log(f"entry continues; reading pages {nxt_first}-{nxt_last}…")
+        progress(f"Transcribing pages {nxt_first}–{nxt_last}…")
         more = ask(model, prompt, pages_pdf(pdf, nxt_first, nxt_last))
         if more.startswith("ENTRY ENDED") or not more:
             break
@@ -214,6 +244,7 @@ Continue transcribing that same entry from the first attached page. {STOP_RULES}
 
 
 def main() -> int:
+    global PAGE
     if os.environ.get("PDFINK_JOURNAL_DEBUG"):
         # Where is it stuck? Dump all thread stacks to stderr every 30 s.
         import faulthandler
@@ -242,6 +273,19 @@ def main() -> int:
     if not pdf.is_file():
         raise SystemExit(f"no such file: {pdf}")
 
+    try:
+        PAGE = pdfink_page.connect(optional=True)
+    except pdfink_page.PageGone as e:
+        log(f"no page to talk to ({e}); carrying on without it")
+    try:
+        return run(a, pdf)
+    finally:
+        if PAGE is not None:
+            PAGE.progress(None)
+            PAGE.close()
+
+
+def run(a: argparse.Namespace, pdf: Path) -> int:
     log(f"transcribing from page {a.page} of {pdf.name} with {a.model}…")
     text, last_page = transcribe(pdf, a.page, a.model, a.date, max(1, a.batch), max(1, a.max_pages))
     span = f"page {a.page}" if last_page == a.page else f"pages {a.page}-{last_page}"
@@ -258,12 +302,19 @@ def main() -> int:
             log(text)
             return 1
     if "UNDATED" in dates:
-        if not a.date:
+        date = a.date or ask_date(dt.date.today().isoformat())
+        if not date:
             print(f"page {a.page}: the writing has no legible date; pass --date YYYY-MM-DD")
             log(text)
             return 1
-        text = text.replace("## UNDATED", f"## {a.date}")
-        dates = [a.date if d == "UNDATED" else d for d in dates]
+        try:
+            dt.date.fromisoformat(date)
+        except ValueError:
+            print(f"page {a.page}: {date!r} is not a YYYY-MM-DD date")
+            log(text)
+            return 1
+        text = text.replace("## UNDATED", f"## {date}")
+        dates = [date if d == "UNDATED" else d for d in dates]
     for d in dates:
         try:
             dt.date.fromisoformat(d)
@@ -307,6 +358,7 @@ When done, reply with one line naming the file(s) you changed.
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE" and not k.startswith("CLAUDE_CODE_")}
     cmd = [a.claude, "-p", prompt, "--permission-mode", "acceptEdits", "--allowedTools", "Bash(life:*)"]
     log(f"filing into {life} with claude…")
+    progress("Filing into life…")
     try:
         r = subprocess.run(cmd, cwd=str(life), env=env, capture_output=True, text=True, timeout=a.timeout)
     except subprocess.TimeoutExpired:
