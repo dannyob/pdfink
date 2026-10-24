@@ -27,11 +27,11 @@ async function trackSockets(page: Page): Promise<void> {
 }
 
 /** Wait until the page has an open bridge socket. */
-async function waitConnected(page: Page): Promise<void> {
+async function waitConnected(page: Page, timeout?: number): Promise<void> {
   await page.waitForFunction(() => {
     const s = (window as unknown as { __sockets: WebSocket[] }).__sockets.at(-1);
     return !!s && s.readyState === WebSocket.OPEN && s.url.includes("/api/page");
-  });
+  }, null, { timeout });
 }
 
 async function putNotebook(name: string, bytes: Uint8Array): Promise<void> {
@@ -241,6 +241,31 @@ test.describe("page bridge", () => {
     await expect(page.locator("#cmd-buttons button")).toHaveCount(0);
     expect(await page.evaluate(() => window.__pdfink.session)).toBe(session);
   });
+
+  for (const back of ["pageshow", "visibilitychange"] as const) {
+    test(`the bridge reconnects after pagehide when the page comes back (${back})`, async ({ page }) => {
+      await trackSockets(page);
+      await openNotebook(page, "hide");
+      await waitConnected(page);
+      // Backgrounded on a tablet: pagehide fires, then the OS drops the socket.
+      const count = await page.evaluate(() => {
+        const w = window as unknown as { __sockets: WebSocket[] };
+        window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: false }));
+        w.__sockets.at(-1)!.close();
+        return w.__sockets.length;
+      });
+      await page.waitForTimeout(1500); // past the first reconnect delay: none comes while hidden
+      expect(await page.evaluate(() => (window as unknown as { __sockets: WebSocket[] }).__sockets.length)).toBe(count);
+      await page.evaluate((how) => {
+        if (how === "pageshow") window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: false }));
+        else document.dispatchEvent(new Event("visibilitychange")); // the test page is visible
+      }, back);
+      await waitConnected(page, 5000);
+      await openMenuAt(page, 0, 300, 400);
+      await runMenu(page, "Draw via bridge");
+      await expect(page.locator("#status")).toHaveText("Draw via bridge: drew", { timeout: 10_000 });
+    });
+  }
 
   test("a duplicated tab gets its own session and both tabs keep working", async ({ page, context }) => {
     const name = await openNotebook(page, "dup");

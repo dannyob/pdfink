@@ -55,7 +55,7 @@ export class PageLink {
   private notebooks = new Map<string, string>();
   /** Runs announced since the socket last opened; null once settled. */
   private announced: Set<string> | null = null;
-  /** The page is being hidden or unloaded: don't reconnect. */
+  /** pagehide has fired and the page has not come back yet: don't reconnect. */
   private leaving = false;
 
   constructor(
@@ -83,10 +83,16 @@ export class PageLink {
         this.send({ bye: true });
         this.leaving = true;
       });
-      window.addEventListener("pageshow", (e) => {
-        if (!e.persisted) return;
+      // pagehide is not always the end: a mobile browser can fire it when the
+      // tab is merely backgrounded (and drop the socket while hidden). Coming
+      // back in any way means the page is live again.
+      const back = () => {
         this.leaving = false;
         if (!this.ws) this.connect();
+      };
+      window.addEventListener("pageshow", back);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") back();
       });
     }
     if (this.retry) clearTimeout(this.retry);
