@@ -136,8 +136,8 @@ describe("pen-menu commands API", () => {
     try {
       let res = await fetch(`${base}/api/commands`);
       expect(await res.json()).toEqual([
-        { id: "Where", label: "Where", reload: false, confirm: false },
-        { id: "Touch", label: "Touch", reload: true, confirm: false },
+        { id: "Where", label: "Where", reload: false, confirm: false, detach: false },
+        { id: "Touch", label: "Touch", reload: true, confirm: false, detach: false },
       ]);
       // display point (100, 100) on a Letter page → PDF (100, 692)
       res = await fetch(`${base}/api/commands/Where`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "a.pdf", page: 1, x: 100, y: 100 }) });
@@ -165,5 +165,168 @@ describe("pen-menu commands API", () => {
     expect(optionsFrom(["--commands", "/tmp/c.conf"], {}).commandsFile).toBe("/tmp/c.conf");
     expect(optionsFrom([], { PDFINK_COMMANDS: "none" }).commandsFile).toBeNull();
     expect(optionsFrom(["--notebooks", "/tmp/nb"], {}).commandsFile).toBe("/tmp/nb/pdfink-commands.conf");
+  });
+});
+
+describe("page bridge", () => {
+  let bdir: string;
+  let bsrv: ReturnType<typeof createServer>;
+  let port: number;
+  const pages: WebSocket[] = [];
+
+  const CALL = `node -e 'const s=require("net").connect(process.env.PDFINK_SOCKET);s.write(JSON.stringify({id:1,call:"state"})+"\\n");s.on("data",d=>{process.stdout.write(JSON.parse(d).result.tool);s.end()})'`;
+
+  beforeAll(async () => {
+    bdir = fs.mkdtempSync(path.join(os.tmpdir(), "pdfink-bridge-"));
+    const conf = path.join(bdir, "pdfink-commands.conf");
+    fs.writeFileSync(
+      conf,
+      [
+        "[Env]",
+        `command = printf '%s %s %s %s %s %s' "$PDFINK_RUN" "$SELECTED" "$SEL_PAGE" "$SEL_X" "$SEL_Y" "$SEL_H" ; test -S "$PDFINK_SOCKET" && printf ' sock'`,
+        "[Call]",
+        `command = ${CALL}`,
+        "[D]",
+        "command = sleep 1",
+        "detach = true",
+        "[Long]",
+        "command = sleep 30",
+        "detach = true",
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(path.join(bdir, "a.pdf"), await createBlankPdf(1));
+    fs.writeFileSync(path.join(bdir, "b.pdf"), await createBlankPdf(2));
+    bsrv = createServer({ mode: "server", notebooksDir: bdir, distDir: null, host: "127.0.0.1", port: 0, commandsFile: conf, socketDir: path.join(bdir, "sock") });
+    await new Promise<void>((r) => bsrv.listen(0, "127.0.0.1", () => r()));
+    port = (bsrv.address() as AddressInfo).port;
+  });
+
+  afterAll(async () => {
+    for (const ws of pages) ws.close();
+    await new Promise((r) => bsrv.close(r));
+    fs.rmSync(bdir, { recursive: true, force: true });
+  });
+
+  /** Connect as the page; every frame it receives lands in `frames`. */
+  async function page(session: string): Promise<{ ws: WebSocket; frames: Record<string, unknown>[] }> {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/page?session=${session}`);
+    pages.push(ws);
+    const frames: Record<string, unknown>[] = [];
+    ws.addEventListener("message", (e) => frames.push(JSON.parse(String(e.data)) as Record<string, unknown>));
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve());
+      ws.addEventListener("error", () => reject(new Error("ws error")));
+    });
+    return { ws, frames };
+  }
+
+  async function until<T>(fn: () => T | undefined, ms = 5000): Promise<T> {
+    const t0 = Date.now();
+    for (;;) {
+      const v = fn();
+      if (v !== undefined) return v;
+      if (Date.now() - t0 > ms) throw new Error("timed out waiting");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  const post = (id: string, body: unknown) =>
+    fetch(`http://127.0.0.1:${port}/api/commands/${id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+  it("GET /api/commands reports detach", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/commands`);
+    const list = (await res.json()) as { id: string; detach: boolean }[];
+    expect(list.map((c) => [c.id, c.detach])).toEqual([
+      ["Env", false],
+      ["Call", false],
+      ["D", true],
+      ["Long", true],
+    ]);
+  });
+
+  it("a command gets PDFINK_SOCKET, PDFINK_RUN and the selection in PDF points", async () => {
+    await page("t1");
+    const res = await post("Env", { name: "a.pdf", page: 0, x: 1, y: 1, session: "t1", selection: { page: 0, rect: { x: 100, y: 92, w: 50, h: 200 }, count: 2 } });
+    const out = (await res.json()) as { run: string; stdout: string; status: number };
+    expect(out.status).toBe(0);
+    expect(out.run).toMatch(/^[0-9a-z]{6}$/);
+    expect(out.stdout).toBe(`${out.run} 2 1 100 500 200 sock`);
+  });
+
+  it("a command without a session still runs, with empty selection variables", async () => {
+    const res = await post("Env", { name: "a.pdf", page: 0, x: 1, y: 1 });
+    const out = (await res.json()) as { run: string; stdout: string; status: number };
+    expect(out.status).toBe(0);
+    expect(out.stdout).toBe(`${out.run}      sock`);
+  });
+
+  it("the selection may sit on another page than the menu; bad sessions and selections are refused", async () => {
+    let res = await post("Env", { name: "b.pdf", page: 0, x: 1, y: 1, selection: { page: 1, rect: { x: 10, y: 692, w: 20, h: 10 }, count: 1 } });
+    const out = (await res.json()) as { run: string; stdout: string };
+    expect(out.stdout).toBe(`${out.run} 1 2 10 90 10 sock`);
+    res = await post("Env", { name: "b.pdf", page: 0, x: 1, y: 1, selection: { page: 2, rect: { x: 0, y: 0, w: 1, h: 1 }, count: 1 } });
+    expect(res.status).toBe(400);
+    res = await post("Env", { name: "b.pdf", page: 0, x: 1, y: 1, selection: { page: 0, rect: { x: 0 }, count: 1 } });
+    expect(res.status).toBe(400);
+    res = await post("Env", { name: "b.pdf", page: 0, x: 1, y: 1, session: "../x" });
+    expect(res.status).toBe(400);
+  });
+
+  it("a detached run whose page never connects still exits cleanly", async () => {
+    const out = (await (await post("D", { name: "a.pdf", page: 0, x: 1, y: 1, session: "nobody" })).json()) as { run: string; detached: boolean };
+    expect(out.detached).toBe(true);
+    const sock = path.join(bdir, "sock", `${out.run}.sock`);
+    expect(fs.existsSync(sock)).toBe(true);
+    await until(() => (fs.existsSync(sock) ? undefined : true));
+  });
+
+  it("a command can call the page through the socket", async () => {
+    const { ws } = await page("t2");
+    ws.addEventListener("message", (e) => {
+      const f = JSON.parse(String(e.data)) as { run: string; id?: string; call?: string };
+      if (f.call === "state") ws.send(JSON.stringify({ run: f.run, id: f.id, result: { tool: "pen" } }));
+    });
+    const res = await post("Call", { name: "a.pdf", page: 0, x: 1, y: 1, session: "t2" });
+    const out = (await res.json()) as { stdout: string; stderr: string; status: number };
+    expect(out.stderr).toBe("");
+    expect(out.stdout).toBe("pen");
+  });
+
+  it("a detached command answers at once and the page sees started then exited", async () => {
+    const { frames } = await page("t3");
+    const t0 = Date.now();
+    const res = await post("D", { name: "a.pdf", page: 0, x: 1, y: 1, session: "t3" });
+    const out = (await res.json()) as Record<string, unknown>;
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(out).toMatchObject({ detached: true, status: null, signal: null, timedOut: false, stdout: "", stderr: "", changed: false, reload: false });
+    expect(typeof out.mtime).toBe("number");
+    const run = out.run as string;
+    expect(frames.find((f) => f.run === run && f.started)).toMatchObject({ started: { label: "D", detached: true } });
+    const exited = await until(() => frames.find((f) => f.run === run && f.exited));
+    expect(exited).toMatchObject({ exited: { status: 0 } });
+  });
+
+  it("dismiss over the WebSocket kills a detached run", async () => {
+    const { ws, frames } = await page("t4");
+    const out = (await (await post("Long", { name: "a.pdf", page: 0, x: 1, y: 1, session: "t4" })).json()) as { run: string };
+    ws.send(JSON.stringify({ dismiss: out.run }));
+    const exited = await until(() => frames.find((f) => f.run === out.run && f.exited));
+    expect(exited).toMatchObject({ exited: { signal: "SIGTERM" } });
+  });
+
+  it("the upgrade is refused in browser mode and on other paths", async () => {
+    const refused = (url: string) =>
+      new Promise<boolean>((resolve) => {
+        const ws = new WebSocket(url);
+        ws.addEventListener("open", () => { ws.close(); resolve(false); });
+        ws.addEventListener("error", () => resolve(true));
+      });
+    expect(await refused(`ws://127.0.0.1:${port}/api/other?session=x`)).toBe(true);
+    expect(await refused(`ws://127.0.0.1:${port}/api/page`)).toBe(true);
+    const srv = createServer({ mode: "browser", notebooksDir: bdir, distDir: null, host: "127.0.0.1", port: 0, commandsFile: null });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    expect(await refused(`ws://127.0.0.1:${(srv.address() as AddressInfo).port}/api/page?session=x`)).toBe(true);
+    await new Promise((r) => srv.close(r));
   });
 });

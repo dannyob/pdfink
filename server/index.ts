@@ -1,6 +1,6 @@
 /**
- * pdfink server. No dependencies; run with `node server/index.ts` (Node strips
- * the types itself).
+ * pdfink server. Run with `node server/index.ts` (Node strips the types
+ * itself).
  *
  *   --mode server   serve the built app AND the notebook API (default)
  *   --mode browser  serve the built app only; the app then opens and saves
@@ -30,24 +30,36 @@
  *                                   the page/stroke JSON and the PDF with the
  *                                   ink stripped out. Keeps the browser from
  *                                   parsing 300 MB files.
- *   GET  /api/commands             → [{ id, label, reload, confirm }] from the
- *                                   commands file (re-read each time)
- *   POST /api/commands/<id>        → body { name, page (0-based), x, y } with x,y
- *                                   in display points; runs the command with
- *                                   the notebook's path and the point (also in
- *                                   PDF space) in its environment. Returns
- *                                   { status, stdout, stderr, changed, mtime,
- *                                   reload }.
+ *   GET  /api/commands             → [{ id, label, reload, confirm, detach }]
+ *                                   from the commands file (re-read each time)
+ *   POST /api/commands/<id>        → body { name, page (0-based), x, y,
+ *                                   session?, selection? } with x,y in display
+ *                                   points; selection is { page (0-based),
+ *                                   rect: { x, y, w, h } (display points),
+ *                                   count } or null. Runs the command with the
+ *                                   notebook's path, the point and the
+ *                                   selection (also in PDF space) and its run's
+ *                                   socket in its environment. Returns
+ *                                   { run, status, stdout, stderr, changed,
+ *                                   mtime, reload }; a detached command answers
+ *                                   at once with { detached: true, run,
+ *                                   status: null, ... } and the page hears of
+ *                                   its exit over the WebSocket.
+ *   GET  /api/page?session=<id>    → WebSocket upgrade: the page's end of the
+ *                                   bridge (see server/bridge.ts).
  */
 import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import type { Duplex } from "node:stream";
 import { PDFDocument } from "pdf-lib";
+import { WebSocketServer, type WebSocket } from "ws";
 import { importPdf, pageGeom, type ImportedDocument } from "../src/pdf/import.ts";
-import { displayToPdf } from "../src/pdf/geom.ts";
-import { defaultCommandsFile, loadCommands, runCommand } from "./commands.ts";
+import { displayToPdf, type PageGeom } from "../src/pdf/geom.ts";
+import { defaultCommandsFile, loadCommands, startCommand, type CommandResult, type CommandSpec, type RunningCommand, type SelectionContext } from "./commands.ts";
+import { Bridge, type ExitInfo, type PageSocket } from "./bridge.ts";
 import { exportPdf } from "../src/pdf/export.ts";
 import type { ImageItem, PageModel } from "../src/model.ts";
 
@@ -61,6 +73,10 @@ export interface ServerOptions {
   port: number;
   /** Pen-menu commands file, or null for none. */
   commandsFile: string | null;
+  /** Where command runs' Unix sockets live (Bridge default when absent). */
+  socketDir?: string;
+  /** How long a page's detached runs outlive it, in ms (Bridge default when absent). */
+  graceMs?: number;
 }
 
 export interface NotebookInfo {
@@ -269,24 +285,74 @@ async function serveStatic(distDir: string, urlPath: string, res: http.ServerRes
   fs.createReadStream(target).pipe(res);
 }
 
+const SESSION_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+interface SelectionBody {
+  page: number;
+  rect: { x: number; y: number; w: number; h: number };
+  count: number;
+}
+
+function isSelection(v: unknown): v is SelectionBody {
+  const s = v as SelectionBody;
+  return (
+    typeof s === "object" && s !== null &&
+    Number.isInteger(s.page) && s.page >= 0 && Number.isInteger(s.count) && s.count >= 0 &&
+    typeof s.rect === "object" && s.rect !== null &&
+    [s.rect.x, s.rect.y, s.rect.w, s.rect.h].every(Number.isFinite)
+  );
+}
+
+/** A selection's display rect as a PDF-space box (corners converted, then normalised). */
+function selectionInPdf(geom: PageGeom, sel: SelectionBody): SelectionContext {
+  const r = sel.rect;
+  const a = displayToPdf(geom, r.x, r.y);
+  const b = displayToPdf(geom, r.x + r.w, r.y + r.h);
+  return { page: sel.page + 1, x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y), count: sel.count };
+}
+
+/** What a finished run did to the notebook, for the response and the page. */
+async function exitInfo(spec: CommandSpec, file: string, name: string, before: fs.Stats, result: CommandResult): Promise<ExitInfo> {
+  const after = await fsp.stat(file).catch(() => null);
+  const changed = !after || after.mtimeMs !== before.mtimeMs || after.size !== before.size;
+  if (changed) openCache.delete(name);
+  return {
+    status: result.status,
+    signal: result.signal,
+    timedOut: result.timedOut,
+    stdout: result.stdout,
+    changed,
+    mtime: after ? Math.round(after.mtimeMs) : null,
+    reload: spec.reload && changed,
+  };
+}
+
 /** POST /api/commands/<id>: run a configured command for a point on a page. */
-async function handleCommand(opts: ServerOptions, req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleCommand(opts: ServerOptions, bridge: Bridge, req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
   const cmds = await loadCommands(opts.commandsFile);
   const spec = cmds.find((c) => c.id === id);
   if (!spec || !opts.commandsFile) {
     send(res, 404, { error: `no such command: ${id}` });
     return;
   }
-  let body: { name?: unknown; page?: unknown; x?: unknown; y?: unknown };
+  let body: { name?: unknown; page?: unknown; x?: unknown; y?: unknown; session?: unknown; selection?: unknown };
   try {
     body = JSON.parse((await readBody(req)).toString("utf8")) as typeof body;
   } catch (err) {
     send(res, 400, { error: `bad request body: ${(err as Error).message}` });
     return;
   }
-  const { name, page, x, y } = body;
+  const { name, page, x, y, session = null, selection = null } = body;
   if (typeof name !== "string" || !validName(name) || !Number.isInteger(page) || (page as number) < 0 || !Number.isFinite(x) || !Number.isFinite(y)) {
     send(res, 400, { error: "need name, page (integer ≥ 0), x and y (numbers)" });
+    return;
+  }
+  if (session !== null && (typeof session !== "string" || !SESSION_RE.test(session))) {
+    send(res, 400, { error: "bad session" });
+    return;
+  }
+  if (selection !== null && !isSelection(selection)) {
+    send(res, 400, { error: "selection needs page (integer ≥ 0), rect { x, y, w, h } and count" });
     return;
   }
   const file = path.join(opts.notebooksDir, name);
@@ -304,13 +370,19 @@ async function handleCommand(opts: ServerOptions, req: http.IncomingMessage, res
   const baseBytes = openCache.get(name)?.baseBytes ?? (await importPdf(new Uint8Array(await fsp.readFile(file)))).baseBytes;
   const doc = await PDFDocument.load(baseBytes, { ignoreEncryption: true, updateMetadata: false });
   const pages = doc.getPageCount();
-  if ((page as number) >= pages) {
-    send(res, 400, { error: `page ${page} out of range; the PDF has ${pages}` });
+  if ((page as number) >= pages || (selection && selection.page >= pages)) {
+    send(res, 400, { error: `page ${selection && selection.page >= pages ? selection.page : page} out of range; the PDF has ${pages}` });
     return;
   }
   const geom = pageGeom(doc.getPage(page as number));
   const p = displayToPdf(geom, x as number, y as number);
-  const result = await runCommand(
+  const sel = selection ? selectionInPdf(pageGeom(doc.getPage(selection.page)), selection) : null;
+  // The run exists (and the page knows of it) before the process starts; a
+  // kill that lands before then is applied once it has.
+  let running: RunningCommand | undefined;
+  let killEarly = false;
+  const run = await bridge.openRun({ session, label: spec.label, detached: spec.detach, notebook: name }, () => (running ? running.kill() : (killEarly = true)));
+  running = startCommand(
     spec,
     {
       pdf: file,
@@ -325,26 +397,56 @@ async function handleCommand(opts: ServerOptions, req: http.IncomingMessage, res
       pageWidth: geom.cw,
       pageHeight: geom.ch,
       rotate: geom.rotate,
+      selection: sel,
     },
     path.dirname(opts.commandsFile),
+    { PDFINK_SOCKET: run.socketPath, PDFINK_RUN: run.id },
   );
-  const after = await fsp.stat(file).catch(() => null);
-  const changed = !after || after.mtimeMs !== before.mtimeMs || after.size !== before.size;
-  if (changed) openCache.delete(name);
-  console.log(`pdfink: ran "${spec.label}" on ${name} p${(page as number) + 1}: exit ${result.status}${changed ? ", file changed" : ""}`);
-  send(res, 200, {
-    status: result.status,
-    signal: result.signal,
-    timedOut: result.timedOut,
-    stdout: result.stdout,
-    stderr: result.stderr,
-    changed,
-    mtime: after ? Math.round(after.mtimeMs) : null,
-    reload: spec.reload && changed,
+  if (killEarly) running.kill();
+  const where = `on ${name} p${(page as number) + 1}`;
+  const finished = running.done.then(async (result) => {
+    const exit = await exitInfo(spec, file, name, before, result);
+    await bridge.closeRun(run.id, exit);
+    console.log(`pdfink: ran "${spec.label}" ${where}: exit ${result.status ?? result.signal}${exit.changed ? ", file changed" : ""}`);
+    return { result, exit };
   });
+  if (spec.detach) {
+    console.log(`pdfink: started "${spec.label}" ${where} (detached, run ${run.id})`);
+    finished.catch((err: Error) => console.error(err));
+    send(res, 200, { detached: true, run: run.id, status: null, signal: null, timedOut: false, stdout: "", stderr: "", changed: false, mtime: Math.round(before.mtimeMs), reload: false });
+    return;
+  }
+  const { result, exit } = await finished;
+  send(res, 200, { run: run.id, ...exit, stderr: result.stderr });
 }
 
-async function handleApi(opts: ServerOptions, req: http.IncomingMessage, res: http.ServerResponse, urlPath: string): Promise<void> {
+/** The page's WebSocket, as the bridge wants it. */
+function pageSocket(ws: WebSocket): PageSocket {
+  ws.on("error", () => {}); // a broken page connection just closes
+  return {
+    send: (text) => {
+      if (ws.readyState === ws.OPEN) ws.send(text);
+    },
+    close: () => ws.close(),
+    onMessage: (fn) => ws.on("message", (data, isBinary) => {
+      if (!isBinary) fn(data.toString());
+    }),
+    onClose: (fn) => ws.on("close", () => fn()),
+  };
+}
+
+/** Upgrade GET /api/page?session=<id> to the page's WebSocket; refuse anything else. */
+function handleUpgrade(opts: ServerOptions, wss: WebSocketServer, bridge: Bridge, req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const session = url.searchParams.get("session");
+  if (opts.mode !== "server" || req.method !== "GET" || url.pathname !== "/api/page" || !session || !SESSION_RE.test(session)) {
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => bridge.addPage(session, pageSocket(ws)));
+}
+
+async function handleApi(opts: ServerOptions, bridge: Bridge, req: http.IncomingMessage, res: http.ServerResponse, urlPath: string): Promise<void> {
   if (urlPath === "/api/status") {
     send(res, 200, opts.mode === "server" ? { mode: "server", notebooksDir: path.basename(opts.notebooksDir) } : { mode: "browser" });
     return;
@@ -355,7 +457,7 @@ async function handleApi(opts: ServerOptions, req: http.IncomingMessage, res: ht
   }
   if (urlPath === "/api/commands" && req.method === "GET") {
     const cmds = await loadCommands(opts.commandsFile);
-    send(res, 200, cmds.map((c) => ({ id: c.id, label: c.label, reload: c.reload, confirm: c.confirm })));
+    send(res, 200, cmds.map((c) => ({ id: c.id, label: c.label, reload: c.reload, confirm: c.confirm, detach: c.detach })));
     return;
   }
   const cm = /^\/api\/commands\/([^/]+)$/.exec(urlPath);
@@ -364,7 +466,7 @@ async function handleApi(opts: ServerOptions, req: http.IncomingMessage, res: ht
       send(res, 405, { error: "method not allowed" });
       return;
     }
-    await handleCommand(opts, req, res, decodeURIComponent(cm[1]));
+    await handleCommand(opts, bridge, req, res, decodeURIComponent(cm[1]));
     return;
   }
   const m = /^\/api\/notebooks(?:\/([^/]+)(\/open|\/save)?)?$/.exec(urlPath);
@@ -519,10 +621,12 @@ async function handleApi(opts: ServerOptions, req: http.IncomingMessage, res: ht
 }
 
 export function createServer(opts: ServerOptions): http.Server {
-  return http.createServer((req, res) => {
+  const bridge = new Bridge({ socketDir: opts.socketDir, graceMs: opts.graceMs });
+  const wss = new WebSocketServer({ noServer: true });
+  const server = http.createServer((req, res) => {
     const urlPath = (req.url ?? "/").split("?")[0];
     const run = urlPath.startsWith("/api/")
-      ? handleApi(opts, req, res, urlPath)
+      ? handleApi(opts, bridge, req, res, urlPath)
       : opts.distDir
         ? serveStatic(opts.distDir, urlPath, res)
         : Promise.resolve(send(res, 404, { error: "no static files configured" }));
@@ -532,6 +636,16 @@ export function createServer(opts: ServerOptions): http.Server {
       else res.end();
     });
   });
+  server.on("upgrade", (req, socket, head) => handleUpgrade(opts, wss, bridge, req, socket, head));
+  // An upgraded socket keeps close() waiting (no "close" event) until it ends,
+  // so stop the bridge and drop the pages as soon as close() is called.
+  const close = server.close.bind(server);
+  server.close = ((cb?: (err?: Error) => void) => {
+    bridge.shutdown().catch((err: Error) => console.error(err));
+    for (const ws of wss.clients) ws.terminate();
+    return close(cb);
+  }) as typeof server.close;
+  return server;
 }
 
 /** Options from command-line flags, falling back to environment variables, then defaults. */
