@@ -5,7 +5,7 @@ import { PDFDocument, PDFName } from "pdf-lib";
 import { createBlankPdf, exportPdf } from "../../src/pdf/export";
 import { readOutline } from "../../src/pdf/outline";
 import type { Bookmark, PageModel } from "../../src/model";
-import { FIXTURES, expect, fakeClipboard, openApp, state, waitReady } from "./helpers";
+import { FIXTURES, expect, fakeClipboard, openApp, state, toClient, waitReady } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -141,5 +141,34 @@ test.describe("bookmarks", () => {
     const [again] = await Promise.all([page.waitForEvent("download"), page.click("#btn-save")]);
     const doc2 = await PDFDocument.load(fs.readFileSync((await again.path())!), { updateMetadata: false });
     expect(readOutline(doc2)).toEqual([...outline.slice(0, 3), { title: "Added", page: 1, level: 0 }, outline[3]]);
+  });
+
+  test("Bookmark this page… defaults to today's date", async ({ page }) => {
+    const name = unique("bm-menu");
+    await putNotebook(name, await createBlankPdf(3));
+    await openNotebookPage(page, name);
+    await page.evaluate(() => window.__pdfink.views[1].el.scrollIntoView({ block: "start" }));
+    const [px, py] = await toClient(page, 1, 300, 300);
+    await page.mouse.click(px, py, { button: "right" });
+    const labels = await page.locator("#ctx-menu button").allTextContents();
+    expect(labels[labels.indexOf("Add page") + 1]).toBe("Bookmark this page…");
+    await page.locator("#ctx-menu button", { hasText: "Bookmark this page…" }).click();
+    const input = page.locator("#dialog .dialog-input");
+    await expect(input).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
+    const today = await input.inputValue();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => bookmarkOptions(page)).toContain(today);
+    expect((await state(page)).bookmarks).toEqual([{ title: today, page: 1, level: 0 }]);
+
+    // Cancelled or empty adds nothing.
+    await page.mouse.click(px, py, { button: "right" });
+    await page.locator("#ctx-menu button", { hasText: "Bookmark this page…" }).click();
+    await page.keyboard.press("Escape");
+    await page.mouse.click(px, py, { button: "right" });
+    await page.locator("#ctx-menu button", { hasText: "Bookmark this page…" }).click();
+    await page.fill("#dialog .dialog-input", "  ");
+    await page.keyboard.press("Enter");
+    await expect(input).toHaveCount(0);
+    expect((await state(page)).bookmarks).toHaveLength(1);
   });
 });

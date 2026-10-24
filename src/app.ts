@@ -23,7 +23,8 @@ import {
 import { importPdf } from "./pdf/import";
 import { linkUrlOk } from "./pdf/links";
 import { appendBlankPage, createBlankPdf, exportPdf } from "./pdf/export";
-import { PageView, drawStroke, pruneImageCache, type SelectionView } from "./render/pageview";
+import { PageView, drawStroke, pruneImageCache, shortUrl, type SelectionView } from "./render/pageview";
+import { normalizeUrl, todayIso } from "./links-ui";
 import { displayToPdf, normalizeRotate, type PageGeom } from "./pdf/geom";
 import { ConflictError, listCommands, listNotebooks, loadNotebook, openNotebookParsed, runCommand, saveNotebook, saveNotebookParsed, type CommandInfo, type NotebookInfo } from "./api";
 
@@ -104,6 +105,9 @@ function pressureOf(e: PointerEvent): number {
   return p > 0 ? Math.max(0.05, Math.min(1, p)) : DEFAULT_PRESSURE;
 }
 const MIN_SELECT = 3;
+/** A finger that lifts within this long and this far (client px) of where it went down tapped. */
+const TAP_MS = 300;
+const TAP_SLOP_PX = 8;
 
 /** Throw a TypeError naming the bad field unless `s` is a stroke the model can hold. */
 function checkStroke(s: unknown, i: number): void {
@@ -181,6 +185,9 @@ export class App {
   private status: HTMLElement;
   /** Finger scroll done by hand while touch-action is off because a pen was near. */
   private touchScroll: { id: number; x: number; y: number } | null = null;
+  /** Fingers down while fingers scroll, and the one that may turn out to be a tap on a link. */
+  private touchesDown = new Set<number>();
+  private touchTap: { id: number; x: number; y: number; t: number } | null = null;
   private raf = 0;
 
   constructor(readonly container: HTMLElement) {
@@ -731,10 +738,21 @@ export class App {
 
   private penMenuItems(): MenuItem[] {
     const sel = !!this.selectedContent();
+    const at = this.menuPoint;
+    const link = at ? this.linkAt(at.page, at.x, at.y) : null;
+    const linkItems: MenuItem[] = link
+      ? [
+          { label: `Open ${shortUrl(link.url)}`, action: () => this.openLink(link) },
+          { label: "Edit URL…", action: () => void this.editLinkUrl(link) },
+          { separator: true, label: "" },
+        ]
+      : [];
+    const marquee = this.selectionInfo()?.marquee;
     const commands: MenuItem[] = this.commands.length
       ? [{ separator: true, label: "" }, ...this.commands.map((c) => ({ label: c.label, disabled: this.source.kind !== "server", action: () => void this.runMenuCommand(c) }))]
       : [];
     return [
+      ...linkItems,
       { label: "Pen", checked: this.tool === "pen", action: () => this.setTool("pen") },
       { label: "Eraser", checked: this.tool === "eraser", action: () => this.setTool("eraser") },
       { label: "Select", checked: this.tool === "select", action: () => this.setTool("select") },
@@ -743,15 +761,50 @@ export class App {
       { label: "Cut", disabled: !sel, action: () => void this.cut() },
       { label: "Paste", action: () => void this.pasteFromButton() },
       { label: "Delete", disabled: !sel, action: () => this.deleteSelection() },
+      { label: "Add link…", disabled: !(marquee && marquee.w > 0 && marquee.h > 0), action: () => void this.addLinkOnSelection() },
       { separator: true, label: "" },
       { label: "Undo", disabled: this.undoStack.length === 0, action: () => this.undo() },
       { label: "Redo", disabled: this.redoStack.length === 0, action: () => this.redo() },
       { separator: true, label: "" },
       { label: "Add page", action: () => void this.addPage() },
+      { label: "Bookmark this page…", action: () => void this.bookmarkMenuPage(at?.page ?? this.currentPage) },
       { label: "Save", action: () => void this.save() },
       ...commands,
       ...this.menuButtonItems(),
     ];
+  }
+
+  /** Ask for a new url for `link`; blank or cancelled leaves it. */
+  private async editLinkUrl(link: LinkItem): Promise<void> {
+    const answer = await this.promptFn("Link URL", link.url);
+    const url = normalizeUrl(answer ?? "");
+    if (!url || url === link.url) return;
+    if (!linkUrlOk(url)) {
+      this.setStatus(`Not a web link: ${answer!.trim()}`);
+      return;
+    }
+    this.setLink(link.id, { url });
+  }
+
+  /** Ask for a url and put a link on the selection's marquee. */
+  private async addLinkOnSelection(): Promise<void> {
+    const sel = this.selectionInfo();
+    if (!sel?.marquee) return;
+    const answer = await this.promptFn("Link URL", "https://");
+    const url = normalizeUrl(answer ?? "");
+    if (!url) return;
+    if (!linkUrlOk(url)) {
+      this.setStatus(`Not a web link: ${answer!.trim()}`);
+      return;
+    }
+    this.addLink(sel.page, sel.rect, url);
+  }
+
+  /** Ask for a title (today's date by default) and bookmark `page`. */
+  private async bookmarkMenuPage(page: number): Promise<void> {
+    const title = (await this.promptFn("Bookmark title", todayIso()))?.trim();
+    if (!title || !this.pages[page]) return;
+    this.addBookmark(page, title);
   }
 
   openPenMenu(x: number, y: number, pointerId: number | null = null): void {
@@ -945,6 +998,9 @@ export class App {
         return;
       }
     } else if (e.pointerType === "touch") {
+      this.touchesDown.add(e.pointerId);
+      // One finger, fingers scrolling: it may be a tap on a link. A second finger is a pinch.
+      this.touchTap = !this.fingerDraws && this.touchesDown.size === 1 ? { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() } : null;
       if (this.fingerDraws) {
         // One finger draws. A second finger cancels that stroke and pans instead.
         const drawing = [...this.pointers.values()].find((p) => p.touch);
@@ -1025,6 +1081,8 @@ export class App {
 
   private onPointerMove(e: PointerEvent): void {
     if (e.pointerType === "touch") {
+      const tap = this.touchTap;
+      if (tap && tap.id === e.pointerId && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > TAP_SLOP_PX) this.touchTap = null;
       const ts = this.touchScroll;
       if (ts && ts.id === e.pointerId) {
         this.container.scrollLeft -= e.clientX - ts.x;
@@ -1149,6 +1207,18 @@ export class App {
 
   private onPointerUp(e: PointerEvent, cancelled = false): void {
     if (this.touchScroll && this.touchScroll.id === e.pointerId) this.touchScroll = null;
+    if (e.pointerType === "touch") {
+      this.touchesDown.delete(e.pointerId);
+      const tap = this.touchTap;
+      if (tap && tap.id === e.pointerId) {
+        this.touchTap = null;
+        if (!cancelled && !this.fingerDraws && performance.now() - tap.t <= TAP_MS && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) <= TAP_SLOP_PX) {
+          const at = this.pagePointAt(tap.x, tap.y);
+          const link = at && this.linkAt(at.page, at.x, at.y);
+          if (link) this.openLink(link);
+        }
+      }
+    }
     if (e.pointerType === "pen" && this.hoverErase) this.endHoverErase();
     const ptr = this.pointers.get(e.pointerId);
     if (!ptr) return;

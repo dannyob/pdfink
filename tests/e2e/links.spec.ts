@@ -2,7 +2,7 @@ import { test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { PDFDict, PDFDocument, PDFName, PDFString } from "pdf-lib";
 import { createBlankPdf } from "../../src/pdf/export";
-import { expect, openApp, state } from "./helpers";
+import { expect, openApp, state, toClient } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -41,6 +41,37 @@ async function maxPixel(page: Page, idx: number, x: number, y: number, w: number
 }
 
 const BOX = { x: 100, y: 100, w: 200, h: 40 };
+
+/** Serve every example.* page locally so popups load without the network. */
+async function stubExampleSites(page: Page): Promise<void> {
+  await page.context().route(/^https?:\/\/([a-z]+\.)?example\.(org|com|net)\//, (r) => r.fulfill({ contentType: "text/html", body: "<p>stub</p>" }));
+}
+
+/** Replace window.open with a recorder; returns nothing, read with `openCalls`. */
+async function recordOpens(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const w = window as unknown as { __opens: unknown[][] };
+    w.__opens = [];
+    window.open = ((...args: unknown[]) => (w.__opens.push(args), null)) as typeof window.open;
+  });
+}
+
+async function openCalls(page: Page): Promise<unknown[][]> {
+  return page.evaluate(() => (window as unknown as { __opens: unknown[][] }).__opens);
+}
+
+/** Fire a touch pointer event at a client point, on whatever element is there. */
+async function touchEvent(page: Page, type: string, x: number, y: number, pointerId = 7): Promise<void> {
+  await page.evaluate(
+    ([t, cx, cy, id]) => {
+      const el = document.elementFromPoint(cx, cy) ?? document.body;
+      el.dispatchEvent(
+        new PointerEvent(t, { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, pointerType: "touch", pointerId: id, isPrimary: id === 7, pressure: t === "pointerup" ? 0 : 0.5, buttons: t === "pointerup" ? 0 : 1, button: t === "pointermove" ? -1 : 0, width: 20, height: 20 }),
+      );
+    },
+    [type, x, y, pointerId] as const,
+  );
+}
 
 test.describe("links", () => {
   test("addLink draws a blue box with a caption and is undoable", async ({ page }) => {
@@ -183,5 +214,153 @@ test.describe("links", () => {
     const s = await state(page);
     expect(s.pages[0].links).toEqual([expect.objectContaining({ ...BOX, url: "https://example.com/saved", label: "Saved" })]);
     expect(s.pages[0].links[0].x).toBeCloseTo(BOX.x, 2);
+  });
+
+  test("the pen menu over a link offers Open and Edit URL", async ({ page }) => {
+    await openApp(page);
+    const id = await page.evaluate((r) => window.__pdfink.addLink(0, r, "https://example.org/"), BOX);
+    const [cx, cy] = await toClient(page, 0, BOX.x + 50, BOX.y + 20);
+    await page.mouse.click(cx, cy, { button: "right" });
+    const items = page.locator("#ctx-menu button");
+    await expect(items.nth(0)).toHaveText("Open example.org");
+    await expect(items.nth(1)).toHaveText("Edit URL…");
+    await expect(items.nth(2)).toHaveText("Pen");
+
+    await page.locator("#ctx-menu button", { hasText: "Edit URL…" }).click();
+    await expect(page.locator("#dialog .dialog-input")).toHaveValue("https://example.org/");
+    await page.fill("#dialog .dialog-input", "example.com/x");
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await state(page)).pages[0].links[0]?.url).toBe("https://example.com/x");
+    expect((await state(page)).pages[0].links[0].id).toBe(id);
+    const undo = (await state(page)).undo;
+
+    // The same url again records no change; a bad scheme is refused with a message.
+    await page.mouse.click(cx, cy, { button: "right" });
+    await page.locator("#ctx-menu button", { hasText: "Edit URL…" }).click();
+    await expect(page.locator("#dialog .dialog-input")).toHaveValue("https://example.com/x");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#dialog .dialog-input")).toHaveCount(0);
+    expect((await state(page)).undo).toBe(undo);
+
+    await page.mouse.click(cx, cy, { button: "right" });
+    await page.locator("#ctx-menu button", { hasText: "Edit URL…" }).click();
+    await page.fill("#dialog .dialog-input", "JAVASCRIPT:alert(1)");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#status")).toHaveText("Not a web link: JAVASCRIPT:alert(1)");
+    expect((await state(page)).pages[0].links[0].url).toBe("https://example.com/x");
+
+    // Cancelled or emptied leaves it.
+    await page.mouse.click(cx, cy, { button: "right" });
+    await page.locator("#ctx-menu button", { hasText: "Edit URL…" }).click();
+    await page.fill("#dialog .dialog-input", "");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#dialog .dialog-input")).toHaveCount(0);
+    expect((await state(page)).pages[0].links[0].url).toBe("https://example.com/x");
+    expect((await state(page)).undo).toBe(undo);
+
+    // Away from the link the menu starts with the tools.
+    const [ox, oy] = await toClient(page, 0, 400, 400);
+    await page.mouse.click(ox, oy, { button: "right" });
+    await expect(items.nth(0)).toHaveText("Pen");
+    await expect(page.locator("#ctx-menu button", { hasText: "Edit URL…" })).toHaveCount(0);
+  });
+
+  test("Open launches the url in a new tab", async ({ page }) => {
+    await stubExampleSites(page);
+    await openApp(page);
+    await page.evaluate((r) => window.__pdfink.addLink(0, r, "https://example.org/page"), BOX);
+    const [cx, cy] = await toClient(page, 0, BOX.x + 50, BOX.y + 20);
+    await page.mouse.click(cx, cy, { button: "right" });
+    const popup = page.waitForEvent("popup");
+    await page.locator("#ctx-menu button", { hasText: "Open example.org/page" }).click();
+    const tab = await popup;
+    await tab.waitForLoadState();
+    expect(tab.url()).toBe("https://example.org/page");
+    expect(await tab.evaluate(() => window.opener)).toBeNull();
+  });
+
+  test("a finger tap opens the link, but not in finger-draws mode", async ({ page }) => {
+    await stubExampleSites(page);
+    await openApp(page);
+    await page.evaluate((r) => window.__pdfink.addLink(0, r, "https://example.org/tap"), BOX);
+    const [cx, cy] = await toClient(page, 0, BOX.x + 50, BOX.y + 20);
+    const popup = page.waitForEvent("popup");
+    await page.evaluate(([x, y]) => window.__stylusSim.tap(x, y, { pointerType: "touch" }), [cx, cy] as const);
+    const tab = await popup;
+    await tab.waitForLoadState();
+    expect(tab.url()).toBe("https://example.org/tap");
+    await tab.close();
+
+    await recordOpens(page);
+    // Moved 9 px: a scroll, not a tap.
+    await touchEvent(page, "pointerdown", cx, cy);
+    await touchEvent(page, "pointermove", cx + 9, cy);
+    await touchEvent(page, "pointerup", cx + 9, cy);
+    // A second finger joins (a pinch): not a tap either.
+    await touchEvent(page, "pointerdown", cx, cy, 7);
+    await touchEvent(page, "pointerdown", cx + 40, cy, 8);
+    await touchEvent(page, "pointerup", cx, cy, 7);
+    await touchEvent(page, "pointerup", cx + 40, cy, 8);
+    // Off the link: nothing to open.
+    const [ox, oy] = await toClient(page, 0, 400, 400);
+    await page.evaluate(([x, y]) => window.__stylusSim.tap(x, y, { pointerType: "touch" }), [ox, oy] as const);
+    expect(await openCalls(page)).toEqual([]);
+    // Moved under 8 px still counts.
+    await touchEvent(page, "pointerdown", cx, cy);
+    await touchEvent(page, "pointermove", cx + 5, cy + 3);
+    await touchEvent(page, "pointerup", cx + 5, cy + 3);
+    expect(await openCalls(page)).toEqual([["https://example.org/tap", "_blank", "noopener,noreferrer"]]);
+
+    // Held 400 ms: a long press, not a tap (the one deliberate wait).
+    await recordOpens(page);
+    await touchEvent(page, "pointerdown", cx, cy);
+    await page.waitForTimeout(400);
+    await touchEvent(page, "pointerup", cx, cy);
+    expect(await openCalls(page)).toEqual([]);
+
+    // In finger-draws mode a tap draws a dot.
+    await page.evaluate(() => window.__pdfink.setFingerDraws(true));
+    const before = (await state(page)).pages[0].strokes.length;
+    await page.evaluate(([x, y]) => window.__stylusSim.tap(x, y, { pointerType: "touch" }), [cx, cy] as const);
+    expect(await openCalls(page)).toEqual([]);
+    expect((await state(page)).pages[0].strokes).toHaveLength(before + 1);
+  });
+
+  test("Add link… puts a link on the selection rectangle", async ({ page }) => {
+    await openApp(page);
+    const [cx, cy] = await toClient(page, 0, 300, 300);
+    await page.mouse.click(cx, cy, { button: "right" });
+    const add = page.locator("#ctx-menu button", { hasText: "Add link…" });
+    await expect(add).toBeDisabled();
+    // It sits right after Delete.
+    const labels = await page.locator("#ctx-menu button").allTextContents();
+    expect(labels[labels.indexOf("Delete") + 1]).toBe("Add link…");
+    await page.keyboard.press("Escape");
+
+    // A zero-area marquee cannot hold a link.
+    await page.evaluate(() => window.__pdfink.selectRect(0, { x: 250, y: 250, w: 0, h: 30 }));
+    await page.mouse.click(cx, cy, { button: "right" });
+    await expect(add).toBeDisabled();
+    await page.keyboard.press("Escape");
+
+    const rect = { x: 250, y: 260, w: 120, h: 30 };
+    await page.evaluate((r) => window.__pdfink.selectRect(0, r), rect);
+    await page.mouse.click(cx, cy, { button: "right" });
+    await expect(add).toBeEnabled();
+    await add.click();
+    await expect(page.locator("#dialog .dialog-input")).toHaveValue("https://");
+    await page.fill("#dialog .dialog-input", "example.net/a");
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await state(page)).pages[0].links.length).toBe(1);
+    expect((await state(page)).pages[0].links[0]).toMatchObject({ ...rect, url: "https://example.net/a" });
+
+    // A bad scheme is refused with a message and adds nothing.
+    await page.evaluate((r) => window.__pdfink.selectRect(0, r), { x: 400, y: 400, w: 50, h: 20 });
+    await page.mouse.click(cx, cy, { button: "right" });
+    await add.click();
+    await page.fill("#dialog .dialog-input", "javascript:alert(1)");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#status")).toHaveText("Not a web link: javascript:alert(1)");
+    expect((await state(page)).pages[0].links).toHaveLength(1);
   });
 });
