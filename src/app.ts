@@ -19,11 +19,29 @@ import {
 import { importPdf } from "./pdf/import";
 import { appendBlankPage, createBlankPdf, exportPdf } from "./pdf/export";
 import { PageView, drawStroke, pruneImageCache, type SelectionView } from "./render/pageview";
+import { displayToPdf, normalizeRotate, type PageGeom } from "./pdf/geom";
 import { ConflictError, listCommands, listNotebooks, loadNotebook, openNotebookParsed, runCommand, saveNotebook, saveNotebookParsed, type CommandInfo, type NotebookInfo } from "./api";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
 export type Tool = "pen" | "eraser" | "select";
+
+/** Events a page-side API can listen to with `App.on`. */
+export type AppEvent = "selection" | "save" | "page" | "notebook" | "stroke" | "button";
+
+export interface SelectionInfo {
+  page: number;
+  /** The rectangle the user (or `selectRect`) drew, if any. */
+  marquee: Rect | null;
+  /** Bounds of the selected strokes and images, if any. */
+  bounds: Rect | null;
+  /** Union of marquee and bounds, in page space. */
+  rect: Rect;
+  /** `rect` in PDF user space (points, y up). */
+  pdfRect: Rect;
+  strokeIds: string[];
+  imageIds: string[];
+}
 
 interface Selection extends SelectionView {
   page: number;
@@ -129,6 +147,8 @@ export class App {
   onFingerDrawsChanged: (on: boolean) => void = () => {};
   lastPointer: { page: number; x: number; y: number } | null = null;
   currentPage = 0;
+  /** Id of this tab's page-bridge session (set by main.ts). */
+  session: string | null = null;
   private pointers = new Map<number, Pointer>();
   private observer: IntersectionObserver;
   private status: HTMLElement;
@@ -272,6 +292,7 @@ export class App {
     this.source = { kind: "server", name, mtime: loaded.mtime };
     this.baseSaved = this.baseRevision;
     this.setStatus();
+    this.emit("notebook", { name });
     return true;
   }
 
@@ -371,6 +392,7 @@ export class App {
       if (rev === this.revision) this.dirty = false;
       else this.scheduleAutosave();
       this.setStatus();
+      this.emit("save", { name, mtime: info.mtime });
       return true;
     } catch (err) {
       this.saving = false;
@@ -440,15 +462,22 @@ export class App {
     // Parse first so a bad file leaves the current document untouched.
     // pdf.js transfers the buffer to the worker, so give it a copy.
     const pdfDoc = await pdfjs.getDocument({ data: baseBytes.slice() }).promise;
+    const geoms = await Promise.all(
+      Array.from({ length: pdfDoc.numPages }, async (_, i): Promise<PageGeom> => {
+        const { view, rotate } = await pdfDoc.getPage(i + 1);
+        return { cx: view[0], cy: view[1], cw: view[2] - view[0], ch: view[3] - view[1], rotate: normalizeRotate(rotate) };
+      }),
+    );
     for (const v of this.views) {
       this.observer.unobserve(v.el);
       v.destroy();
     }
     this.views = [];
-    this.selection = null;
+    this.setSelection(null);
     this.pointers.clear();
     if (this.pdfDoc) void this.pdfDoc.loadingTask.destroy();
     this.pdfDoc = pdfDoc;
+    this.geoms = geoms;
     this.baseBytes = baseBytes;
     this.pages = pages;
     pruneImageCache(new Set(pages.flatMap((p) => p.images.map((im) => im.id))));
@@ -525,6 +554,7 @@ export class App {
     if (best !== this.currentPage) {
       this.currentPage = best;
       this.setStatus();
+      this.emit("page", { page: best });
     }
   }
 
@@ -628,7 +658,7 @@ export class App {
   }
 
   /** The file changed under us (by a command we ran): accept its new mtime so the next save doesn't conflict. */
-  private noteExternalChange(name: string, mtime: number | null): void {
+  noteExternalChange(name: string, mtime: number | null): void {
     if (this.source.kind === "server" && this.source.name === name && mtime !== null) {
       this.source = { kind: "server", name, mtime };
       this.baseSaved = this.baseRevision;
@@ -668,6 +698,7 @@ export class App {
       { label: "Add page", action: () => void this.addPage() },
       { label: "Save", action: () => void this.save() },
       ...commands,
+      ...this.menuButtonItems(),
     ];
   }
 
@@ -725,7 +756,7 @@ export class App {
   clearSelection(): void {
     if (!this.selection) return;
     const p = this.selection.page;
-    this.selection = null;
+    this.setSelection(null);
     this.redraw(p);
     this.setStatus();
   }
@@ -921,7 +952,7 @@ export class App {
     } else {
       ptr.start = { x: p.x, y: p.y, p: 0 };
       if (this.selection && this.selection.page !== page) this.clearSelection();
-      this.selection = { page, rect: null, strokeIds: new Set(), imageIds: new Set() };
+      this.setSelection({ page, rect: null, strokeIds: new Set(), imageIds: new Set() });
       this.redraw(page);
     }
     this.pointers.set(e.pointerId, ptr);
@@ -1081,6 +1112,7 @@ export class App {
       if (!cancelled || s.points.length > 1) {
         const before = this.snapshot(page);
         this.commit(page, before, { strokes: [...before.strokes, s], images: before.images });
+        this.emit("stroke", { page, stroke: s });
       } else {
         this.redraw(page);
       }
@@ -1090,10 +1122,11 @@ export class App {
       const r = this.selection.rect;
       if (!r || (r.w < MIN_SELECT && r.h < MIN_SELECT)) {
         // A tap: clear selection but remember the spot as the paste target.
-        this.selection = null;
+        this.setSelection(null);
         this.redraw(page);
       } else {
         this.updateSelectionMembers();
+        this.setSelection(this.selection); // announce the finished marquee
         this.redraw(page);
       }
       this.setStatus();
@@ -1234,7 +1267,7 @@ export class App {
     const before = this.snapshot(c.page);
     const sIds = new Set(c.strokes.map((s) => s.id));
     const iIds = new Set(c.images.map((i) => i.id));
-    this.selection = null;
+    this.setSelection(null);
     this.commit(c.page, before, {
       strokes: before.strokes.filter((s) => !sIds.has(s.id)),
       images: before.images.filter((im) => !iIds.has(im.id)),
@@ -1263,12 +1296,12 @@ export class App {
     const images = clip.images.map((im) => ({ ...translateImage(im, dx, dy), id: newId("im") }));
     const before = this.snapshot(t.page);
     this.commit(t.page, before, { strokes: [...before.strokes, ...strokes], images: [...before.images, ...images] });
-    this.selection = {
+    this.setSelection({
       page: t.page,
       rect: { x: dx, y: dy, w: clip.width, h: clip.height },
       strokeIds: new Set(strokes.map((s) => s.id)),
       imageIds: new Set(images.map((im) => im.id)),
-    };
+    });
     this.redraw(t.page);
     this.setStatus();
     return true;
@@ -1305,7 +1338,7 @@ export class App {
     const im: ImageItem = { id: newId("im"), x, y, w, h, mime: type, bytes: data };
     const before = this.snapshot(t.page);
     this.commit(t.page, before, { strokes: before.strokes, images: [...before.images, im] });
-    this.selection = { page: t.page, rect: { x, y, w, h }, strokeIds: new Set(), imageIds: new Set([im.id]) };
+    this.setSelection({ page: t.page, rect: { x, y, w, h }, strokeIds: new Set(), imageIds: new Set([im.id]) });
     this.redraw(t.page);
     this.setStatus();
     return true;
@@ -1600,6 +1633,208 @@ export class App {
     });
   }
 
+  // ---------------------------------------------------------------- page API
+  // What the page bridge (window.pdfink) drives: events, selection queries,
+  // programmatic ink, command buttons and a progress line.
+
+  private listeners = new Map<AppEvent, Set<(data: unknown) => void>>();
+  /** Crop box and rotation of each page of the current document, from pdf.js. */
+  private geoms: PageGeom[] = [];
+  /** Whether the last `selection` event carried a selection (so clearing twice fires once). */
+  private selectionAnnounced = false;
+  private buttons = new Map<string, { label: string; where: "menu" | "toolbar"; el: HTMLButtonElement | null }>();
+  private progressText: string | null = null;
+
+  on(event: AppEvent, fn: (data: unknown) => void): () => void {
+    let set = this.listeners.get(event);
+    if (!set) this.listeners.set(event, (set = new Set()));
+    set.add(fn);
+    return () => void set.delete(fn);
+  }
+
+  private emit(event: AppEvent, data: unknown): void {
+    for (const fn of [...(this.listeners.get(event) ?? [])]) {
+      try {
+        fn(data);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  }
+
+  /** The one place the selection changes; tells listeners. */
+  private setSelection(sel: Selection | null): void {
+    this.selection = sel;
+    const info = this.selectionInfo();
+    if (!info && !this.selectionAnnounced) return;
+    this.selectionAnnounced = !!info;
+    this.emit("selection", info);
+  }
+
+  private checkPage(page: number): PageModel {
+    const m = this.pages[page];
+    if (!Number.isInteger(page) || !m) throw new RangeError(`No page ${page} (the document has ${this.pages.length})`);
+    return m;
+  }
+
+  pageGeom(page: number): PageGeom {
+    const m = this.checkPage(page);
+    return this.geoms[page] ?? { cx: 0, cy: 0, cw: m.width, ch: m.height, rotate: 0 };
+  }
+
+  selectionInfo(): SelectionInfo | null {
+    const sel = this.selection;
+    if (!sel) return null;
+    const c = this.selectedContent();
+    let bounds: Rect | null = null;
+    for (const s of c?.strokes ?? []) bounds = unionRect(bounds, strokeBounds(s));
+    for (const im of c?.images ?? []) bounds = unionRect(bounds, imageBounds(im));
+    const marquee = sel.rect ? { ...sel.rect } : null;
+    const rect = marquee ? (bounds ? unionRect(marquee, bounds) : { ...marquee }) : bounds;
+    if (!rect) return null;
+    const g = this.pageGeom(sel.page);
+    const a = displayToPdf(g, rect.x, rect.y);
+    const b = displayToPdf(g, rect.x + rect.w, rect.y + rect.h);
+    return {
+      page: sel.page,
+      marquee,
+      bounds,
+      rect,
+      pdfRect: normalizeRect(a.x, a.y, b.x, b.y),
+      strokeIds: c?.strokes.map((s) => s.id) ?? [],
+      imageIds: c?.images.map((im) => im.id) ?? [],
+    };
+  }
+
+  selectionInk(): Stroke[] {
+    return this.selectedContent()?.strokes ?? [];
+  }
+
+  /** PNG of the selection's union rect: page base, images and ink. */
+  async selectionPng(scale = App.CLIP_PX_PER_PT): Promise<Blob> {
+    const info = this.selectionInfo();
+    if (!info) throw new Error("Nothing is selected");
+    return this.renderRegionPng(info.page, info.rect, scale);
+  }
+
+  async pagePng(page: number, scale = 1): Promise<Blob> {
+    const m = this.checkPage(page);
+    return this.renderRegionPng(page, { x: 0, y: 0, w: m.width, h: m.height }, scale);
+  }
+
+  /** Render a page-space rectangle of one page at `scale` px per point. */
+  private async renderRegionPng(page: number, rect: Rect, scale: number): Promise<Blob> {
+    const m = this.pages[page];
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.ceil(rect.w * scale));
+    canvas.height = Math.max(1, Math.ceil(rect.h * scale));
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (this.pdfDoc && page < this.pdfDoc.numPages) {
+      const pdfPage = await this.pdfDoc.getPage(page + 1);
+      const viewport = pdfPage.getViewport({ scale, offsetX: -rect.x * scale, offsetY: -rect.y * scale });
+      await pdfPage.render({ canvasContext: ctx, canvas, viewport, annotationMode: pdfjs.AnnotationMode.ENABLE }).promise;
+    }
+    ctx.save();
+    ctx.scale(scale, scale);
+    ctx.translate(-rect.x, -rect.y);
+    for (const im of m.images) {
+      const bmp = await createImageBitmap(new Blob([im.bytes as BlobPart], { type: im.mime }));
+      ctx.drawImage(bmp, im.x, im.y, im.w, im.h);
+      bmp.close();
+    }
+    for (const s of m.strokes) drawStroke(ctx, s);
+    ctx.restore();
+    return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob"))), "image/png"));
+  }
+
+  /** Select what a rectangle covers on `page`, as the Select tool would. */
+  selectRect(page: number, rect: Rect): void {
+    const m = this.checkPage(page);
+    this.setTool("select");
+    const old = this.selection?.page;
+    const r = normalizeRect(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
+    this.setSelection({
+      page,
+      rect: r,
+      strokeIds: new Set(m.strokes.filter((s) => strokeInRect(s, r)).map((s) => s.id)),
+      imageIds: new Set(m.images.filter((im) => imageInRect(im, r)).map((im) => im.id)),
+    });
+    if (old !== undefined && old !== page) this.redraw(old);
+    this.redraw(page);
+    this.setStatus();
+  }
+
+  /** Add strokes to a page as one undo step; returns their ids (new ones where none was given). */
+  addStrokes(page: number, strokes: Array<Omit<Stroke, "id"> & { id?: string }>): string[] {
+    this.checkPage(page);
+    if (!strokes.length) return [];
+    const added: Stroke[] = strokes.map((s) => ({ ...s, id: s.id ?? newId() }));
+    const before = this.snapshot(page);
+    this.commit(page, before, { strokes: [...before.strokes, ...added], images: before.images });
+    return added.map((s) => s.id);
+  }
+
+  addImageItem(page: number, bytes: Uint8Array, mime: "image/png" | "image/jpeg", rect: Rect): string {
+    this.checkPage(page);
+    const im: ImageItem = { id: newId("im"), x: rect.x, y: rect.y, w: rect.w, h: rect.h, mime, bytes };
+    const before = this.snapshot(page);
+    this.commit(page, before, { strokes: before.strokes, images: [...before.images, im] });
+    return im.id;
+  }
+
+  /** Remove strokes and images by id from any page; one undo step per page touched. */
+  removeItems(ids: string[]): number {
+    const gone = new Set(ids);
+    let removed = 0;
+    this.pages.forEach((_, page) => {
+      const before = this.snapshot(page);
+      const strokes = before.strokes.filter((s) => !gone.has(s.id));
+      const images = before.images.filter((im) => !gone.has(im.id));
+      const n = before.strokes.length - strokes.length + before.images.length - images.length;
+      if (!n) return;
+      removed += n;
+      this.commit(page, before, { strokes, images });
+    });
+    return removed;
+  }
+
+  /** Show a progress line next to the status; null clears it. */
+  progress(message: string | null): void {
+    this.progressText = message;
+    const el = document.getElementById("progress");
+    if (el) el.textContent = message ?? "";
+  }
+
+  /** A command button in the pen menu or the toolbar; pressing it emits `button`. Same id replaces. */
+  addButton(id: string, label: string, where: "menu" | "toolbar"): void {
+    this.removeButton(id);
+    let el: HTMLButtonElement | null = null;
+    if (where === "toolbar") {
+      el = document.createElement("button");
+      el.className = "cmd";
+      el.textContent = label;
+      el.dataset.id = id;
+      el.onclick = () => this.emit("button", { id });
+      document.getElementById("cmd-buttons")?.appendChild(el);
+    }
+    this.buttons.set(id, { label, where, el });
+  }
+
+  removeButton(id: string): void {
+    this.buttons.get(id)?.el?.remove();
+    this.buttons.delete(id);
+  }
+
+  private menuButtonItems(): MenuItem[] {
+    const items: MenuItem[] = [];
+    for (const [id, b] of this.buttons) {
+      if (b.where === "menu") items.push({ label: b.label, action: () => this.emit("button", { id }) });
+    }
+    return items.length ? [{ separator: true, label: "" }, ...items] : [];
+  }
+
   /** Compact state for tests. */
   getState() {
     return {
@@ -1628,6 +1863,8 @@ export class App {
       clip: this.clip ? { strokes: this.clip.strokes.length, images: this.clip.images.length, width: this.clip.width, height: this.clip.height } : null,
       undo: this.undoStack.length,
       redo: this.redoStack.length,
+      buttons: [...this.buttons.keys()],
+      progress: this.progressText,
     };
   }
 }

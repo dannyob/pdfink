@@ -32,6 +32,8 @@ button:disabled { opacity: 0.4; cursor: default; }
 .opt input { margin: 0; }
 button.tool.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 #status { margin-left: auto; font-size: 12px; color: #555; white-space: nowrap; }
+#progress { font-size: 12px; color: var(--accent); white-space: nowrap; }
+#progress:empty, #cmd-buttons:empty { display: none; }
 /* Pen context menu (barrel button when it isn't set to erase, or right-click). */
 #ctx-menu {
   position: fixed; z-index: 50; min-width: 150px; padding: 4px;

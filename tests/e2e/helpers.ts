@@ -44,6 +44,8 @@ export interface State {
   clip: { strokes: number; images: number; width: number; height: number } | null;
   undo: number;
   redo: number;
+  buttons: string[];
+  progress: string | null;
 }
 
 export async function state(page: Page): Promise<State> {
