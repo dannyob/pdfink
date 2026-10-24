@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
+import { spawn } from "node:child_process";
 import { createServer, optionsFrom, validName } from "../../server/index";
 import { createBlankPdf } from "../../src/pdf/export";
 
@@ -166,6 +167,60 @@ describe("pen-menu commands API", () => {
     expect(optionsFrom([], { PDFINK_COMMANDS: "none" }).commandsFile).toBeNull();
     expect(optionsFrom(["--notebooks", "/tmp/nb"], {}).commandsFile).toBe("/tmp/nb/pdfink-commands.conf");
   });
+});
+
+describe("the server process", () => {
+  it("kills detached runs when it gets SIGTERM, then exits 0", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdfink-sig-"));
+    const conf = path.join(dir, "pdfink-commands.conf");
+    // exec, so $$ is the sleep itself.
+    fs.writeFileSync(conf, '[Sleep]\ncommand = echo $$ > "$NOTEBOOKS/pid.txt"; exec sleep 60\ndetach = true\n');
+    fs.writeFileSync(path.join(dir, "a.pdf"), await createBlankPdf(1));
+    const port = await new Promise<number>((resolve) => {
+      const probe = net.createServer().listen(0, "127.0.0.1", () => {
+        const p = (probe.address() as AddressInfo).port;
+        probe.close(() => resolve(p));
+      });
+    });
+    const child = spawn(process.execPath, ["server/index.ts", "--port", String(port), "--notebooks", dir, "--dist", "none", "--commands", conf], {
+      env: { ...process.env, TMPDIR: dir }, // the run sockets go under the test's folder
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const exited = new Promise<number | null>((r) => child.on("exit", (code) => r(code)));
+    let pid = 0;
+    const alive = (p: number) => {
+      try {
+        process.kill(p, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const until = async (fn: () => boolean, ms: number) => {
+      for (const t0 = Date.now(); !fn(); await new Promise((r) => setTimeout(r, 20))) {
+        if (Date.now() - t0 > ms) throw new Error("timed out waiting");
+      }
+    };
+    try {
+      await new Promise<void>((resolve) => child.stdout.on("data", (d: Buffer) => d.toString().includes("pdfink: http") && resolve()));
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/page?session=sig`);
+      await new Promise<void>((r) => ws.addEventListener("open", () => r()));
+      const res = await fetch(`http://127.0.0.1:${port}/api/commands/Sleep`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "a.pdf", page: 0, x: 1, y: 1, session: "sig" }) });
+      expect(((await res.json()) as { detached: boolean }).detached).toBe(true);
+      const pidFile = path.join(dir, "pid.txt");
+      await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, "utf8").trim() !== "", 5000);
+      pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+      expect(alive(pid)).toBe(true);
+      child.kill("SIGTERM");
+      expect(await exited).toBe(0);
+      await until(() => !alive(pid), 5000);
+      ws.close();
+    } finally {
+      if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+      child.kill("SIGKILL");
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 describe("a command that fails to start", () => {

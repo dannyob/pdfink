@@ -697,8 +697,18 @@ if (isMain) {
     console.warn(`pdfink: no built app at ${opts.distDir} (run \`npm run build\` first); serving the API only`);
     opts.distDir = null;
   }
-  createServer(opts).listen(opts.port, opts.host, () => {
+  const server = createServer(opts).listen(opts.port, opts.host, () => {
     const where = opts.mode === "server" ? `notebooks=${opts.notebooksDir}` : "browser mode (no notebook API)";
     console.log(`pdfink: http://${opts.host}:${opts.port}/  ${where}  app=${opts.distDir ?? "(none)"}`);
   });
+  // Commands run in their own process groups, out of reach of a service
+  // manager's group kill: stopping the server must end them itself. close()
+  // signals every run synchronously, so even the forced exit below is safe.
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.once(sig, () => {
+      console.log(`pdfink: ${sig}, stopping`);
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 5000).unref();
+    });
+  }
 }
