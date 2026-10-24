@@ -1,0 +1,176 @@
+/**
+ * window.pdfink: the stable, documented API that pages (and the page end of
+ * the bridge) drive. A thin layer over App and the in-page dialog; it keeps
+ * no state of its own. App's input checks throw TypeErrors, which propagate.
+ */
+import type { App, Tool } from "./app";
+import { dialog } from "./dialog";
+import type { Rect, Stroke } from "./model";
+import { pdfToDisplay } from "./pdf/geom";
+
+export interface PdfinkApi {
+  /** The app's compact state snapshot. */
+  state(): ReturnType<App["getState"]>;
+  /** The open notebook: name, page count, current page, unsaved changes, storage mode. */
+  notebook(): { name: string; pages: number; page: number; dirty: boolean; storage: "server" | "local" };
+  /** The current selection, or null. */
+  selection(): ReturnType<App["selectionInfo"]>;
+  /** The selected strokes. */
+  selectionInk(): Stroke[];
+  /** PNG of the selection as base64 (no data: prefix); rejects "no selection". */
+  selectionPng(opts?: { scale?: number }): Promise<string>;
+  /** PNG of a whole page as base64 (no data: prefix). */
+  pagePng(page: number, opts?: { scale?: number }): Promise<string>;
+  /** Show a message in the status line. */
+  toast(message: string): void;
+  /** Show a progress line; null clears it. */
+  progress(message: string | null): void;
+  /** Ask for a line of text; null when cancelled. */
+  ask(message: string, opts?: { default?: string }): Promise<string | null>;
+  /** Ask yes or no. */
+  confirm(message: string): Promise<boolean>;
+  /** Pick one of `options`; null when cancelled. */
+  choose(message: string, options: string[]): Promise<string | null>;
+  /** Add (or replace) a command button in the pen menu (default) or the toolbar. */
+  addButton(id: string, label: string, opts?: { where?: "menu" | "toolbar" }): void;
+  /** Remove a command button. */
+  removeButton(id: string): void;
+  /** Select what a page-space rectangle covers on `page`. */
+  select(page: number, rect: Rect): void;
+  /** Clear the selection. */
+  clearSelection(): void;
+  /** Switch tool. */
+  setTool(tool: Tool): void;
+  /** Save; true when saved (server mode reports whether the file on disk is current). */
+  save(): Promise<boolean>;
+  /** Reopen the current server notebook from disk; false in local mode. */
+  reload(): Promise<boolean>;
+  /** Undo one step. */
+  undo(): void;
+  /** Redo one step. */
+  redo(): void;
+  /** Append a blank page. */
+  addPage(): Promise<void>;
+  /** Scroll page `page` into view. */
+  scrollToPage(page: number): void;
+  /** Add strokes as one undo step, in page space (default) or PDF points; returns their ids. */
+  addStrokes(page: number, strokes: Array<Omit<Stroke, "id"> & { id?: string }>, opts?: { space?: "page" | "pdf" }): string[];
+  /** Place a base64 PNG on `page` at a page-space rect; returns its id. */
+  addImage(page: number, png: string, rect: Rect): Promise<string>;
+  /** Remove strokes and images by id; returns how many went. */
+  removeItems(ids: string[]): number;
+}
+
+declare global {
+  interface Window {
+    pdfink: PdfinkApi;
+  }
+}
+
+export function createPdfinkApi(app: App): PdfinkApi {
+  return {
+    state: () => app.getState(),
+    notebook: () => ({ name: app.source.name, pages: app.pages.length, page: app.currentPage, dirty: app.dirty, storage: app.storage }),
+    selection: () => app.selectionInfo(),
+    selectionInk: () => app.selectionInk(),
+    async selectionPng(opts) {
+      if (!app.selectionInfo()) throw new Error("no selection");
+      return blobToBase64(await app.selectionPng(opts?.scale));
+    },
+    async pagePng(page, opts) {
+      return blobToBase64(await app.pagePng(page, opts?.scale));
+    },
+    toast: (message) => app.setStatus(message),
+    progress: (message) => app.progress(message),
+    ask: (message, opts) => dialog.ask(message, opts?.default),
+    confirm: (message) => dialog.confirm(message),
+    choose: (message, options) => dialog.choose(message, options),
+    addButton: (id, label, opts) => app.addButton(id, label, opts?.where ?? "menu"),
+    removeButton: (id) => app.removeButton(id),
+    select: (page, rect) => app.selectRect(page, rect),
+    clearSelection: () => app.clearSelection(),
+    setTool: (tool) => app.setTool(tool),
+    async save() {
+      if (app.source.kind === "server") return app.saveToServer();
+      await app.save();
+      return true;
+    },
+    async reload() {
+      if (app.source.kind !== "server") return false;
+      return app.reloadNotebook(app.source.name);
+    },
+    undo: () => app.undo(),
+    redo: () => app.redo(),
+    addPage: () => app.addPage(),
+    scrollToPage: (page) => app.scrollToPage(page),
+    addStrokes(page, strokes, opts) {
+      if (opts?.space === "pdf" && Array.isArray(strokes)) {
+        const g = app.pageGeom(page);
+        strokes = strokes.map((s) => ({ ...s, points: Array.isArray(s?.points) ? s.points.map((p) => ({ ...p, ...pdfToDisplay(g, p.x, p.y) })) : s?.points }));
+      }
+      return app.addStrokes(page, strokes);
+    },
+    async addImage(page, png, rect) {
+      return app.addImageItem(page, base64ToBytes(png), "image/png", rect);
+    },
+    removeItems: (ids) => app.removeItems(ids),
+  };
+}
+
+/** Evaluate a JavaScript expression with `pdfink` and `app` in scope; the awaited result goes through toJson. */
+export async function evalInPage(api: PdfinkApi, app: App, js: string): Promise<unknown> {
+  const fn = new Function("pdfink", "app", `return (${js})`) as (pdfink: PdfinkApi, app: App) => unknown;
+  return toJson(await fn(api, app));
+}
+
+/**
+ * Make a value JSON-safe: undefined → null, bigint → string, Uint8Array →
+ * base64, Set → array, Map → object, plain objects and arrays recursively,
+ * anything else that isn't JSON (a DOM node, a function, a cycle) → String(value).
+ */
+export function toJson(value: unknown): unknown {
+  return convert(value, []);
+}
+
+function convert(v: unknown, parents: object[]): unknown {
+  if (v === undefined || v === null) return null;
+  if (typeof v === "bigint") return v.toString();
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v;
+  if (typeof v !== "object" || parents.includes(v)) return String(v);
+  if (v instanceof Uint8Array) return bytesToBase64(v);
+  const inner = [...parents, v];
+  if (Array.isArray(v) || v instanceof Set) return [...v].map((x) => convert(x, inner));
+  if (v instanceof Map) {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of v) out[String(k)] = convert(x, inner);
+    return out;
+  }
+  const proto = Object.getPrototypeOf(v);
+  if (proto !== Object.prototype && proto !== null) return String(v);
+  const out: Record<string, unknown> = {};
+  for (const [k, x] of Object.entries(v)) out[k] = convert(x, inner);
+  return out;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  return bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  if (typeof b64 !== "string") throw new TypeError("png must be a base64 string");
+  let bin: string;
+  try {
+    bin = atob(b64);
+  } catch {
+    throw new TypeError("png is not valid base64");
+  }
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}

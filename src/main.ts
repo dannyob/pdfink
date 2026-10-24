@@ -1,5 +1,6 @@
 import { App } from "./app";
 import { stylusSim } from "./harness/stylus-sim";
+import { createPdfinkApi } from "./pdfink-api";
 
 const app = new App(document.getElementById("pages") as HTMLElement);
 
@@ -130,6 +131,7 @@ declare global {
 }
 window.__pdfink = app;
 window.__stylusSim = stylusSim;
+window.pdfink = createPdfinkApi(app);
 
 /**
  * Storage mode: `?storage=local|server` wins, then the VITE_STORAGE build
