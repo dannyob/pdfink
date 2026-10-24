@@ -8,3 +8,4 @@ dist-local
 deploy.env
 .worktrees
 .superpowers
+__pycache__/
