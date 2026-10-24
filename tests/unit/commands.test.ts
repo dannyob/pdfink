@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseCommands, runCommand, startCommand, type CommandContext } from "../../server/commands";
 
 const ctx: CommandContext = { pdf: "/tmp/n b.pdf", name: "n b.pdf", notebooks: "/tmp", page: 2, pages: 3, x: 100.5, y: 691.25, dx: 100.5, dy: 100.75, pageWidth: 612, pageHeight: 792, rotate: 0 };
@@ -72,5 +72,36 @@ command = echo again
     h.kill();
     const r = await h.done;
     expect(r.signal).toBe("SIGTERM");
+  });
+
+  it("timeout = 0 means no timeout for any command; absent or bad values keep the defaults", () => {
+    const [zero, zeroDetached, absent, absentDetached, negative, junk] = parseCommands(
+      "[Z]\ncommand = true\ntimeout = 0\n[ZD]\ncommand = true\ndetach = true\ntimeout = 0\n[A]\ncommand = true\n[AD]\ncommand = true\ndetach = true\n" +
+        "[N]\ncommand = true\ntimeout = -5\n[J]\ncommand = true\ntimeout = soon",
+    );
+    expect(zero.timeout).toBe(0);
+    expect(zeroDetached.timeout).toBe(0);
+    expect(absent.timeout).toBe(60);
+    expect(absentDetached.timeout).toBe(0);
+    expect(negative.timeout).toBe(60);
+    expect(junk.timeout).toBe(60);
+  });
+
+  it("startCommand with timeout 0 sets no timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = startCommand(parseCommands("[Z]\ncommand = sleep 30\ntimeout = 0")[0], ctx, cwd);
+      let settled = false;
+      void h.done.then(() => (settled = true));
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(61_000);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      vi.useRealTimers();
+      h.kill();
+      expect((await h.done).timedOut).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

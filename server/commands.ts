@@ -6,7 +6,7 @@
  *     command = tools/star.py "$PDF" "$PAGE" "$X" "$Y"
  *     reload = true          # reopen the notebook in the browser afterwards
  *     confirm = false        # ask before running
- *     timeout = 60           # seconds; 0 = none (the default when detached)
+ *     timeout = 60           # seconds; 0 = no timeout (the default for detached commands)
  *     detach = false         # keep running after the menu returns
  *
  * The command runs under `sh -c` with the working directory set to the
@@ -127,7 +127,7 @@ export function parseCommands(text: string): CommandSpec[] {
         command,
         reload: flag(cur.kv.reload, false),
         confirm: flag(cur.kv.confirm, false),
-        timeout: Number.isFinite(t) && t > 0 ? t : detach ? 0 : 60,
+        timeout: Number.isFinite(t) && t >= 0 && cur.kv.timeout?.trim() ? t : detach ? 0 : 60,
         detach,
       });
     }

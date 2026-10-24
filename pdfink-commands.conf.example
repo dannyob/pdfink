@@ -12,8 +12,9 @@
 #   $PDFINK_SOCKET  a socket for talking to the page (tools/pdfink_page.py)
 #   $PDFINK_RUN  this run's identifier
 # Flags: reload (reopen the notebook afterwards), confirm (ask first),
-# timeout (seconds, default 60; 0 = none), detach (keep running after the
-# menu returns, with a chip in the toolbar; no timeout unless one is set).
+# timeout (seconds, default 60; 0 = no timeout, the default for detached
+# commands), detach (keep running after the menu returns, with a chip in the
+# toolbar).
 #
 # Commands run with no screen. On macOS, keep them out of Desktop, Documents
 # and Downloads (and symlinks into them): the system wants a consent dialog
