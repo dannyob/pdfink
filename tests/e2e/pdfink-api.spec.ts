@@ -95,8 +95,12 @@ test.describe("window.pdfink", () => {
       { title: "Sub", page: 0, level: 1 },
     ]);
     expect((await state(page)).bookmarks).toHaveLength(2);
+    await page.evaluate(() => window.pdfink.removeBookmark(1));
+    expect(await page.evaluate(() => window.pdfink.bookmarks())).toEqual([{ title: "2026-10-23", page: 0, level: 0 }]);
+    // Removing a parent takes the entries nested under it.
+    await page.evaluate(() => window.pdfink.addBookmark(0, "Sub", { level: 1 }));
     await page.evaluate(() => window.pdfink.removeBookmark(0));
-    expect(await page.evaluate(() => window.pdfink.bookmarks())).toEqual([{ title: "Sub", page: 0, level: 1 }]);
+    expect(await page.evaluate(() => window.pdfink.bookmarks())).toEqual([]);
     await expect(page.evaluate(() => window.pdfink.removeBookmark(5))).rejects.toThrow(/No bookmark 5/);
   });
 
