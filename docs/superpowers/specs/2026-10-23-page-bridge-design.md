@@ -199,7 +199,7 @@ harness). Methods, all returning plain JSON-able values:
   through the page model like a pen stroke: drawn at once, one undo entry,
   saved by the normal autosave, never racing the file.
 - Links and bookmarks (Part B): `links(page?)`, `addLink(page, rect, url,
-  {label, space})`, `bookmarks()`, `addBookmark(page, title, {level})`,
+  {label, space})`, `setLink(id, {url, label})`, `bookmarks()`, `addBookmark(page, title, {level})`,
   `removeBookmark(index)`.
 - Events available to `subscribe`: `selection` (changed or cleared), `save`,
   `page` (the page under the pen changed), `notebook` (the tab opened a
@@ -228,11 +228,13 @@ Links:
 - The page draws links itself (pdf.js draws nothing for a bare `/Link`): a
   faint blue outline, with the label or a shortened URL as a small caption
   when the box is big enough. The pen writes over links freely.
-- Following a link (my call, not yet tried on the Daylight): the pen menu
-  opened over a link gets an "Open <url>" entry at the top; a finger tap on a
-  link opens it in a new tab (a finger tap is never a stroke, and finger-draws
-  mode shows the entry in the menu instead). Links open with
-  `noopener,noreferrer`.
+- Following and editing a link: the pen menu opened over a link gets two
+  entries at the top, "Open <url>" and "Edit URL…", the second asking for the
+  new URL with the in-page dialog (an empty answer leaves it unchanged; the
+  link is removed with the ordinary Delete). A finger tap on a link also opens
+  it (my call: a finger tap is never a stroke; in finger-draws mode the menu
+  entry is the way). Links open in a new tab with `noopener,noreferrer`.
+  Bridge: `setLink(id, {url, label})` edits one in place.
 - Creating one by hand: the pen menu gets "Add link…" when there is a
   selection, asking for the URL with the in-page dialog and placing the box
   on the selection rectangle. Scripts use `addLink`.
@@ -387,5 +389,5 @@ with the pen menu as the default. The rest were settled as follows:
   fixture commands use `node -e` rather than `nc` for CI portability.
 - Later in the conversation Danny asked for ink insertion through the
   browser, then chose links and bookmarks for this round (FreeText and
-  attachments deferred). How a link is followed on the tablet and the
-  bookmark UI are my calls, marked above.
+  attachments deferred). Danny asked for "Open" and "Edit URL…" in the pen menu over a
+  link; the finger tap and the bookmark UI are my calls, marked above.
