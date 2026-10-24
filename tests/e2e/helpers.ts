@@ -39,9 +39,9 @@ export interface State {
   scale: number;
   dirty: boolean;
   currentPage: number;
-  pages: { width: number; height: number; strokes: { id: string; n: number; color: string; width: number; bounds: { x: number; y: number; w: number; h: number } }[]; images: { id: string; x: number; y: number; w: number; h: number }[] }[];
-  selection: { page: number; rect: { x: number; y: number; w: number; h: number } | null; strokes: string[]; images: string[] } | null;
-  clip: { strokes: number; images: number; width: number; height: number } | null;
+  pages: { width: number; height: number; strokes: { id: string; n: number; color: string; width: number; bounds: { x: number; y: number; w: number; h: number } }[]; images: { id: string; x: number; y: number; w: number; h: number }[]; links: { id: string; x: number; y: number; w: number; h: number; url: string; label: string | undefined }[] }[];
+  selection: { page: number; rect: { x: number; y: number; w: number; h: number } | null; strokes: string[]; images: string[]; links: string[] } | null;
+  clip: { strokes: number; images: number; links: number; width: number; height: number } | null;
   undo: number;
   redo: number;
   buttons: string[];

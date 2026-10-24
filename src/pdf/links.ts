@@ -104,8 +104,9 @@ function round(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
 
-/** Add one /Link annotation with a URI action for `link`. */
+/** Add one /Link annotation with a URI action for `link`; a url linkUrlOk refuses is skipped. */
 export function addLinkAnnotation(doc: PDFDocument, pageIndex: number, geom: PageGeom, link: LinkItem): void {
+  if (!linkUrlOk(link.url)) return;
   const page = doc.getPage(pageIndex);
   const a = displayToPdf(geom, link.x, link.y);
   const b = displayToPdf(geom, link.x + link.w, link.y + link.h);

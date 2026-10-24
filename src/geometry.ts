@@ -1,4 +1,4 @@
-import type { Point, Rect, Stroke, ImageItem } from "./model.ts";
+import type { Point, Rect, Stroke, ImageItem, LinkItem } from "./model.ts";
 import { maxPressureFactor } from "./model.ts";
 
 export function strokeBounds(s: Stroke): Rect {
@@ -16,6 +16,10 @@ export function strokeBounds(s: Stroke): Rect {
 
 export function imageBounds(im: ImageItem): Rect {
   return { x: im.x, y: im.y, w: im.w, h: im.h };
+}
+
+export function linkBounds(ln: LinkItem): Rect {
+  return { x: ln.x, y: ln.y, w: ln.w, h: ln.h };
 }
 
 export function unionRect(a: Rect | null, b: Rect): Rect {
@@ -52,6 +56,15 @@ export function strokeInRect(s: Stroke, r: Rect): boolean {
 /** An image is "in" a selection rect when the rect covers its centre. */
 export function imageInRect(im: ImageItem, r: Rect): boolean {
   return pointInRect({ x: im.x + im.w / 2, y: im.y + im.h / 2 }, r);
+}
+
+/** A rectangular item (a link) is "in" a selection rect when the rect covers its centre, as images are. */
+export function rectInRect(item: Rect, r: Rect): boolean {
+  return pointInRect({ x: item.x + item.w / 2, y: item.y + item.h / 2 }, r);
+}
+
+export function translateRect<T extends Rect>(item: T, dx: number, dy: number): T {
+  return { ...item, x: item.x + dx, y: item.y + dy };
 }
 
 function distPointToSegment(p: Point, a: Point, b: Point): number {

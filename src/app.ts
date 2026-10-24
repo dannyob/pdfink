@@ -1,6 +1,6 @@
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import type { ClipContent, ImageItem, PageModel, Point, Rect, Stroke } from "./model";
+import type { ClipContent, ImageItem, LinkItem, PageModel, Point, Rect, Stroke } from "./model";
 import { DEFAULT_PRESSURE, newId } from "./model";
 import { barrelBit, barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
 import { ContextMenu, type MenuItem } from "./menu";
@@ -8,15 +8,20 @@ import { dialog } from "./dialog";
 import {
   imageBounds,
   imageInRect,
+  linkBounds,
   normalizeRect,
+  pointInRect,
+  rectInRect,
   strokeBounds,
   strokeHit,
   strokeInRect,
   translateImage,
+  translateRect,
   translateStroke,
   unionRect,
 } from "./geometry";
 import { importPdf } from "./pdf/import";
+import { linkUrlOk } from "./pdf/links";
 import { appendBlankPage, createBlankPdf, exportPdf } from "./pdf/export";
 import { PageView, drawStroke, pruneImageCache, type SelectionView } from "./render/pageview";
 import { displayToPdf, normalizeRotate, type PageGeom } from "./pdf/geom";
@@ -33,7 +38,7 @@ export interface SelectionInfo {
   page: number;
   /** The rectangle the user (or `selectRect`) drew, if any. */
   marquee: Rect | null;
-  /** Bounds of the selected strokes and images, if any. */
+  /** Bounds of the selected strokes, images and links, if any. */
   bounds: Rect | null;
   /** Union of marquee and bounds, in page space. */
   rect: Rect;
@@ -41,6 +46,7 @@ export interface SelectionInfo {
   pdfRect: Rect;
   strokeIds: string[];
   imageIds: string[];
+  linkIds: string[];
 }
 
 interface Selection extends SelectionView {
@@ -50,6 +56,7 @@ interface Selection extends SelectionView {
 interface PageSnapshot {
   strokes: Stroke[];
   images: ImageItem[];
+  links: LinkItem[];
 }
 
 interface UndoEntry {
@@ -587,7 +594,7 @@ export class App {
       return;
     }
     const n = this.pages.length;
-    const sel = this.selection ? ` · ${this.selection.strokeIds.size + this.selection.imageIds.size} selected` : "";
+    const sel = this.selection ? ` · ${this.selection.strokeIds.size + this.selection.imageIds.size + this.selection.linkIds.size} selected` : "";
     let state = "";
     if (this.saving) state = " · saving…";
     else if (this.dirty) state = this.source.kind === "server" || this.storage === "local" ? " · unsaved" : " (not in notebooks)";
@@ -652,7 +659,7 @@ export class App {
     const running = `Running ${cmd.label}…`;
     this.setStatus(running);
     const sel = this.selectionInfo();
-    const selection = sel ? { page: sel.page, rect: sel.rect, count: sel.strokeIds.length + sel.imageIds.length } : null;
+    const selection = sel ? { page: sel.page, rect: sel.rect, count: sel.strokeIds.length + sel.imageIds.length + sel.linkIds.length } : null;
     let run;
     try {
       run = await runCommand(cmd.id, { name, page: at.page, x: at.x, y: at.y, session: this.session ?? undefined, selection });
@@ -813,13 +820,14 @@ export class App {
 
   private snapshot(page: number): PageSnapshot {
     const m = this.pages[page];
-    return { strokes: m.strokes, images: m.images };
+    return { strokes: m.strokes, images: m.images, links: m.links };
   }
 
   private apply(page: number, snap: PageSnapshot): void {
     const m = this.pages[page];
     m.strokes = snap.strokes;
     m.images = snap.images;
+    m.links = snap.links;
     this.markDirty();
     this.redraw(page);
   }
@@ -832,7 +840,7 @@ export class App {
 
   /** Replace a page's content, recording an undo step. */
   private commit(page: number, before: PageSnapshot, after: PageSnapshot): void {
-    if (before.strokes === after.strokes && before.images === after.images) return;
+    if (before.strokes === after.strokes && before.images === after.images && before.links === after.links) return;
     this.undoStack.push({ page, before, after });
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack = [];
@@ -993,7 +1001,7 @@ export class App {
     } else {
       ptr.start = { x: p.x, y: p.y, p: 0 };
       if (this.selection && this.selection.page !== page) this.clearSelection();
-      this.setSelection({ page, rect: null, strokeIds: new Set(), imageIds: new Set() });
+      this.setSelection({ page, rect: null, strokeIds: new Set(), imageIds: new Set(), linkIds: new Set() });
       this.redraw(page);
     }
     this.pointers.set(e.pointerId, ptr);
@@ -1108,7 +1116,7 @@ export class App {
       const s = ptr.stroke;
       if (s.points.length > 1) {
         const before = this.snapshot(page);
-        this.commit(page, before, { strokes: [...before.strokes, s], images: before.images });
+        this.commit(page, before, { ...before, strokes: [...before.strokes, s] });
         ptr.keep = s.id;
         ptr.keepUntil = performance.now() + KEEP_MS;
       } else {
@@ -1152,7 +1160,7 @@ export class App {
       const s = ptr.stroke;
       if (!cancelled || s.points.length > 1) {
         const before = this.snapshot(page);
-        this.commit(page, before, { strokes: [...before.strokes, s], images: before.images });
+        this.commit(page, before, { ...before, strokes: [...before.strokes, s] });
         this.emit("stroke", { page, stroke: s });
       } else {
         this.redraw(page);
@@ -1203,18 +1211,20 @@ export class App {
     const m = this.pages[sel.page];
     sel.strokeIds = new Set(m.strokes.filter((s) => strokeInRect(s, sel.rect!)).map((s) => s.id));
     sel.imageIds = new Set(m.images.filter((im) => imageInRect(im, sel.rect!)).map((im) => im.id));
+    sel.linkIds = new Set(m.links.filter((ln) => rectInRect(ln, sel.rect!)).map((ln) => ln.id));
   }
 
   // ---------------------------------------------------------------- clipboard
 
-  private selectedContent(): { page: number; strokes: Stroke[]; images: ImageItem[] } | null {
+  private selectedContent(): { page: number; strokes: Stroke[]; images: ImageItem[]; links: LinkItem[] } | null {
     const sel = this.selection;
     if (!sel) return null;
     const m = this.pages[sel.page];
     const strokes = m.strokes.filter((s) => sel.strokeIds.has(s.id));
     const images = m.images.filter((im) => sel.imageIds.has(im.id));
-    if (!strokes.length && !images.length) return null;
-    return { page: sel.page, strokes, images };
+    const links = m.links.filter((ln) => sel.linkIds.has(ln.id));
+    if (!strokes.length && !images.length && !links.length) return null;
+    return { page: sel.page, strokes, images, links };
   }
 
   copy(): boolean {
@@ -1223,11 +1233,12 @@ export class App {
     let bounds: Rect | null = null;
     for (const s of c.strokes) bounds = unionRect(bounds, strokeBounds(s));
     for (const im of c.images) bounds = unionRect(bounds, imageBounds(im));
+    for (const ln of c.links) bounds = unionRect(bounds, linkBounds(ln));
     const b = bounds!;
     this.clip = {
       strokes: c.strokes.map((s) => translateStroke(s, -b.x, -b.y)),
       images: c.images.map((im) => translateImage(im, -b.x, -b.y)),
-      links: [],
+      links: c.links.map((ln) => translateRect(ln, -b.x, -b.y)),
       width: b.w,
       height: b.h,
     };
@@ -1309,10 +1320,12 @@ export class App {
     const before = this.snapshot(c.page);
     const sIds = new Set(c.strokes.map((s) => s.id));
     const iIds = new Set(c.images.map((i) => i.id));
+    const lIds = new Set(c.links.map((ln) => ln.id));
     this.setSelection(null);
     this.commit(c.page, before, {
       strokes: before.strokes.filter((s) => !sIds.has(s.id)),
       images: before.images.filter((im) => !iIds.has(im.id)),
+      links: before.links.filter((ln) => !lIds.has(ln.id)),
     });
   }
 
@@ -1336,13 +1349,15 @@ export class App {
     dy = Math.max(0, Math.min(dy, m.height - clip.height));
     const strokes = clip.strokes.map((s) => ({ ...translateStroke(s, dx, dy), id: newId() }));
     const images = clip.images.map((im) => ({ ...translateImage(im, dx, dy), id: newId("im") }));
+    const links = clip.links.map((ln) => ({ ...translateRect(ln, dx, dy), id: newId("ln") }));
     const before = this.snapshot(t.page);
-    this.commit(t.page, before, { strokes: [...before.strokes, ...strokes], images: [...before.images, ...images] });
+    this.commit(t.page, before, { strokes: [...before.strokes, ...strokes], images: [...before.images, ...images], links: [...before.links, ...links] });
     this.setSelection({
       page: t.page,
       rect: { x: dx, y: dy, w: clip.width, h: clip.height },
       strokeIds: new Set(strokes.map((s) => s.id)),
       imageIds: new Set(images.map((im) => im.id)),
+      linkIds: new Set(links.map((ln) => ln.id)),
     });
     this.redraw(t.page);
     this.setStatus();
@@ -1379,8 +1394,8 @@ export class App {
     const y = Math.max(0, Math.min(t.y - h / 2, m.height - h));
     const im: ImageItem = { id: newId("im"), x, y, w, h, mime: type, bytes: data };
     const before = this.snapshot(t.page);
-    this.commit(t.page, before, { strokes: before.strokes, images: [...before.images, im] });
-    this.setSelection({ page: t.page, rect: { x, y, w, h }, strokeIds: new Set(), imageIds: new Set([im.id]) });
+    this.commit(t.page, before, { ...before, images: [...before.images, im] });
+    this.setSelection({ page: t.page, rect: { x, y, w, h }, strokeIds: new Set(), imageIds: new Set([im.id]), linkIds: new Set() });
     this.redraw(t.page);
     this.setStatus();
     return true;
@@ -1731,6 +1746,7 @@ export class App {
     let bounds: Rect | null = null;
     for (const s of c?.strokes ?? []) bounds = unionRect(bounds, strokeBounds(s));
     for (const im of c?.images ?? []) bounds = unionRect(bounds, imageBounds(im));
+    for (const ln of c?.links ?? []) bounds = unionRect(bounds, linkBounds(ln));
     const marquee = sel.rect ? { ...sel.rect } : null;
     const rect = marquee ? (bounds ? unionRect(marquee, bounds) : { ...marquee }) : bounds;
     if (!rect) return null;
@@ -1745,6 +1761,7 @@ export class App {
       pdfRect: normalizeRect(a.x, a.y, b.x, b.y),
       strokeIds: c?.strokes.map((s) => s.id) ?? [],
       imageIds: c?.images.map((im) => im.id) ?? [],
+      linkIds: c?.links.map((ln) => ln.id) ?? [],
     };
   }
 
@@ -1802,6 +1819,7 @@ export class App {
       rect: r,
       strokeIds: new Set(m.strokes.filter((s) => strokeInRect(s, r)).map((s) => s.id)),
       imageIds: new Set(m.images.filter((im) => imageInRect(im, r)).map((im) => im.id)),
+      linkIds: new Set(m.links.filter((ln) => rectInRect(ln, r)).map((ln) => ln.id)),
     });
     if (old !== undefined && old !== page) this.redraw(old);
     this.redraw(page);
@@ -1822,7 +1840,7 @@ export class App {
     if (!strokes.length) return [];
     const added: Stroke[] = strokes.map((s) => ({ ...s, id: s.id ?? newId() }));
     const before = this.snapshot(page);
-    this.commit(page, before, { strokes: [...before.strokes, ...added], images: before.images });
+    this.commit(page, before, { ...before, strokes: [...before.strokes, ...added] });
     return added.map((s) => s.id);
   }
 
@@ -1835,11 +1853,69 @@ export class App {
     }
     const im: ImageItem = { id: newId("im"), x: rect.x, y: rect.y, w: rect.w, h: rect.h, mime, bytes };
     const before = this.snapshot(page);
-    this.commit(page, before, { strokes: before.strokes, images: [...before.images, im] });
+    this.commit(page, before, { ...before, images: [...before.images, im] });
     return im.id;
   }
 
-  /** Remove strokes and images by id from any page; one undo step per page touched. */
+  /** Add a link box to a page as one undo step; returns its id. */
+  addLink(page: number, rect: Rect, url: string, label?: string): string {
+    this.checkPage(page);
+    if (typeof url !== "string" || !linkUrlOk(url)) throw new Error("bad url");
+    if (!rect || ![rect.x, rect.y, rect.w, rect.h].every(Number.isFinite) || rect.w <= 0 || rect.h <= 0) {
+      throw new TypeError("rect must have finite x, y and positive w, h");
+    }
+    if (label !== undefined && typeof label !== "string") throw new TypeError("label must be a string");
+    const ln: LinkItem = { id: newId("ln"), x: rect.x, y: rect.y, w: rect.w, h: rect.h, url };
+    if (label) ln.label = label;
+    const before = this.snapshot(page);
+    this.commit(page, before, { ...before, links: [...before.links, ln] });
+    return ln.id;
+  }
+
+  /** Change a link's url and/or label (an empty label removes it) as one undo step. */
+  setLink(id: string, patch: { url?: string; label?: string }): void {
+    const page = this.pages.findIndex((p) => p.links.some((ln) => ln.id === id));
+    if (page < 0) throw new RangeError(`No link ${id}`);
+    if (patch.url !== undefined && (typeof patch.url !== "string" || !linkUrlOk(patch.url))) throw new Error("bad url");
+    if (patch.label !== undefined && typeof patch.label !== "string") throw new TypeError("label must be a string");
+    const before = this.snapshot(page);
+    const links = before.links.map((ln) => {
+      if (ln.id !== id) return ln;
+      const next: LinkItem = { ...ln, url: patch.url ?? ln.url };
+      if (patch.label !== undefined) {
+        if (patch.label) next.label = patch.label;
+        else delete next.label;
+      }
+      return next;
+    });
+    this.commit(page, before, { ...before, links });
+  }
+
+  /** The topmost (last drawn) link under a page-space point, or null. */
+  linkAt(page: number, x: number, y: number): LinkItem | null {
+    const m = this.pages[page];
+    if (!m) return null;
+    for (let i = m.links.length - 1; i >= 0; i--) if (pointInRect({ x, y }, m.links[i])) return m.links[i];
+    return null;
+  }
+
+  /** Links on one page, or on every page, each with its page index. */
+  links(page?: number): Array<LinkItem & { page: number }> {
+    const out: Array<LinkItem & { page: number }> = [];
+    this.pages.forEach((m, i) => {
+      if (page !== undefined && i !== page) return;
+      for (const ln of m.links) out.push({ ...ln, page: i });
+    });
+    return out;
+  }
+
+  /** Follow a link in a new tab, without giving it a handle on this one. */
+  openLink(link: LinkItem): void {
+    if (!linkUrlOk(link.url)) return;
+    window.open(link.url, "_blank", "noopener,noreferrer");
+  }
+
+  /** Remove strokes, images and links by id from any page; one undo step per page touched. */
   removeItems(ids: string[]): number {
     const gone = new Set(ids);
     let removed = 0;
@@ -1847,10 +1923,11 @@ export class App {
       const before = this.snapshot(page);
       const strokes = before.strokes.filter((s) => !gone.has(s.id));
       const images = before.images.filter((im) => !gone.has(im.id));
-      const n = before.strokes.length - strokes.length + before.images.length - images.length;
+      const links = before.links.filter((ln) => !gone.has(ln.id));
+      const n = before.strokes.length - strokes.length + before.images.length - images.length + before.links.length - links.length;
       if (!n) return;
       removed += n;
-      this.commit(page, before, { strokes, images });
+      this.commit(page, before, { strokes, images, links });
     });
     return removed;
   }
@@ -1911,11 +1988,12 @@ export class App {
         height: p.height,
         strokes: p.strokes.map((s) => ({ id: s.id, n: s.points.length, color: s.color, width: s.width, bounds: strokeBounds(s) })),
         images: p.images.map((im) => ({ id: im.id, x: im.x, y: im.y, w: im.w, h: im.h, mime: im.mime })),
+        links: p.links.map((ln) => ({ id: ln.id, x: ln.x, y: ln.y, w: ln.w, h: ln.h, url: ln.url, label: ln.label })),
       })),
       selection: this.selection
-        ? { page: this.selection.page, rect: this.selection.rect, strokes: [...this.selection.strokeIds], images: [...this.selection.imageIds] }
+        ? { page: this.selection.page, rect: this.selection.rect, strokes: [...this.selection.strokeIds], images: [...this.selection.imageIds], links: [...this.selection.linkIds] }
         : null,
-      clip: this.clip ? { strokes: this.clip.strokes.length, images: this.clip.images.length, width: this.clip.width, height: this.clip.height } : null,
+      clip: this.clip ? { strokes: this.clip.strokes.length, images: this.clip.images.length, links: this.clip.links.length, width: this.clip.width, height: this.clip.height } : null,
       undo: this.undoStack.length,
       redo: this.redoStack.length,
       buttons: [...this.buttons.keys()],

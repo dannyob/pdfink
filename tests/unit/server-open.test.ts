@@ -234,4 +234,31 @@ describe("server-side open", () => {
     expect(res.status).toBe(422);
     expect(((await res.json()) as { error: string }).error).toMatch(/2 pages/);
   });
+
+  it("/save answers 400 to links or bookmarks of the wrong shape", async () => {
+    fs.writeFileSync(path.join(dir, "shape.pdf"), await createBlankPdf(1));
+    const { mtime } = await openAt("shape.pdf");
+    /** A save envelope with the JSON part replaced by `obj` (no images, no base). */
+    const raw = (obj: unknown): Uint8Array => {
+      const json = Buffer.from(JSON.stringify(obj), "utf8");
+      const head = Buffer.alloc(4);
+      head.writeUInt32BE(json.length, 0);
+      return new Uint8Array(Buffer.concat([head, json]));
+    };
+    const wire = (links: unknown) => ({ pages: [{ width: 612, height: 792, strokes: [], links }], images: [], baseLength: 0 });
+    const good = { id: "g", x: 10, y: 10, w: 20, h: 20, url: "https://example.org" };
+    const bad: unknown[] = [
+      wire([{ ...good, x: "10" }]),
+      wire([{ ...good, w: null }]),
+      wire([{ ...good, url: 5 }]),
+      wire([{ ...good, label: 7 }]),
+      wire("nope"),
+      { ...wire([good]), bookmarks: { title: "x" } },
+    ];
+    for (const body of bad) {
+      const res = await save("shape.pdf", mtime, raw(body));
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+    expect((await save("shape.pdf", mtime, raw(wire([{ ...good, label: "fine" }])))).status).toBe(200);
+  });
 });

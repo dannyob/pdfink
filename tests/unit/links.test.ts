@@ -107,4 +107,16 @@ describe("links", () => {
     expect(linkUrlOk("http://example.org")).toBe(true);
     expect(linkUrlOk("file:///etc/passwd")).toBe(false);
   });
+
+  it("never writes a link whose url is not http, https or mailto", async () => {
+    const bad: LinkItem[] = [
+      { id: "a", x: 72, y: 72, w: 100, h: 20, url: "javascript:alert(1)" },
+      { id: "b", x: 72, y: 120, w: 100, h: 20, url: "file:///etc/passwd" },
+      { id: "c", x: 72, y: 170, w: 100, h: 20, url: "https://example.org/ok" },
+    ];
+    const doc = await PDFDocument.load(await exportPdf(await createBlankPdf(1), [page(612, 792, bad)]));
+    const annots = linkAnnots(doc);
+    expect(annots).toHaveLength(1);
+    expect(text(annots[0].lookup(PDFName.of("A"), PDFDict).lookup(PDFName.of("URI")))).toBe("https://example.org/ok");
+  });
 });

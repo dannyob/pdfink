@@ -1,6 +1,6 @@
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 import { AnnotationMode } from "pdfjs-dist";
-import type { ImageItem, PageModel, Rect, Stroke } from "../model.ts";
+import type { ImageItem, LinkItem, PageModel, Rect, Stroke } from "../model.ts";
 import { isUniformPressure, pressureFactor } from "../model.ts";
 
 /** Keep canvas backing stores under this many pixels (Safari blanks larger ones). */
@@ -69,6 +69,57 @@ export interface SelectionView {
   rect: Rect | null;
   strokeIds: Set<string>;
   imageIds: Set<string>;
+  linkIds: Set<string>;
+}
+
+/** Host plus path of a URL (the address for mailto:), without the scheme. */
+export function shortUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "mailto:") return decodeURIComponent(u.pathname);
+    const path = u.pathname === "/" ? "" : u.pathname;
+    return u.host + path;
+  } catch {
+    return url.replace(/^[a-z][a-z0-9+.-]*:(\/\/)?/i, "");
+  }
+}
+
+/** `text`, cut short with "…" so it fits in `maxWidth` at the context's font. */
+function fitText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (ctx.measureText(text.slice(0, mid) + "…").width <= maxWidth) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo ? text.slice(0, lo) + "…" : "";
+}
+
+/** A link's box and caption, in page points. */
+function drawLink(ctx: CanvasRenderingContext2D, ln: LinkItem, scale: number, selected: boolean): void {
+  ctx.save();
+  ctx.fillStyle = "rgba(30,90,200,0.05)";
+  ctx.fillRect(ln.x, ln.y, ln.w, ln.h);
+  ctx.strokeStyle = "rgba(30,90,200,0.7)";
+  ctx.lineWidth = 1 / scale;
+  ctx.strokeRect(ln.x, ln.y, ln.w, ln.h);
+  if (ln.w >= 60 && ln.h >= 14) {
+    const inset = 2;
+    ctx.font = "9px sans-serif";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "rgba(30,90,200,0.9)";
+    const caption = fitText(ctx, ln.label ?? shortUrl(ln.url), ln.w - 2 * inset);
+    if (caption) ctx.fillText(caption, ln.x + inset, ln.y + inset);
+  }
+  if (selected) {
+    ctx.strokeStyle = "rgba(47,74,122,0.9)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.strokeRect(ln.x, ln.y, ln.w, ln.h);
+  }
+  ctx.restore();
 }
 
 export class PageView {
@@ -237,6 +288,7 @@ export class PageView {
         ctx.restore();
       }
     }
+    for (const ln of this.model.links) drawLink(ctx, ln, this.scale, !!selection?.linkIds.has(ln.id));
     for (const s of this.model.strokes) {
       drawStroke(ctx, s);
       if (selection?.strokeIds.has(s.id)) {

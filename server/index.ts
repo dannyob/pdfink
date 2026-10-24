@@ -210,11 +210,29 @@ interface WireImage {
  * `bookmarks` absent (older pages) means leave the file's outline alone; an
  * array, even empty, replaces it.
  */
+/** Throw unless links and bookmarks have the shapes exportPdf relies on. */
+function checkWireShapes(pages: unknown, bookmarks: unknown): void {
+  if (!Array.isArray(pages)) throw new Error("pages must be an array");
+  pages.forEach((p: { links?: unknown }, i) => {
+    if (p.links === undefined) return;
+    if (!Array.isArray(p.links)) throw new Error(`pages[${i}].links must be an array`);
+    p.links.forEach((l: Record<string, unknown> | null, k) => {
+      const where = `pages[${i}].links[${k}]`;
+      if (!l || typeof l !== "object") throw new Error(`${where} must be an object`);
+      for (const f of ["x", "y", "w", "h"]) if (typeof l[f] !== "number" || !Number.isFinite(l[f])) throw new Error(`${where}.${f} must be a finite number`);
+      if (typeof l.url !== "string") throw new Error(`${where}.url must be a string`);
+      if (l.label !== undefined && typeof l.label !== "string") throw new Error(`${where}.label must be a string`);
+    });
+  });
+  if (bookmarks !== undefined && !Array.isArray(bookmarks)) throw new Error("bookmarks must be an array");
+}
+
 export function decodeSaveEnvelope(buf: Buffer): { pages: PageModel[]; baseBytes: Uint8Array | null; bookmarks: Bookmark[] | undefined } {
   if (buf.length < 4) throw new Error("short envelope");
   const jsonLen = buf.readUInt32BE(0);
   const json = buf.subarray(4, 4 + jsonLen).toString("utf8");
   const { pages, images, baseLength, bookmarks } = JSON.parse(json) as { pages: WirePage[]; images: WireImage[]; baseLength?: number; bookmarks?: Bookmark[] };
+  checkWireShapes(pages, bookmarks);
   const blob = buf.subarray(4 + jsonLen);
   // Optional ink-free base PDF at the end of the blob (sent on forced overwrites).
   const baseBytes = baseLength ? new Uint8Array(blob.subarray(blob.length - baseLength)) : null;
