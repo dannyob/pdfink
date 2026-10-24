@@ -4,6 +4,7 @@ import type { ClipContent, ImageItem, PageModel, Point, Rect, Stroke } from "./m
 import { DEFAULT_PRESSURE, newId } from "./model";
 import { barrelBit, barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
 import { ContextMenu, type MenuItem } from "./menu";
+import { dialog } from "./dialog";
 import {
   imageBounds,
   imageInRect,
@@ -118,8 +119,8 @@ export class App {
   private baseRevision = 0;
   private baseSaved = 0;
   /** Hooks for confirmations and names, replaceable in tests. */
-  confirmFn: (message: string) => Promise<boolean> = async (m) => window.confirm(m);
-  promptFn: (message: string, suggestion: string) => Promise<string | null> = async (m, d) => window.prompt(m, d);
+  confirmFn: (message: string) => Promise<boolean> = dialog.confirm;
+  promptFn: (message: string, suggestion: string) => Promise<string | null> = dialog.ask;
   /** Called after the notebook list on the server may have changed. */
   onNotebooksChanged: () => void = () => {};
   /** Fingers draw instead of scrolling (phones and tablets without a pen). */

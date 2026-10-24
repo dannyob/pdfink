@@ -48,6 +48,26 @@ button.tool.active { background: var(--accent); color: #fff; border-color: var(-
 #ctx-menu button.checked::before { content: "✓"; position: absolute; left: 10px; color: var(--accent); }
 #ctx-menu[hidden] { display: none; }
 #ctx-menu .sep { border: 0; border-top: 1px solid #ddd; margin: 4px 6px; }
+#dialog {
+  position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.25);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  touch-action: none; -webkit-touch-callout: none;
+}
+#dialog[hidden] { display: none; }
+#dialog .dialog-box {
+  background: #fff; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  padding: 18px; width: min(420px, 100%); max-height: 100%; overflow: auto;
+  display: flex; flex-direction: column; gap: 12px; touch-action: pan-y;
+}
+#dialog .dialog-message { font-size: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#dialog .dialog-input { font-size: 16px; min-height: 44px; padding: 6px 10px; border: 1px solid #aaa; border-radius: 6px; }
+#dialog .dialog-options { display: flex; flex-direction: column; gap: 6px; }
+#dialog .dialog-options:empty { display: none; }
+#dialog .dialog-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+#dialog button { min-height: 44px; min-width: 88px; padding: 8px 16px; font-size: 15px; border-radius: 6px; }
+#dialog button[hidden] { display: none; }
+#dialog .dialog-option { text-align: left; }
+#dialog .dialog-ok { background: var(--accent); color: #fff; border-color: var(--accent); }
 #src-link { font-size: 12px; color: #555; text-decoration: none; border-bottom: 1px dotted #999; }
 #src-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
 #pages {
