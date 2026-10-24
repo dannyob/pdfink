@@ -222,9 +222,27 @@ function checkWireShapes(pages: unknown, bookmarks: unknown): void {
       for (const f of ["x", "y", "w", "h"]) if (typeof l[f] !== "number" || !Number.isFinite(l[f])) throw new Error(`${where}.${f} must be a finite number`);
       if (typeof l.url !== "string") throw new Error(`${where}.url must be a string`);
       if (l.label !== undefined && typeof l.label !== "string") throw new Error(`${where}.label must be a string`);
+      if (l.style !== undefined) {
+        const st = l.style as Record<string, unknown> | null;
+        if (!st || typeof st !== "object") throw new Error(`${where}.style must be an object`);
+        if (!finiteNumbers(st.border)) throw new Error(`${where}.style.border must be an array of numbers`);
+        if (st.color !== undefined && !finiteNumbers(st.color)) throw new Error(`${where}.style.color must be an array of numbers`);
+      }
     });
   });
-  if (bookmarks !== undefined && !Array.isArray(bookmarks)) throw new Error("bookmarks must be an array");
+  if (bookmarks === undefined) return;
+  if (!Array.isArray(bookmarks)) throw new Error("bookmarks must be an array");
+  bookmarks.forEach((b: Record<string, unknown> | null, i) => {
+    const where = `bookmarks[${i}]`;
+    if (!b || typeof b !== "object") throw new Error(`${where} must be an object`);
+    if (typeof b.title !== "string") throw new Error(`${where}.title must be a string`);
+    if (b.page !== null && !(Number.isInteger(b.page) && (b.page as number) >= 0)) throw new Error(`${where}.page must be a whole number ≥ 0 or null`);
+    if (!(Number.isInteger(b.level) && (b.level as number) >= 0)) throw new Error(`${where}.level must be a whole number ≥ 0`);
+  });
+}
+
+function finiteNumbers(o: unknown): boolean {
+  return Array.isArray(o) && o.every((n) => typeof n === "number" && Number.isFinite(n));
 }
 
 export function decodeSaveEnvelope(buf: Buffer): { pages: PageModel[]; baseBytes: Uint8Array | null; bookmarks: Bookmark[] | undefined } {

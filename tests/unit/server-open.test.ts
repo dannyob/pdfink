@@ -267,11 +267,24 @@ describe("server-side open", () => {
       wire([{ ...good, label: 7 }]),
       wire("nope"),
       { ...wire([good]), bookmarks: { title: "x" } },
+      { ...wire([good]), bookmarks: [null] },
+      { ...wire([good]), bookmarks: [{ title: 1, page: 0, level: 0 }] },
+      { ...wire([good]), bookmarks: [{ title: "t", page: 1.5, level: 0 }] },
+      { ...wire([good]), bookmarks: [{ title: "t", page: -1, level: 0 }] },
+      { ...wire([good]), bookmarks: [{ title: "t", page: "0", level: 0 }] },
+      { ...wire([good]), bookmarks: [{ title: "t", level: 0 }] },
+      { ...wire([good]), bookmarks: [{ title: "t", page: 0, level: -1 }] },
+      { ...wire([good]), bookmarks: [{ title: "t", page: 0 }] },
+      wire([{ ...good, style: { border: "0 0 0" } }]),
+      wire([{ ...good, style: { border: [0, 0, 0], color: ["red"] } }]),
     ];
     for (const body of bad) {
       const res = await save("shape.pdf", mtime, raw(body));
       expect(res.status, JSON.stringify(body)).toBe(400);
     }
     expect((await save("shape.pdf", mtime, raw(wire([{ ...good, label: "fine" }])))).status).toBe(200);
+    const { mtime: m2 } = await openAt("shape.pdf");
+    const fine = { ...wire([{ ...good, style: { border: [0, 0, 0] } }]), bookmarks: [{ title: "t", page: null, level: 0 }, { title: "u", page: 0, level: 1 }] };
+    expect((await save("shape.pdf", m2, raw(fine))).status).toBe(200);
   });
 });
