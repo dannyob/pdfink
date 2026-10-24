@@ -6,3 +6,5 @@ notebooks
 *.log
 dist-local
 deploy.env
+.worktrees
+.superpowers
