@@ -8,17 +8,20 @@ import {
   PDFRef,
   PDFStream,
 } from "pdf-lib";
-import type { PageModel, Stroke } from "../model.ts";
+import type { Bookmark, PageModel, Stroke } from "../model.ts";
 import { DEFAULT_PRESSURE, newId } from "../model.ts";
 import { rgbToHex } from "./color.ts";
 import { displaySize, normalizeRotate, pdfToDisplay, type PageGeom } from "./geom.ts";
 import { extractLinks } from "./links.ts";
+import { readOutline } from "./outline.ts";
 
 export interface ImportedDocument {
   /** The original PDF with all /Ink and URI /Link annotations removed. */
   baseBytes: Uint8Array;
   pages: PageModel[];
   geoms: PageGeom[];
+  /** The document outline, depth-first. */
+  bookmarks: Bookmark[];
 }
 
 export function pageGeom(page: { getCropBox(): { x: number; y: number; width: number; height: number }; getRotation(): { angle: number } }): PageGeom {
@@ -160,7 +163,8 @@ export async function importPdf(bytes: Uint8Array): Promise<ImportedDocument> {
     }
     pages.push(model);
   }
+  const bookmarks = readOutline(doc);
   collectGarbage(doc);
   const baseBytes = await doc.save({ useObjectStreams: false, updateFieldAppearances: false });
-  return { baseBytes, pages, geoms };
+  return { baseBytes, pages, geoms, bookmarks };
 }

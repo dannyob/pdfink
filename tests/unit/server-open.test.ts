@@ -31,7 +31,7 @@ describe("server-side open", () => {
   it("envelope round-trips pages and base bytes", () => {
     const pages = [page()];
     pages[0].strokes.push({ id: "s", color: "#ff0000", width: 2, opacity: 0.5, points: [{ x: 1.5, y: 2.5, p: 0.25 }, { x: 3, y: 4, p: 1 }] });
-    const buf = encodeOpened({ baseBytes: new Uint8Array([37, 80, 68, 70]), pages, geoms: [] });
+    const buf = encodeOpened({ baseBytes: new Uint8Array([37, 80, 68, 70]), pages, geoms: [], bookmarks: [] });
     const back = decodeOpened(new Uint8Array(buf).buffer as ArrayBuffer);
     expect(Array.from(back.baseBytes)).toEqual([37, 80, 68, 70]);
     expect(back.pages[0].strokes[0]).toMatchObject({ id: "s", color: "#ff0000", width: 2, opacity: 0.5 });

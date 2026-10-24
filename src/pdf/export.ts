@@ -1,11 +1,12 @@
 import { PDFDict, PDFDocument, PDFName, PDFString, degrees } from "pdf-lib";
-import type { ImageItem, PageModel, Stroke } from "../model.ts";
+import type { Bookmark, ImageItem, PageModel, Stroke } from "../model.ts";
 import { LETTER } from "../model.ts";
 import { isUniformPressure, pressureFactor, maxPressureFactor } from "../model.ts";
 import { hexToRgb } from "./color.ts";
 import { displayToPdf, type PageGeom } from "./geom.ts";
 import { pageGeom } from "./import.ts";
 import { addLinkAnnotation } from "./links.ts";
+import { writeOutline } from "./outline.ts";
 
 function fmt(n: number): string {
   return (Math.round(n * 1000) / 1000).toString();
@@ -139,9 +140,10 @@ async function drawImageItem(doc: PDFDocument, pageIndex: number, geom: PageGeom
 
 /**
  * Write the model back into `baseBytes` (a PDF with no ink annotations) and
- * return the finished PDF bytes.
+ * return the finished PDF bytes. `bookmarks` replaces the outline (an empty
+ * array removes it); left undefined, the base's /Outlines stay untouched.
  */
-export async function exportPdf(baseBytes: Uint8Array, pages: PageModel[]): Promise<Uint8Array> {
+export async function exportPdf(baseBytes: Uint8Array, pages: PageModel[], bookmarks?: Bookmark[]): Promise<Uint8Array> {
   const doc = await PDFDocument.load(baseBytes, { ignoreEncryption: true, updateMetadata: false });
   const count = doc.getPageCount();
   if (pages.length > count) {
@@ -155,6 +157,7 @@ export async function exportPdf(baseBytes: Uint8Array, pages: PageModel[]): Prom
     for (const ln of pages[i].links) addLinkAnnotation(doc, i, geom, ln);
     for (const g of groupStrokes(pages[i].strokes)) addInkAnnotation(doc, i, geom, g);
   }
+  if (bookmarks !== undefined) writeOutline(doc, bookmarks);
   doc.setProducer("pdfink");
   doc.setModificationDate(new Date());
   return doc.save({ useObjectStreams: false });

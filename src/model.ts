@@ -65,6 +65,13 @@ export interface LinkItem {
   label?: string;
 }
 
+/** One outline entry: a title, the 0-based page it opens (null when it has no destination in this document), and its depth (0 = top). */
+export interface Bookmark {
+  title: string;
+  page: number | null;
+  level: number;
+}
+
 export interface PageModel {
   /** Page size in PDF points, after rotation (what the viewer shows). */
   width: number;
