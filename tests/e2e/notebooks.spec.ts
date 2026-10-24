@@ -74,6 +74,8 @@ test.describe("notebooks folder", () => {
   test("New creates a notebook in the folder with the given name", async ({ page }) => {
     await fakeClipboard(page);
     await page.goto("/");
+    // Storage detection is async; clicking New before it settles makes a tab-only document.
+    await page.waitForFunction(() => document.body.dataset.storage === "server");
     const name = unique("new");
     await page.evaluate((n) => (window.__pdfink.promptFn = async () => n.replace(/\.pdf$/, "")), name);
     await page.click("#btn-new");
