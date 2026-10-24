@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -165,6 +165,30 @@ describe("pen-menu commands API", () => {
     expect(optionsFrom(["--commands", "/tmp/c.conf"], {}).commandsFile).toBe("/tmp/c.conf");
     expect(optionsFrom([], { PDFINK_COMMANDS: "none" }).commandsFile).toBeNull();
     expect(optionsFrom(["--notebooks", "/tmp/nb"], {}).commandsFile).toBe("/tmp/nb/pdfink-commands.conf");
+  });
+});
+
+describe("a command that fails to start", () => {
+  it("answers 500 and leaves no run socket behind", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdfink-nul-"));
+    const conf = path.join(dir, "pdfink-commands.conf");
+    // A NUL in the command makes spawn() throw synchronously.
+    fs.writeFileSync(conf, "[Broken]\ncommand = echo a\u0000b\n");
+    fs.writeFileSync(path.join(dir, "a.pdf"), await createBlankPdf(1));
+    const sockDir = path.join(dir, "sock");
+    const srv = createServer({ mode: "server", notebooksDir: dir, distDir: null, host: "127.0.0.1", port: 0, commandsFile: conf, socketDir: sockDir });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await fetch(`${base}/api/commands/Broken`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "a.pdf", page: 0, x: 1, y: 1 }) });
+      expect(res.status).toBe(500);
+      expect(fs.readdirSync(sockDir)).toEqual([]);
+    } finally {
+      errors.mockRestore();
+      await new Promise((r) => srv.close(r));
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

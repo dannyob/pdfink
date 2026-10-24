@@ -382,26 +382,32 @@ async function handleCommand(opts: ServerOptions, bridge: Bridge, req: http.Inco
   let running: RunningCommand | undefined;
   let killEarly = false;
   const run = await bridge.openRun({ session, label: spec.label, detached: spec.detach, notebook: name }, () => (running ? running.kill() : (killEarly = true)));
-  running = startCommand(
-    spec,
-    {
-      pdf: file,
-      name,
-      notebooks: opts.notebooksDir,
-      page: (page as number) + 1,
-      pages,
-      x: p.x,
-      y: p.y,
-      dx: x as number,
-      dy: y as number,
-      pageWidth: geom.cw,
-      pageHeight: geom.ch,
-      rotate: geom.rotate,
-      selection: sel,
-    },
-    path.dirname(opts.commandsFile),
-    { PDFINK_SOCKET: run.socketPath, PDFINK_RUN: run.id },
-  );
+  try {
+    running = startCommand(
+      spec,
+      {
+        pdf: file,
+        name,
+        notebooks: opts.notebooksDir,
+        page: (page as number) + 1,
+        pages,
+        x: p.x,
+        y: p.y,
+        dx: x as number,
+        dy: y as number,
+        pageWidth: geom.cw,
+        pageHeight: geom.ch,
+        rotate: geom.rotate,
+        selection: sel,
+      },
+      path.dirname(opts.commandsFile),
+      { PDFINK_SOCKET: run.socketPath, PDFINK_RUN: run.id },
+    );
+  } catch (err) {
+    // spawn() can throw (a NUL in the command line): don't leave the run's socket behind.
+    await bridge.closeRun(run.id, { status: null, signal: null, timedOut: false, stdout: "", changed: false, mtime: Math.round(before.mtimeMs), reload: false });
+    throw err;
+  }
   if (killEarly) running.kill();
   const where = `on ${name} p${(page as number) + 1}`;
   const finished = running.done.then(async (result) => {

@@ -166,7 +166,7 @@ export async function loadCommands(file: string | null): Promise<CommandSpec[]> 
   return parseCommands(text);
 }
 
-/** Start one command with the context in its environment; never throws. */
+/** Start one command with the context in its environment. Failures land on `done`, except spawn() refusing its arguments (a NUL in the command), which throws. */
 export function startCommand(spec: CommandSpec, ctx: CommandContext, cwd: string, extraEnv: Record<string, string> = {}): RunningCommand {
   const num = (n: number) => String(Math.round(n * 1000) / 1000);
   const sel = ctx.selection;

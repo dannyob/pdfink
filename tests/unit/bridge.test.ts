@@ -314,6 +314,23 @@ describe("Bridge", () => {
     await bridge.closeRun(run.id, done); // a second close is harmless
   });
 
+  it("closeRun does not wait on a client that stopped reading", async () => {
+    const run = await bridge.openRun(runInfo, () => {});
+    const stuck = await connected(run.socketPath);
+    stuck.send({ id: 1, call: "big" });
+    await page.waitFor(() => page.requests().length === 1);
+    // It stops reading, then gets far more than the socket buffers hold:
+    // the bridge's end() can never flush.
+    stuck.sock.pause();
+    page.emit({ run: run.id, id: page.requests()[0].id, result: "x".repeat(20_000_000) });
+    const t0 = Date.now();
+    await bridge.closeRun(run.id, exit);
+    expect(Date.now() - t0).toBeLessThan(2500);
+    expect(fs.existsSync(run.socketPath)).toBe(false);
+    expect(page.sent).toContainEqual({ run: run.id, exited: exit });
+    stuck.destroy();
+  });
+
   it("killRun sends the exit event before onKill", async () => {
     let id = "";
     const order: string[] = [];

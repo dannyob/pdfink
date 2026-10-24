@@ -169,6 +169,9 @@ function write(conn: Conn, obj: unknown): void {
   if (conn.socket.writable) conn.socket.write(JSON.stringify(obj) + "\n");
 }
 
+/** How long a closing run waits for its clients to let go before cutting them off. */
+const DESTROY_MS = 2000;
+
 /** End a connection once its queued output has gone out. */
 function endConn(conn: Conn): void {
   conn.socket.end(() => conn.socket.destroy());
@@ -278,13 +281,21 @@ export class Bridge {
     await Promise.all(runs.map((r) => this.dispose(r)));
   }
 
-  /** Stop listening, end every connection and remove the socket file. */
+  /**
+   * Stop listening, end every connection and remove the socket file. A client
+   * that has not let go after DESTROY_MS (it stopped reading, or a daemonised
+   * grandchild holds the connection) is cut off, so a run always closes.
+   */
   private async dispose(run: Run): Promise<void> {
     this.runs.delete(run.info.id);
     const closed = new Promise<void>((r) => run.server.close(() => r()));
     for (const conn of run.conns) endConn(conn);
     fs.rmSync(run.info.socketPath, { force: true });
+    const cutOff = setTimeout(() => {
+      for (const conn of run.conns) conn.socket.destroy();
+    }, DESTROY_MS);
     await closed;
+    clearTimeout(cutOff);
   }
 
   private accept(run: Run, socket: net.Socket): void {
