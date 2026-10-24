@@ -1010,6 +1010,8 @@ export class App {
         return;
       }
     } else if (e.pointerType === "touch") {
+      // The first finger of a gesture: forget any id whose pointerup never came.
+      if (e.isPrimary) this.touchesDown.clear();
       this.touchesDown.add(e.pointerId);
       // One finger, fingers scrolling: it may be a tap on a link. A second finger is a pinch;
       // a touch while the pen is down or near is a palm.
