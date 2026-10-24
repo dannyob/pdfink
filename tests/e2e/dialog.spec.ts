@@ -47,6 +47,7 @@ test.describe("in-page dialogs", () => {
     await expect(page.locator("#dialog")).toBeHidden();
 
     const ok = page.evaluate(() => window.__pdfink.confirmFn("Sure?"));
+    await expect(page.locator("#dialog .dialog-message")).toHaveText("Sure?");
     await page.keyboard.press("Enter");
     expect(await ok).toBe(true);
 

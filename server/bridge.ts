@@ -31,7 +31,11 @@
  * side) still gets its pending replies; then the server ends the connection.
  *
  * Sessions. A session has at most one live page; a new page for it closes
- * the old one (newest wins). A detached run outlives its page for a grace
+ * the old one (newest wins) with close code 4001 "replaced", so a duplicated
+ * tab that copied the session id knows to pick a fresh one rather than fight.
+ * On attach the page is sent {"run":R,"started":…} again for every live run
+ * of the session, so after a reconnect it can drop chips for runs that ended
+ * while it was away. A detached run outlives its page for a grace
  * period (graceMs, default ten minutes) so that a reload or reconnect finds it
  * still going; a normal run is never killed because its page went away.
  *
@@ -39,8 +43,11 @@
  *                           cancels it. When it fires, every connection of every
  *                           run on the session gets {"event":"gone"}, then each
  *                           detached run of the session is killed.
- *   - {"bye":true}:         the page is leaving for good; the session's detached
- *                           runs are killed at once.
+ *   - {"bye":true}:         the page is leaving (closing or refreshing); a short
+ *                           timer (byeGraceMs, default five seconds) starts, and
+ *                           when it fires the session's detached runs are killed.
+ *                           A new page for the session cancels it, so a refresh
+ *                           keeps them.
  *   - {"dismiss":R}:        run R (of this session) is killed.
  *   - {"notebook":N}:       subscribers on the session get
  *                           {"event":"notebook","data":{"name":N}}, then the
@@ -63,7 +70,8 @@ import path from "node:path";
 /** The page's end of its WebSocket, as the bridge sees it. */
 export interface PageSocket {
   send(text: string): void;
-  close(): void;
+  /** Close the socket, with a WebSocket close code and reason when given. */
+  close(code?: number, reason?: string): void;
   onMessage(fn: (text: string) => void): void;
   onClose(fn: () => void): void;
 }
@@ -94,6 +102,8 @@ export interface BridgeOptions {
   socketDir?: string;
   /** How long a session outlives its page, in ms; default 600_000. */
   graceMs?: number;
+  /** How long a session's detached runs outlive a {"bye":true}, in ms; default 5000. */
+  byeGraceMs?: number;
 }
 
 type Json = Record<string, unknown>;
@@ -122,6 +132,8 @@ interface Session {
   /** The live page, or null while the session waits out its grace period. */
   socket: PageSocket | null;
   graceTimer: NodeJS.Timeout | null;
+  /** Started by {"bye":true}: kills the detached runs unless a page comes back first. */
+  byeTimer: NodeJS.Timeout | null;
 }
 
 /** Calls `onLine` for each "\n"-terminated line; buffers partial lines however long. */
@@ -165,6 +177,7 @@ function endConn(conn: Conn): void {
 export class Bridge {
   private readonly socketDir: string;
   readonly graceMs: number;
+  readonly byeGraceMs: number;
   private readonly runs = new Map<string, Run>();
   private readonly sessions = new Map<string, Session>();
   private connCount = 0;
@@ -174,21 +187,23 @@ export class Bridge {
   constructor(opts: BridgeOptions = {}) {
     this.socketDir = opts.socketDir ?? path.join(os.tmpdir(), "pdfink");
     this.graceMs = opts.graceMs ?? 600_000;
+    this.byeGraceMs = opts.byeGraceMs ?? 5000;
   }
 
   addPage(session: string, socket: PageSocket): void {
     if (this.closed) return socket.close();
     let s = this.sessions.get(session);
-    if (!s) this.sessions.set(session, (s = { socket: null, graceTimer: null }));
+    if (!s) this.sessions.set(session, (s = { socket: null, graceTimer: null, byeTimer: null }));
     const entry = s;
     if (entry.graceTimer) clearTimeout(entry.graceTimer);
-    entry.graceTimer = null;
+    if (entry.byeTimer) clearTimeout(entry.byeTimer);
+    entry.graceTimer = entry.byeTimer = null;
     // A new page replaces the old one; what the old one was asked is lost.
     const previous = entry.socket;
     entry.socket = socket;
     if (previous) {
       this.failPending(session);
-      previous.close();
+      previous.close(4001, "replaced");
     }
     socket.onMessage((text) => { if (entry.socket === socket) this.fromPage(session, text); });
     socket.onClose(() => {
@@ -198,6 +213,7 @@ export class Bridge {
       if (entry.graceTimer) clearTimeout(entry.graceTimer);
       entry.graceTimer = setTimeout(() => this.graceExpired(session, entry), this.graceMs);
     });
+    for (const r of this.runsFor(session)) socket.send(JSON.stringify({ run: r.id, started: { label: r.label, detached: r.detached } }));
   }
 
   hasPage(session: string): boolean {
@@ -252,6 +268,7 @@ export class Bridge {
     this.closed = true;
     for (const s of this.sessions.values()) {
       if (s.graceTimer) clearTimeout(s.graceTimer);
+      if (s.byeTimer) clearTimeout(s.byeTimer);
       // Detach the page so its later close (the server tears it down) starts no timer.
       s.socket = null;
     }
@@ -314,7 +331,15 @@ export class Bridge {
       if (!conn || !conn.pending.has(msg.id)) return;
       this.reply(conn, msg.id, "error" in msg ? { error: msg.error } : { result: msg.result });
     }
-    if (msg.bye === true) return this.killDetached(session, () => true);
+    if (msg.bye === true) {
+      const entry = this.sessions.get(session);
+      if (!entry || entry.byeTimer) return;
+      entry.byeTimer = setTimeout(() => {
+        entry.byeTimer = null;
+        this.killDetached(session, () => true);
+      }, this.byeGraceMs);
+      return;
+    }
     if (typeof msg.dismiss === "string") {
       if (this.runs.get(msg.dismiss)?.info.session === session) this.killRun(msg.dismiss);
       return;
@@ -344,6 +369,8 @@ export class Bridge {
   /** The session's page did not come back in time. */
   private graceExpired(session: string, entry: Session): void {
     entry.graceTimer = null;
+    if (entry.byeTimer) clearTimeout(entry.byeTimer);
+    entry.byeTimer = null;
     if (this.sessions.get(session) === entry) this.sessions.delete(session);
     for (const run of this.runs.values()) {
       if (run.info.session === session) for (const conn of run.conns) write(conn, { event: "gone" });

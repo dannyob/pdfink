@@ -9,11 +9,19 @@ import { Bridge, type ExitInfo, type PageSocket } from "../../server/bridge";
 class FakePage implements PageSocket {
   sent: any[] = [];
   closed = false;
+  closeCode: number | undefined;
+  closeReason: string | undefined;
   private messageFns: ((text: string) => void)[] = [];
   private closeFns: (() => void)[] = [];
   private waiters: (() => void)[] = [];
   send(text: string) { this.sent.push(JSON.parse(text)); this.waiters.splice(0).forEach((w) => w()); }
-  close() { if (this.closed) return; this.closed = true; this.closeFns.forEach((f) => f()); }
+  close(code?: number, reason?: string) {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeCode = code;
+    this.closeReason = reason;
+    this.closeFns.forEach((f) => f());
+  }
   onMessage(fn: (text: string) => void) { this.messageFns.push(fn); }
   onClose(fn: () => void) { this.closeFns.push(fn); }
   /** Speak as the page. */
@@ -334,6 +342,8 @@ describe("Bridge sessions", () => {
     const fresh = new FakePage();
     bridge.addPage("s1", fresh);
     expect(page.closed).toBe(true);
+    expect(page.closeCode).toBe(4001);
+    expect(page.closeReason).toBe("replaced");
     expect(bridge.hasPage("s1")).toBe(true);
     vi.advanceTimersByTime(600_000);
     expect(k.n).toBe(0);
@@ -386,20 +396,51 @@ describe("Bridge sessions", () => {
     expect(k.n).toBe(1);
   });
 
-  it("bye kills detached runs at once", async () => {
+  it("bye kills detached runs after a short grace", async () => {
     const kd = killCounter();
     const kn = killCounter();
     const ko = killCounter();
     const other = new FakePage();
     bridge.addPage("s2", other);
-    other.emit({ bye: true }); // a session with no runs
     await bridge.openRun({ ...runInfo, detached: true }, kd.fn);
     await bridge.openRun({ ...runInfo, label: "N" }, kn.fn);
     await bridge.openRun({ ...runInfo, session: "s2", detached: true }, ko.fn);
+    fakeTimers();
     page.emit({ bye: true });
+    page.close();
+    vi.advanceTimersByTime(4999);
+    expect(kd.n).toBe(0);
+    vi.advanceTimersByTime(1);
     expect(kd.n).toBe(1);
     expect(kn.n).toBe(0);
     expect(ko.n).toBe(0);
+  });
+
+  it("a page coming back inside the bye grace (a refresh) keeps the detached runs", async () => {
+    const k = killCounter();
+    await bridge.openRun({ ...runInfo, detached: true }, k.fn);
+    fakeTimers();
+    page.emit({ bye: true });
+    page.close();
+    vi.advanceTimersByTime(3000);
+    bridge.addPage("s1", new FakePage());
+    vi.advanceTimersByTime(600_000);
+    expect(k.n).toBe(0);
+  });
+
+  it("a new page is told about the session's live runs", async () => {
+    const d = await bridge.openRun({ ...runInfo, label: "D", detached: true }, () => {});
+    const n = await bridge.openRun({ ...runInfo, label: "N" }, () => {});
+    await bridge.openRun({ ...runInfo, session: "s2", label: "O" }, () => {});
+    const gone = await bridge.openRun({ ...runInfo, label: "G" }, () => {});
+    await bridge.closeRun(gone.id, exit);
+    page.close();
+    const fresh = new FakePage();
+    bridge.addPage("s1", fresh);
+    expect(fresh.sent).toEqual([
+      { run: d.id, started: { label: "D", detached: true } },
+      { run: n.id, started: { label: "N", detached: false } },
+    ]);
   });
 
   it("dismiss kills just that run", async () => {

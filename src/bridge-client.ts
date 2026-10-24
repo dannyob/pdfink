@@ -4,6 +4,11 @@
  * to window.pdfink and the page's events back to them. Detached runs get a
  * chip in the toolbar with a dismiss button; when a run exits, its buttons and
  * progress line go with it.
+ *
+ * On every (re)connect the server re-announces the session's live runs; runs
+ * not re-announced within SETTLE_MS ended while the page was away and are
+ * dropped. A close with code 4001 means another tab took over this session id
+ * (a duplicated tab copies sessionStorage): this tab moves to a fresh id.
  */
 import type { App, AppEvent } from "./app";
 import { evalInPage, toJson, type PdfinkApi } from "./pdfink-api";
@@ -12,6 +17,10 @@ const SESSION_KEY = "pdfink.session";
 const EVENTS: AppEvent[] = ["selection", "save", "page", "notebook", "stroke", "button"];
 const MIN_DELAY = 1000;
 const MAX_DELAY = 30_000;
+/** How long after a (re)connect the server's re-announced runs have to arrive. */
+const SETTLE_MS = 500;
+/** The server's close code for a page superseded by a newer one for the same session. */
+const REPLACED = 4001;
 
 interface ExitInfo {
   status: number | null;
@@ -34,7 +43,7 @@ interface Frame {
 }
 
 export class PageLink {
-  readonly session: string;
+  private sessionId: string;
   readonly runs = new Map<string, { label: string; detached: boolean }>();
   /** Button ids each run added through addButton, so they go when it exits. */
   private buttons = new Map<string, Set<string>>();
@@ -44,13 +53,21 @@ export class PageLink {
   private wired = false;
   /** The notebook open when each detached run started: the file its exit may have changed. */
   private notebooks = new Map<string, string>();
+  /** Runs announced since the socket last opened; null once settled. */
+  private announced: Set<string> | null = null;
+  /** The page is being hidden or unloaded: don't reconnect. */
+  private leaving = false;
 
   constructor(
     private readonly app: App,
     private readonly api: PdfinkApi,
     private readonly root: HTMLElement = document.getElementById("runs") as HTMLElement,
   ) {
-    this.session = loadSession();
+    this.sessionId = loadSession();
+  }
+
+  get session(): string {
+    return this.sessionId;
   }
 
   connect(): void {
@@ -62,14 +79,29 @@ export class PageLink {
           if (event === "notebook") this.send({ notebook: (data as { name: string }).name });
         });
       }
-      window.addEventListener("pagehide", () => this.send({ bye: true }));
+      window.addEventListener("pagehide", () => {
+        this.send({ bye: true });
+        this.leaving = true;
+      });
+      window.addEventListener("pageshow", (e) => {
+        if (!e.persisted) return;
+        this.leaving = false;
+        if (!this.ws) this.connect();
+      });
     }
     if (this.retry) clearTimeout(this.retry);
     this.retry = null;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/api/page?session=${encodeURIComponent(this.session)}`);
     this.ws = ws;
-    ws.onopen = () => (this.delay = MIN_DELAY);
+    ws.onopen = () => {
+      this.delay = MIN_DELAY;
+      if (this.app.source.kind === "server") this.send({ notebook: this.app.source.name });
+      this.announced = new Set();
+      setTimeout(() => {
+        if (this.ws === ws) this.prune();
+      }, SETTLE_MS);
+    };
     ws.onmessage = (e) => {
       let frame: Frame;
       try {
@@ -79,9 +111,16 @@ export class PageLink {
       }
       void this.handle(frame);
     };
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       if (this.ws !== ws) return;
       this.ws = null;
+      if (this.leaving) return;
+      if (e.code === REPLACED) {
+        this.sessionId = newSession();
+        this.app.session = this.sessionId;
+        this.delay = MIN_DELAY;
+        return this.connect();
+      }
       this.retry = setTimeout(() => this.connect(), this.delay);
       this.delay = Math.min(this.delay * 2, MAX_DELAY);
     };
@@ -132,6 +171,7 @@ export class PageLink {
   }
 
   private startedRun(run: string, info: { label: string; detached: boolean }): void {
+    this.announced?.add(run);
     this.runs.set(run, { label: String(info.label), detached: !!info.detached });
     if (!info.detached) return;
     if (this.app.source.kind === "server") this.notebooks.set(run, this.app.source.name);
@@ -151,14 +191,34 @@ export class PageLink {
     this.root.appendChild(chip);
   }
 
-  private async exited(run: string, exit: ExitInfo): Promise<void> {
-    const info = this.runs.get(run);
-    const notebook = this.notebooks.get(run);
+  /** Drop every run the server did not re-announce after this connect: it ended while we were away. */
+  private prune(): void {
+    const live = this.announced ?? new Set<string>();
+    this.announced = null;
+    const known = new Set([...this.runs.keys(), ...this.buttons.keys()]);
+    for (const el of this.root.querySelectorAll<HTMLElement>(".run[data-run]")) known.add(el.dataset.run!);
+    let dropped = false;
+    for (const run of known) {
+      if (live.has(run)) continue;
+      this.forget(run);
+      dropped = true;
+    }
+    if (dropped) this.app.progress(null);
+  }
+
+  /** Remove a run's chip and buttons and stop tracking it. */
+  private forget(run: string): void {
     this.runs.delete(run);
     this.notebooks.delete(run);
     this.root.querySelector(`.run[data-run="${CSS.escape(run)}"]`)?.remove();
     for (const id of this.buttons.get(run) ?? []) this.app.removeButton(id);
     this.buttons.delete(run);
+  }
+
+  private async exited(run: string, exit: ExitInfo): Promise<void> {
+    const info = this.runs.get(run);
+    const notebook = this.notebooks.get(run);
+    this.forget(run);
     this.app.progress(null);
     // A normal run's result comes back on its HTTP request, which handles the
     // file change itself; only a detached run's change is ours to apply.
@@ -178,7 +238,12 @@ function loadSession(): string {
     /* storage blocked */
   }
   if (id && /^[A-Za-z0-9_-]{1,64}$/.test(id)) return id;
-  id = newId();
+  return newSession();
+}
+
+/** A fresh session id, stored for this tab. */
+function newSession(): string {
+  const id = newId();
   try {
     sessionStorage.setItem(SESSION_KEY, id);
   } catch {

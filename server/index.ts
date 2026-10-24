@@ -427,7 +427,7 @@ function pageSocket(ws: WebSocket): PageSocket {
     send: (text) => {
       if (ws.readyState === ws.OPEN) ws.send(text);
     },
-    close: () => ws.close(),
+    close: (code, reason) => ws.close(code, reason),
     onMessage: (fn) => ws.on("message", (data, isBinary) => {
       if (!isBinary) fn(data.toString());
     }),
