@@ -63,6 +63,11 @@ export interface LinkItem {
   url: string;
   /** Optional text, stored as the annotation's /Contents. */
   label?: string;
+  /**
+   * The /Border and /C a link brought with it from the file, written back in
+   * place of pdfink's blue 1 pt box. Absent on links made here.
+   */
+  style?: { border: number[]; color?: number[] };
 }
 
 /** One outline entry: a title, the 0-based page it opens (null when it has no destination in this document), and its depth (0 = top). */

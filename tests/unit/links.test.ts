@@ -93,6 +93,27 @@ describe("links", () => {
     expect(r.pages[0].links).toEqual([expect.objectContaining({ x: 72, y: 80, w: 200, h: 64, url: "https://example.org", label: "Example" })]);
   });
 
+  it("keeps an imported link's /Border and /C; /BS /W stands in for a missing /Border", async () => {
+    const uri = (u: string) => ({ S: "URI", URI: PDFString.of(u) });
+    const bytes = await pdfWithAnnots((doc) => [
+      doc.context.obj({ Type: "Annot", Subtype: "Link", Rect: [72, 648, 272, 712], Border: [0, 0, 0], C: [1, 0, 0], A: uri("https://a.example") }),
+      doc.context.obj({ Type: "Annot", Subtype: "Link", Rect: [72, 500, 272, 560], BS: { W: 2, S: "S" }, A: uri("https://b.example") }),
+      doc.context.obj({ Type: "Annot", Subtype: "Link", Rect: [72, 400, 272, 460], A: uri("https://c.example") }),
+    ]);
+    const r = await importPdf(bytes);
+    expect(r.pages[0].links.map((l) => l.style)).toEqual([{ border: [0, 0, 0], color: [1, 0, 0] }, { border: [0, 0, 2] }, undefined]);
+    const doc = await PDFDocument.load(await exportPdf(r.baseBytes, r.pages));
+    const byUrl = new Map(linkAnnots(doc).map((d) => [text(d.lookup(PDFName.of("A"), PDFDict).get(PDFName.of("URI"))), d]));
+    const nums = (d: PDFDict | undefined, key: string) => d?.lookup(PDFName.of(key), PDFArray).asArray().map(String);
+    expect(nums(byUrl.get("https://a.example"), "Border")).toEqual(["0", "0", "0"]);
+    expect(nums(byUrl.get("https://a.example"), "C")).toEqual(["1", "0", "0"]);
+    expect(nums(byUrl.get("https://b.example"), "Border")).toEqual(["0", "0", "2"]);
+    expect(byUrl.get("https://b.example")!.has(PDFName.of("C"))).toBe(false);
+    // No border information at all: pdfink's own default.
+    expect(nums(byUrl.get("https://c.example"), "Border")).toEqual(["0", "0", "1"]);
+    expect(nums(byUrl.get("https://c.example"), "C")).toEqual(["0", "0", "1"]);
+  });
+
   it("keeps parentheses, backslashes and non-ASCII in the URL and label", async () => {
     const link: LinkItem = { id: "l1", x: 10, y: 10, w: 50, h: 20, url: "https://en.wikipedia.org/wiki/Café_(film)\\x)", label: "Café (日本)" };
     const out = await exportPdf(await createBlankPdf(1), [page(612, 792, [link])]);

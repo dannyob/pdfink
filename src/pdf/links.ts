@@ -53,6 +53,34 @@ function rectNumbers(dict: PDFDict): number[] | null {
   return out;
 }
 
+/** The first `max` entries of `o` as numbers, or null unless they all are. */
+function numbers(o: unknown, max = Infinity): number[] | null {
+  if (!(o instanceof PDFArray)) return null;
+  const out: number[] = [];
+  for (let i = 0; i < Math.min(max, o.size()); i++) {
+    const v = o.lookup(i);
+    if (!(v instanceof PDFNumber)) return null;
+    out.push(v.asNumber());
+  }
+  return out;
+}
+
+/** The annotation's border and colour, when it gives either. /BS /W wins over /Border, as in the spec; a dash pattern is not kept. */
+function readStyle(dict: PDFDict): LinkItem["style"] | undefined {
+  let border: number[] | undefined;
+  const bs = dict.lookup(PDFName.of("BS"));
+  const w = bs instanceof PDFDict ? bs.lookup(PDFName.of("W")) : undefined;
+  if (w instanceof PDFNumber) border = [0, 0, w.asNumber()];
+  else {
+    const b = numbers(dict.lookup(PDFName.of("Border")), 3);
+    if (b && b.length === 3) border = b;
+  }
+  const c = numbers(dict.lookup(PDFName.of("C")));
+  const color = c && [0, 1, 3, 4].includes(c.length) ? c : undefined;
+  if (!border && !color) return undefined;
+  return { border: border ?? [0, 0, 1], ...(color ? { color } : {}) };
+}
+
 /** The link a /Link annotation with a URI action describes, or null to leave it in the base. */
 function readLink(dict: PDFDict, geom: PageGeom): LinkItem | null {
   if (dict.get(PDFName.of("Subtype")) !== PDFName.of("Link")) return null;
@@ -75,6 +103,8 @@ function readLink(dict: PDFDict, geom: PageGeom): LinkItem | null {
     const label = contents.decodeText();
     if (label) link.label = label;
   }
+  const style = readStyle(dict);
+  if (style) link.style = style;
   return link;
 }
 
@@ -115,8 +145,8 @@ export function addLinkAnnotation(doc: PDFDocument, pageIndex: number, geom: Pag
     Type: "Annot",
     Subtype: "Link",
     Rect: rect,
-    Border: [0, 0, 1],
-    C: [0, 0, 1],
+    Border: link.style?.border ?? [0, 0, 1],
+    ...(link.style ? (link.style.color ? { C: link.style.color } : {}) : { C: [0, 0, 1] }),
     A: { S: "URI", URI: encodeUri(link.url) },
     ...(link.label ? { Contents: encodeText(link.label) } : {}),
     NM: PDFString.of(`pdfink-${Math.random().toString(36).slice(2)}`),

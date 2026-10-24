@@ -225,6 +225,19 @@ describe("server-side open", () => {
     expect((await openAt("keep.pdf")).opened.bookmarks).toEqual([]);
   });
 
+  it("a link's style travels through /open and /save", async () => {
+    const pages = [page()];
+    pages[0].links.push({ id: "st", x: 72, y: 80, w: 200, h: 64, url: "https://example.org/s", style: { border: [0, 0, 0], color: [1, 0, 0] } });
+    fs.writeFileSync(path.join(dir, "style.pdf"), await exportPdf(await createBlankPdf(1), pages));
+    let { mtime, opened } = await openAt("style.pdf");
+    expect(opened.pages[0].links[0].style).toEqual({ border: [0, 0, 0], color: [1, 0, 0] });
+    opened.pages[0].links[0].style = { border: [0, 0, 3] };
+    const res = await save("style.pdf", mtime, encodeSaveEnvelope(opened.pages));
+    expect(res.status).toBe(200);
+    ({ opened } = await openAt("style.pdf"));
+    expect(opened.pages[0].links[0].style).toEqual({ border: [0, 0, 3] });
+  });
+
   it("/save refuses links on a page the base does not have", async () => {
     fs.writeFileSync(path.join(dir, "lgrow.pdf"), await createBlankPdf(1));
     const { mtime, opened } = await openAt("lgrow.pdf");
