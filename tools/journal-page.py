@@ -29,7 +29,7 @@ From the pen menu ($PDFINK_SOCKET set) it also shows each stage as a progress
 line in the page, when the page has no legible date and --date was not
 given it asks for the day instead of giving up, and once the entry is
 transcribed it bookmarks the entry's first page with its date (unless that
-bookmark is already there; --dry-run too).
+bookmark is already there; a --dry-run does not bookmark).
 
 Keys come from `llm keys set ...` as usual (the shared llm user directory).
 Model: --model, else $PDFINK_JOURNAL_MODEL, else openrouter/google/gemini-3.7-flash.
@@ -342,11 +342,11 @@ def run(a: argparse.Namespace, pdf: Path) -> int:
     out = out_dir / f"journal-{dates[0]}-{pdf.stem}-p{a.page}.md"
     out.write_text(text + "\n", encoding="utf8")
     log(f"transcript of {span} saved to {out}")
-    bookmark_entry(a.page - 1, dates[0])
 
     if a.dry_run:
         print(text)
         return 0
+    bookmark_entry(a.page - 1, dates[0])
 
     life = life_dir(a.life_dir)
     if not (life / "CLAUDE.md").is_file():
