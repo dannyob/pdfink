@@ -1,4 +1,4 @@
-import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNull, type PDFObject, PDFRef, PDFString } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNull, PDFNumber, type PDFObject, PDFRef, PDFString } from "pdf-lib";
 import type { Bookmark } from "../model.ts";
 
 /** How many indirections (name → dict → /D → …) a destination may take before it counts as unresolvable. */
@@ -53,6 +53,12 @@ function resolveDest(doc: PDFDocument, dest: PDFObject | undefined, hops = 0): n
   const d = deref(doc, dest);
   if (d instanceof PDFArray) {
     const target = d.size() ? d.get(0) : undefined;
+    // A page index instead of a page reference: not what the spec allows inside
+    // a document, but pdf.js and most readers honour it.
+    if (target instanceof PDFNumber) {
+      const n = target.asNumber();
+      return Number.isInteger(n) && n >= 0 && n < doc.getPageCount() ? n : null;
+    }
     if (!(target instanceof PDFRef)) return null;
     const key = target.toString();
     const index = doc.getPages().findIndex((p) => p.ref.toString() === key);
@@ -102,6 +108,7 @@ export function readOutline(doc: PDFDocument): Bookmark[] {
 
 interface Node {
   bookmark: Bookmark;
+  /** The input level, unclamped, so siblings deeper than parent+1 stay siblings. */
   level: number;
   ref: PDFRef;
   children: Node[];
@@ -114,7 +121,7 @@ function buildTree(doc: PDFDocument, bookmarks: Bookmark[]): Node[] {
   for (const bookmark of bookmarks) {
     while (stack.length && stack[stack.length - 1].level >= bookmark.level) stack.pop();
     const parent = stack[stack.length - 1];
-    const node: Node = { bookmark, level: parent ? parent.level + 1 : 0, ref: doc.context.nextRef(), children: [] };
+    const node: Node = { bookmark, level: bookmark.level, ref: doc.context.nextRef(), children: [] };
     (parent ? parent.children : top).push(node);
     stack.push(node);
   }

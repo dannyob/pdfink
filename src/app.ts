@@ -178,6 +178,12 @@ export class App {
   currentPage = 0;
   /** The document outline, in page order; replaced on every open. */
   bookmarks: Bookmark[] = [];
+  /**
+   * Set once the outline is edited here, cleared on open. Until then saves
+   * leave the file's /Outlines alone, since the bookmark list cannot carry
+   * everything an outline can (closed items, positions, zoom, actions).
+   */
+  private bookmarksChanged = false;
   /** Id of this tab's page-bridge session (set by main.ts). */
   session: string | null = null;
   private pointers = new Map<number, Pointer>();
@@ -241,6 +247,7 @@ export class App {
     try {
       await this.setDocument(baseBytes, pages);
       this.bookmarks = bookmarks;
+      this.bookmarksChanged = false;
       this.fileName = name;
       this.fileHandle = handle;
       this.source = { kind: "local", name };
@@ -420,7 +427,7 @@ export class App {
       // this tab's version.
       const baseRev = this.baseRevision;
       const sendBase = force || baseRev !== this.baseSaved;
-      const info = await saveNotebookParsed(name, this.pages, force ? null : this.source.mtime, sendBase ? this.baseBytes : null, this.bookmarks);
+      const info = await saveNotebookParsed(name, this.pages, force ? null : this.source.mtime, sendBase ? this.baseBytes : null, this.outlineToSave());
       this.source = { kind: "server", name, mtime: info.mtime };
       if (sendBase) this.baseSaved = baseRev;
       this.lastSaved = new Date();
@@ -1532,7 +1539,12 @@ export class App {
 
   async exportBytes(): Promise<Uint8Array> {
     if (!this.baseBytes) throw new Error("No document");
-    return exportPdf(this.baseBytes, this.pages, this.bookmarks);
+    return exportPdf(this.baseBytes, this.pages, this.outlineToSave());
+  }
+
+  /** The bookmarks to write, or undefined to keep the base's outline as it is. */
+  private outlineToSave(): Bookmark[] | undefined {
+    return this.bookmarksChanged ? this.bookmarks : undefined;
   }
 
   /** Import: pick a PDF on this device, load it, and store it in the notebooks folder. */
@@ -1991,8 +2003,9 @@ export class App {
 
   /**
    * Add an outline entry for `page`, after the last bookmark on that page or
-   * an earlier one, so the list stays in page order. Not an undo step.
-   * Returns its index.
+   * an earlier one, so the list stays in page order, and after any entries
+   * nested deeper than `level` that follow it, so it adopts none of them.
+   * Not an undo step. Returns its index.
    */
   addBookmark(page: number, title: string, level = 0): number {
     this.checkPage(page);
@@ -2002,17 +2015,22 @@ export class App {
     this.bookmarks.forEach((b, i) => {
       if (b.page !== null && b.page <= page) at = i + 1;
     });
+    while (at < this.bookmarks.length && this.bookmarks[at].level > level) at++;
     this.bookmarks = [...this.bookmarks.slice(0, at), { title, page, level }, ...this.bookmarks.slice(at)];
+    this.bookmarksChanged = true;
     this.markDirty();
     this.setStatus();
     this.emit("bookmarks", this.bookmarks);
     return at;
   }
 
-  /** Remove the outline entry at `index`. Not an undo step. */
+  /** Remove the outline entry at `index` and the entries nested under it. Not an undo step. */
   removeBookmark(index: number): void {
     if (!Number.isInteger(index) || index < 0 || index >= this.bookmarks.length) throw new RangeError(`No bookmark ${index}`);
-    this.bookmarks = this.bookmarks.filter((_, i) => i !== index);
+    let end = index + 1;
+    while (end < this.bookmarks.length && this.bookmarks[end].level > this.bookmarks[index].level) end++;
+    this.bookmarks = [...this.bookmarks.slice(0, index), ...this.bookmarks.slice(end)];
+    this.bookmarksChanged = true;
     this.markDirty();
     this.setStatus();
     this.emit("bookmarks", this.bookmarks);

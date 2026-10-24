@@ -1,11 +1,11 @@
 import { test } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
-import { PDFDocument, PDFName } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFName, type PDFObject, PDFRef, PDFString } from "pdf-lib";
 import { createBlankPdf, exportPdf } from "../../src/pdf/export";
 import { readOutline } from "../../src/pdf/outline";
 import type { Bookmark, PageModel } from "../../src/model";
-import { FIXTURES, expect, fakeClipboard, openApp, state, toClient, waitReady } from "./helpers";
+import { FIXTURES, expect, fakeClipboard, line, openApp, penStroke, state, toClient, waitReady } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -37,7 +37,116 @@ async function openNotebookPage(page: import("@playwright/test").Page, name: str
   await page.waitForFunction((n) => window.__pdfink.source.kind === "server" && window.__pdfink.source.name === n, name);
 }
 
+/**
+ * Three pages; an outline the model cannot represent exactly: a closed item
+ * (/Count -1) on page 0 whose child points at page 2 by integer index, then an
+ * item with a positioned /XYZ destination on page 1.
+ */
+async function pdfWithRichOutline(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  for (let i = 0; i < 3; i++) doc.addPage([612, 792]);
+  const [p0, p1] = doc.getPages();
+  const ctx = doc.context;
+  const [root, closed, kid, positioned] = [ctx.nextRef(), ctx.nextRef(), ctx.nextRef(), ctx.nextRef()];
+  ctx.assign(closed, ctx.obj({ Title: PDFString.of("Closed"), Parent: root, Next: positioned, First: kid, Last: kid, Count: -1, Dest: [p0.ref, PDFName.of("Fit")] }));
+  ctx.assign(kid, ctx.obj({ Title: PDFString.of("Kid"), Parent: closed, Dest: [2, PDFName.of("XYZ"), 0, 792, 0] }));
+  ctx.assign(positioned, ctx.obj({ Title: PDFString.of("Positioned"), Parent: root, Prev: closed, Dest: [p1.ref, PDFName.of("XYZ"), 72, 500, 1.5] }));
+  ctx.assign(root, ctx.obj({ Type: "Outlines", First: closed, Last: positioned, Count: 2 }));
+  doc.catalog.set(PDFName.of("Outlines"), root);
+  return doc.save({ useObjectStreams: false });
+}
+
+/** The outline's item dictionaries as text, links between items dropped and page refs shown as page numbers. */
+function dumpOutline(doc: PDFDocument): string {
+  const pageKeys = doc.getPages().map((p) => p.ref.toString());
+  const skip = new Set(["Parent", "First", "Last", "Next", "Prev"]);
+  const value = (o: PDFObject | undefined): string => {
+    if (o instanceof PDFRef) {
+      const i = pageKeys.indexOf(o.toString());
+      return i >= 0 ? `page#${i}` : value(doc.context.lookup(o));
+    }
+    if (o instanceof PDFArray) return `[${o.asArray().map(value).join(" ")}]`;
+    if (o instanceof PDFDict) return `<<${[...o.entries()].map(([k, v]) => `${k.toString()} ${value(v)}`).join(" ")}>>`;
+    return String(o);
+  };
+  const items = (parent: PDFDict, depth: number): string[] => {
+    const out: string[] = [];
+    let item = parent.lookup(PDFName.of("First"));
+    while (item instanceof PDFDict) {
+      const entries = [...item.entries()].filter(([k]) => !skip.has(k.decodeText())).map(([k, v]) => `${k.toString()} ${value(v)}`);
+      out.push(`${"  ".repeat(depth)}${entries.sort().join(" ")}`, ...items(item, depth + 1));
+      item = item.lookup(PDFName.of("Next"));
+    }
+    return out;
+  };
+  const root = doc.catalog.lookup(PDFName.of("Outlines"));
+  if (!(root instanceof PDFDict)) return "";
+  return [`Count ${value(root.get(PDFName.of("Count")))}`, ...items(root, 0)].join("\n");
+}
+
 test.describe("bookmarks", () => {
+  test("server mode: an ink-only save leaves the outline as it was; a bookmark edit rebuilds it", async ({ page }) => {
+    const name = unique("bm-ink");
+    await putNotebook(name, await pdfWithRichOutline());
+    const before = dumpOutline(await readNotebook(name));
+    expect(before).toContain("/Count -1");
+    expect(before).toContain("/XYZ 72 500 1.5");
+    await openNotebookPage(page, name);
+    expect((await state(page)).bookmarks).toEqual([
+      { title: "Closed", page: 0, level: 0 },
+      { title: "Kid", page: 2, level: 1 },
+      { title: "Positioned", page: 1, level: 0 },
+    ]);
+
+    await penStroke(page, 0, line(100, 100, 300, 200));
+    await page.keyboard.press("Control+s");
+    await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
+    const inked = await readNotebook(name);
+    expect(inked.getPage(0).node.Annots()?.size()).toBe(1);
+    expect(dumpOutline(inked)).toBe(before);
+
+    // A bookmark added through the pen menu: now the outline is rebuilt from the list.
+    await page.evaluate(() => window.__pdfink.views[1].el.scrollIntoView({ block: "start" }));
+    const [px, py] = await toClient(page, 1, 300, 300);
+    await page.mouse.click(px, py, { button: "right" });
+    await page.locator("#ctx-menu button", { hasText: "Bookmark this page…" }).click();
+    await page.fill("#dialog .dialog-input", "Added");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => bookmarkOptions(page)).toContain("Added");
+    await page.keyboard.press("Control+s");
+    await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
+    const rebuilt = await readNotebook(name);
+    expect(dumpOutline(rebuilt)).not.toBe(before);
+    expect(readOutline(rebuilt)).toEqual([
+      { title: "Closed", page: 0, level: 0 },
+      { title: "Kid", page: 2, level: 1 },
+      { title: "Positioned", page: 1, level: 0 },
+      { title: "Added", page: 1, level: 0 },
+    ]);
+  });
+
+  test("a top-level bookmark goes after the whole subtree it follows; removing a parent removes its children", async ({ page }) => {
+    const name = unique("bm-tree");
+    await putNotebook(name, await createBlankPdf(3));
+    await openNotebookPage(page, name);
+    await page.evaluate(() => {
+      window.__pdfink.addBookmark(0, "P");
+      window.__pdfink.addBookmark(2, "C", 1);
+    });
+    expect((await state(page)).bookmarks).toEqual([
+      { title: "P", page: 0, level: 0 },
+      { title: "C", page: 2, level: 1 },
+    ]);
+    expect(await page.evaluate(() => window.__pdfink.addBookmark(1, "X"))).toBe(2);
+    expect((await state(page)).bookmarks).toEqual([
+      { title: "P", page: 0, level: 0 },
+      { title: "C", page: 2, level: 1 },
+      { title: "X", page: 1, level: 0 },
+    ]);
+    await page.evaluate(() => window.__pdfink.removeBookmark(0));
+    expect((await state(page)).bookmarks).toEqual([{ title: "X", page: 1, level: 0 }]);
+  });
+
   test("adding a bookmark lists it and selecting it jumps to the page", async ({ page }) => {
     const name = unique("bm-jump");
     await putNotebook(name, await createBlankPdf(3));

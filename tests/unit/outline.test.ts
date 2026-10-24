@@ -69,6 +69,35 @@ describe("outline", () => {
     ]);
   });
 
+  it("keeps two deeper siblings as siblings: input levels [0, 2, 2] nest as [0, 1, 1]", async () => {
+    const doc = await PDFDocument.load(await createBlankPdf(1));
+    writeOutline(doc, [
+      { title: "T", page: 0, level: 0 },
+      { title: "a", page: 0, level: 2 },
+      { title: "b", page: 0, level: 2 },
+    ]);
+    expect(readOutline(doc)).toEqual([
+      { title: "T", page: 0, level: 0 },
+      { title: "a", page: 0, level: 1 },
+      { title: "b", page: 0, level: 1 },
+    ]);
+  });
+
+  it("resolves a /Dest whose first element is an integer page index", async () => {
+    const bytes = await pdfWithOutline(3, () => ({
+      items: [
+        { Title: PDFString.of("Second"), Dest: [1, PDFName.of("XYZ"), 0, 792, 0] },
+        { Title: PDFString.of("Past the end"), Dest: [3, PDFName.of("Fit")] },
+        { Title: PDFString.of("Negative"), Dest: [-1, PDFName.of("Fit")] },
+      ],
+    }));
+    expect((await importPdf(bytes)).bookmarks).toEqual([
+      { title: "Second", page: 1, level: 0 },
+      { title: "Past the end", page: null, level: 0 },
+      { title: "Negative", page: null, level: 0 },
+    ]);
+  });
+
   it("keeps a non-ASCII title", async () => {
     const bms: Bookmark[] = [{ title: "Café 2026-10-19", page: 0, level: 0 }];
     const r = await importPdf(await exportPdf(await createBlankPdf(1), blankPages(1), bms));
