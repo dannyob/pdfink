@@ -7,7 +7,9 @@
  *
  *     in:   {"id":I,"call":"name","args":[…]}    call a page function
  *           {"id":I,"eval":"js"}                 evaluate JavaScript in the page
- *           {"subscribe":["selection",…]}        receive these page events
+ *           {"subscribe":["selection",…]}        receive these page events (selection,
+ *                                                save, page, notebook, stroke,
+ *                                                button, bookmarks)
  *     out:  {"id":I,"result":…}                  the page's answer
  *           {"id":I,"error":"…"}                 the page's error, or "page gone"
  *           {"event":"name","data":…}            a subscribed event; "exit" when

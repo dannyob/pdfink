@@ -1,6 +1,6 @@
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import type { ClipContent, ImageItem, LinkItem, PageModel, Point, Rect, Stroke } from "./model";
+import type { Bookmark, ClipContent, ImageItem, LinkItem, PageModel, Point, Rect, Stroke } from "./model";
 import { DEFAULT_PRESSURE, newId } from "./model";
 import { barrelBit, barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
 import { ContextMenu, type MenuItem } from "./menu";
@@ -32,7 +32,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.m
 export type Tool = "pen" | "eraser" | "select";
 
 /** Events a page-side API can listen to with `App.on`. */
-export type AppEvent = "selection" | "save" | "page" | "notebook" | "stroke" | "button";
+export type AppEvent = "selection" | "save" | "page" | "notebook" | "stroke" | "button" | "bookmarks";
 
 export interface SelectionInfo {
   page: number;
@@ -172,6 +172,8 @@ export class App {
   onFingerDrawsChanged: (on: boolean) => void = () => {};
   lastPointer: { page: number; x: number; y: number } | null = null;
   currentPage = 0;
+  /** The document outline, in page order; replaced on every open. */
+  bookmarks: Bookmark[] = [];
   /** Id of this tab's page-bridge session (set by main.ts). */
   session: string | null = null;
   private pointers = new Map<number, Pointer>();
@@ -217,7 +219,7 @@ export class App {
     this.cancelAutosave();
     try {
       const imported = await importPdf(bytes);
-      return await this.loadParsed(imported.baseBytes, imported.pages, name, handle);
+      return await this.loadParsed(imported.baseBytes, imported.pages, name, handle, imported.bookmarks);
     } catch (err) {
       console.error(err);
       this.setStatus(`Could not open ${name}: ${(err as Error).message}`);
@@ -227,10 +229,11 @@ export class App {
   }
 
   /** Install an already-separated document (base PDF without ink + stroke pages). */
-  async loadParsed(baseBytes: Uint8Array, pages: PageModel[], name: string, handle: FileHandle | null = null): Promise<boolean> {
+  async loadParsed(baseBytes: Uint8Array, pages: PageModel[], name: string, handle: FileHandle | null = null, bookmarks: Bookmark[] = []): Promise<boolean> {
     this.cancelAutosave();
     try {
       await this.setDocument(baseBytes, pages);
+      this.bookmarks = bookmarks;
       this.fileName = name;
       this.fileHandle = handle;
       this.source = { kind: "local", name };
@@ -239,6 +242,7 @@ export class App {
       this.dirty = false;
       this.lastSaved = null;
       this.setStatus();
+      this.emit("bookmarks", this.bookmarks);
       return true;
     } catch (err) {
       console.error(err);
@@ -304,7 +308,7 @@ export class App {
   async openNotebook(name: string): Promise<boolean> {
     if (!(await this.readyToLeave())) return false;
     this.setStatus(`Loading ${name}…`);
-    let loaded: { baseBytes: Uint8Array; pages: PageModel[]; mtime: number };
+    let loaded: { baseBytes: Uint8Array; pages: PageModel[]; bookmarks: Bookmark[]; mtime: number };
     try {
       // The server separates ink from the PDF, so even very large notebooks
       // arrive here as a small base PDF plus stroke data.
@@ -313,7 +317,7 @@ export class App {
       this.setStatus((err as Error).message);
       return false;
     }
-    if (!(await this.loadParsed(loaded.baseBytes, loaded.pages, name))) return false;
+    if (!(await this.loadParsed(loaded.baseBytes, loaded.pages, name, null, loaded.bookmarks))) return false;
     this.source = { kind: "server", name, mtime: loaded.mtime };
     this.baseSaved = this.baseRevision;
     this.setStatus();
@@ -409,7 +413,7 @@ export class App {
       // this tab's version.
       const baseRev = this.baseRevision;
       const sendBase = force || baseRev !== this.baseSaved;
-      const info = await saveNotebookParsed(name, this.pages, force ? null : this.source.mtime, sendBase ? this.baseBytes : null);
+      const info = await saveNotebookParsed(name, this.pages, force ? null : this.source.mtime, sendBase ? this.baseBytes : null, this.bookmarks);
       this.source = { kind: "server", name, mtime: info.mtime };
       if (sendBase) this.baseSaved = baseRev;
       this.lastSaved = new Date();
@@ -1452,7 +1456,7 @@ export class App {
 
   async exportBytes(): Promise<Uint8Array> {
     if (!this.baseBytes) throw new Error("No document");
-    return exportPdf(this.baseBytes, this.pages);
+    return exportPdf(this.baseBytes, this.pages, this.bookmarks);
   }
 
   /** Import: pick a PDF on this device, load it, and store it in the notebooks folder. */
@@ -1909,6 +1913,41 @@ export class App {
     return out;
   }
 
+  /**
+   * Add an outline entry for `page`, after the last bookmark on that page or
+   * an earlier one, so the list stays in page order. Not an undo step.
+   * Returns its index.
+   */
+  addBookmark(page: number, title: string, level = 0): number {
+    this.checkPage(page);
+    if (typeof title !== "string") throw new TypeError("title must be a string");
+    if (!Number.isInteger(level) || level < 0) throw new TypeError("level must be a whole number ≥ 0");
+    let at = 0;
+    this.bookmarks.forEach((b, i) => {
+      if (b.page !== null && b.page <= page) at = i + 1;
+    });
+    this.bookmarks = [...this.bookmarks.slice(0, at), { title, page, level }, ...this.bookmarks.slice(at)];
+    this.markDirty();
+    this.setStatus();
+    this.emit("bookmarks", this.bookmarks);
+    return at;
+  }
+
+  /** Remove the outline entry at `index`. Not an undo step. */
+  removeBookmark(index: number): void {
+    if (!Number.isInteger(index) || index < 0 || index >= this.bookmarks.length) throw new RangeError(`No bookmark ${index}`);
+    this.bookmarks = this.bookmarks.filter((_, i) => i !== index);
+    this.markDirty();
+    this.setStatus();
+    this.emit("bookmarks", this.bookmarks);
+  }
+
+  /** Index of the first top-level bookmark that opens `page`, or null. */
+  bookmarkOnPage(page: number): number | null {
+    const i = this.bookmarks.findIndex((b) => b.level === 0 && b.page === page);
+    return i < 0 ? null : i;
+  }
+
   /** Follow a link in a new tab, without giving it a handle on this one. */
   openLink(link: LinkItem): void {
     if (!linkUrlOk(link.url)) return;
@@ -1983,6 +2022,7 @@ export class App {
       scale: this.scale,
       dirty: this.dirty,
       currentPage: this.currentPage,
+      bookmarks: this.bookmarks.map((b) => ({ ...b })),
       pages: this.pages.map((p) => ({
         width: p.width,
         height: p.height,

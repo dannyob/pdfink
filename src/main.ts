@@ -108,6 +108,46 @@ select.onchange = () => {
   void app.openNotebook(name).then(showCurrentNotebook);
 };
 
+const bookmarkSelect = $("bookmark-select") as HTMLSelectElement;
+
+/** Fill the bookmark list: every bookmark (indented by level), then Remove for the current page's. */
+function showBookmarks(): void {
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = "Bookmarks…";
+  const options = [ph];
+  app.bookmarks.forEach((b, i) => {
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = "\u00a0\u00a0".repeat(b.level) + b.title;
+    if (b.page === null) o.disabled = true;
+    options.push(o);
+  });
+  const here = app.bookmarkOnPage(app.currentPage);
+  if (here !== null) {
+    const o = document.createElement("option");
+    o.value = `remove:${here}`;
+    o.textContent = `Remove "${app.bookmarks[here].title}"`;
+    options.push(o);
+  }
+  bookmarkSelect.replaceChildren(...options);
+  bookmarkSelect.value = "";
+}
+bookmarkSelect.onchange = () => {
+  const v = bookmarkSelect.value;
+  bookmarkSelect.value = "";
+  if (v.startsWith("remove:")) {
+    const i = Number(v.slice("remove:".length));
+    if (app.bookmarks[i]) app.removeBookmark(i);
+  } else if (v) {
+    const page = app.bookmarks[Number(v)]?.page;
+    if (page !== null && page !== undefined) app.scrollToPage(page);
+  }
+};
+app.on("bookmarks", showBookmarks);
+app.on("notebook", showBookmarks);
+app.on("page", showBookmarks);
+
 const fileInput = $("file-input") as HTMLInputElement;
 fileInput.onchange = () => {
   const f = fileInput.files?.[0];

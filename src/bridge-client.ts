@@ -14,7 +14,7 @@ import type { App, AppEvent } from "./app";
 import { evalInPage, toJson, type PdfinkApi } from "./pdfink-api";
 
 const SESSION_KEY = "pdfink.session";
-const EVENTS: AppEvent[] = ["selection", "save", "page", "notebook", "stroke", "button"];
+const EVENTS: AppEvent[] = ["selection", "save", "page", "notebook", "stroke", "button", "bookmarks"];
 const MIN_DELAY = 1000;
 const MAX_DELAY = 30_000;
 /** How long after a (re)connect the server's re-announced runs have to arrive. */
