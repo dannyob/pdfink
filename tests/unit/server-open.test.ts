@@ -8,7 +8,7 @@ import { createServer, encodeOpened } from "../../server/index";
 import { decodeOpened, encodeSaveEnvelope } from "../../src/api";
 import { PDFDict, PDFName } from "pdf-lib";
 import { createBlankPdf, exportPdf, appendBlankPage } from "../../src/pdf/export";
-import type { PageModel } from "../../src/model";
+import type { Bookmark, PageModel } from "../../src/model";
 
 let dir: string;
 let base: string;
@@ -26,6 +26,37 @@ afterAll(async () => {
 });
 
 const page = (): PageModel => ({ width: 612, height: 792, images: [], strokes: [], links: [] });
+
+
+/** The /Link annotations on page `i`, as dicts. */
+function linkAnnots(doc: PDFDocument, i = 0): PDFDict[] {
+  const annots = doc.getPage(i).node.Annots();
+  const out: PDFDict[] = [];
+  for (let k = 0; k < (annots?.size() ?? 0); k++) {
+    const d = annots!.lookup(k);
+    if (d instanceof PDFDict && d.get(PDFName.of("Subtype")) === PDFName.of("Link")) out.push(d);
+  }
+  return out;
+}
+
+/** Number of top-level entries in the file's outline (0 when it has none). */
+function outlineEntries(doc: PDFDocument): number {
+  const root = doc.catalog.lookup(PDFName.of("Outlines"));
+  if (!(root instanceof PDFDict)) return 0;
+  let n = 0;
+  for (let it = root.lookup(PDFName.of("First")); it instanceof PDFDict; it = it.lookup(PDFName.of("Next"))) n++;
+  return n;
+}
+
+async function openAt(name: string): Promise<{ mtime: number; opened: ReturnType<typeof decodeOpened> }> {
+  const res = await fetch(`${base}/api/notebooks/${name}/open`);
+  expect(res.status).toBe(200);
+  return { mtime: Number(res.headers.get("x-mtime")), opened: decodeOpened(await res.arrayBuffer()) };
+}
+
+async function save(name: string, mtime: number, body: Uint8Array): Promise<Response> {
+  return fetch(`${base}/api/notebooks/${name}/save`, { method: "PUT", headers: { "X-If-Mtime": String(mtime) }, body: body as BodyInit });
+}
 
 describe("server-side open", () => {
   it("envelope round-trips pages and base bytes", () => {
@@ -127,5 +158,80 @@ describe("server-side open", () => {
     const doc = await PDFDocument.load(fs.readFileSync(path.join(dir, "grow.pdf")), { updateMetadata: false });
     expect(doc.getPageCount()).toBe(2);
     expect(doc.getPage(1).node.Annots()!.size()).toBe(1);
+  });
+
+  it("/open carries links and bookmarks", async () => {
+    const pages = [page()];
+    pages[0].links.push({ id: "ln1", x: 72, y: 80, w: 200, h: 64, url: "https://example.org", label: "Example" });
+    fs.writeFileSync(path.join(dir, "lk.pdf"), await exportPdf(await createBlankPdf(1), pages, [{ title: "Intro", page: 0, level: 0 }]));
+    const { opened } = await openAt("lk.pdf");
+    expect(opened.pages[0].links).toHaveLength(1);
+    expect(opened.pages[0].links[0]).toMatchObject({ x: 72, y: 80, w: 200, h: 64, url: "https://example.org", label: "Example" });
+    expect(opened.bookmarks).toEqual([{ title: "Intro", page: 0, level: 0 }]);
+    // The base the browser gets has the URI link lifted out (it lives in the model now).
+    expect(linkAnnots(await PDFDocument.load(opened.baseBytes))).toHaveLength(0);
+  });
+
+  it("envelopes round-trip links and bookmarks in memory", () => {
+    const pages = [page()];
+    pages[0].links.push({ id: "ln", x: 1.25, y: 2.5, w: 30, h: 40, url: "mailto:a@example.org" });
+    const bms: Bookmark[] = [{ title: "T", page: null, level: 0 }];
+    const back = decodeOpened(new Uint8Array(encodeOpened({ baseBytes: new Uint8Array([37]), pages, geoms: [], bookmarks: bms })).buffer as ArrayBuffer);
+    expect(back.pages[0].links).toEqual(pages[0].links);
+    expect(back.bookmarks).toEqual(bms);
+    // The save envelope only names bookmarks when given them.
+    const json = (env: Uint8Array) => JSON.parse(new TextDecoder().decode(env.subarray(4, 4 + new DataView(env.buffer).getUint32(0)))) as Record<string, unknown>;
+    expect(json(encodeSaveEnvelope(pages))).not.toHaveProperty("bookmarks");
+    expect(json(encodeSaveEnvelope(pages, null, []))).toMatchObject({ bookmarks: [] });
+    expect(json(encodeSaveEnvelope(pages, null, bms)).pages).toEqual([expect.objectContaining({ links: pages[0].links })]);
+  });
+
+  it("/save writes links and bookmarks into the file", async () => {
+    fs.writeFileSync(path.join(dir, "ws.pdf"), await createBlankPdf(2));
+    const { mtime, opened } = await openAt("ws.pdf");
+    expect(opened.bookmarks).toEqual([]);
+    const edited = opened.pages;
+    edited[1].links.push({ id: "ln2", x: 100, y: 100, w: 150, h: 30, url: "https://example.com/p" });
+    const bms: Bookmark[] = [{ title: "One", page: 0, level: 0 }, { title: "Two", page: 1, level: 0 }];
+    const res = await save("ws.pdf", mtime, encodeSaveEnvelope(edited, null, bms));
+    expect(res.status).toBe(200);
+
+    const doc = await PDFDocument.load(fs.readFileSync(path.join(dir, "ws.pdf")), { updateMetadata: false });
+    expect(linkAnnots(doc, 0)).toHaveLength(0);
+    expect(linkAnnots(doc, 1)).toHaveLength(1);
+    expect(outlineEntries(doc)).toBe(2);
+
+    // The cache is not stale: reopening sees the new links and bookmarks.
+    const again = (await openAt("ws.pdf")).opened;
+    expect(again.pages[1].links).toEqual([expect.objectContaining({ url: "https://example.com/p", x: 100, y: 100, w: 150, h: 30 })]);
+    expect(again.bookmarks).toEqual(bms);
+  });
+
+  it("/save without bookmarks keeps the file's outline; an empty list removes it", async () => {
+    fs.writeFileSync(path.join(dir, "keep.pdf"), await exportPdf(await createBlankPdf(2), [page(), page()], [{ title: "A", page: 0, level: 0 }, { title: "B", page: 1, level: 0 }]));
+    let { mtime, opened } = await openAt("keep.pdf");
+    opened.pages[0].strokes.push({ id: "k", color: "#000000", width: 1, opacity: 1, points: [{ x: 10, y: 10, p: 0.6 }, { x: 50, y: 10, p: 0.6 }] });
+    let res = await save("keep.pdf", mtime, encodeSaveEnvelope(opened.pages));
+    expect(res.status).toBe(200);
+    let doc = await PDFDocument.load(fs.readFileSync(path.join(dir, "keep.pdf")), { updateMetadata: false });
+    expect(outlineEntries(doc)).toBe(2);
+
+    ({ mtime, opened } = await openAt("keep.pdf"));
+    expect(opened.bookmarks.map((b) => b.title)).toEqual(["A", "B"]);
+    res = await save("keep.pdf", mtime, encodeSaveEnvelope(opened.pages, null, []));
+    expect(res.status).toBe(200);
+    doc = await PDFDocument.load(fs.readFileSync(path.join(dir, "keep.pdf")), { updateMetadata: false });
+    expect(outlineEntries(doc)).toBe(0);
+    expect((await openAt("keep.pdf")).opened.bookmarks).toEqual([]);
+  });
+
+  it("/save refuses links on a page the base does not have", async () => {
+    fs.writeFileSync(path.join(dir, "lgrow.pdf"), await createBlankPdf(1));
+    const { mtime, opened } = await openAt("lgrow.pdf");
+    const pages = [...opened.pages, page()];
+    pages[1].links.push({ id: "ln3", x: 10, y: 10, w: 20, h: 20, url: "https://example.org" });
+    const res = await save("lgrow.pdf", mtime, encodeSaveEnvelope(pages, null, []));
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { error: string }).error).toMatch(/2 pages/);
   });
 });
