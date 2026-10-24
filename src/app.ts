@@ -98,6 +98,24 @@ function pressureOf(e: PointerEvent): number {
 }
 const MIN_SELECT = 3;
 
+/** Throw a TypeError naming the bad field unless `s` is a stroke the model can hold. */
+function checkStroke(s: unknown, i: number): void {
+  const at = `strokes[${i}]`;
+  if (!s || typeof s !== "object") throw new TypeError(`${at} must be an object`);
+  const { points, color, width, opacity, id } = s as Record<string, unknown>;
+  if (!Array.isArray(points) || !points.length) throw new TypeError(`${at}.points must be a non-empty array`);
+  points.forEach((pt, k) => {
+    const q = pt as Record<string, unknown> | null;
+    if (!q || ![q.x, q.y, q.p].every((v) => typeof v === "number" && Number.isFinite(v))) {
+      throw new TypeError(`${at}.points[${k}] must have finite x, y and p`);
+    }
+  });
+  if (typeof color !== "string" || !color) throw new TypeError(`${at}.color must be a CSS colour string`);
+  if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) throw new TypeError(`${at}.width must be a positive number`);
+  if (typeof opacity !== "number" || !(opacity >= 0 && opacity <= 1)) throw new TypeError(`${at}.opacity must be between 0 and 1`);
+  if (id !== undefined && (typeof id !== "string" || !id)) throw new TypeError(`${at}.id must be a non-empty string`);
+}
+
 export class App {
   pages: PageModel[] = [];
   views: PageView[] = [];
@@ -1768,7 +1786,15 @@ export class App {
 
   /** Add strokes to a page as one undo step; returns their ids (new ones where none was given). */
   addStrokes(page: number, strokes: Array<Omit<Stroke, "id"> & { id?: string }>): string[] {
-    this.checkPage(page);
+    const m = this.checkPage(page);
+    if (!Array.isArray(strokes)) throw new TypeError("strokes must be an array");
+    const ids = new Set(m.strokes.map((s) => s.id));
+    strokes.forEach((s, i) => {
+      checkStroke(s, i);
+      if (s.id === undefined) return;
+      if (ids.has(s.id)) throw new TypeError(`strokes[${i}].id "${s.id}" is already on page ${page}`);
+      ids.add(s.id);
+    });
     if (!strokes.length) return [];
     const added: Stroke[] = strokes.map((s) => ({ ...s, id: s.id ?? newId() }));
     const before = this.snapshot(page);
@@ -1778,6 +1804,11 @@ export class App {
 
   addImageItem(page: number, bytes: Uint8Array, mime: "image/png" | "image/jpeg", rect: Rect): string {
     this.checkPage(page);
+    if (!(bytes instanceof Uint8Array) || !bytes.length) throw new TypeError("bytes must be a non-empty Uint8Array");
+    if (mime !== "image/png" && mime !== "image/jpeg") throw new TypeError(`mime must be image/png or image/jpeg, not ${String(mime)}`);
+    if (!rect || ![rect.x, rect.y, rect.w, rect.h].every(Number.isFinite) || rect.w <= 0 || rect.h <= 0) {
+      throw new TypeError("rect must have finite x, y and positive w, h");
+    }
     const im: ImageItem = { id: newId("im"), x: rect.x, y: rect.y, w: rect.w, h: rect.h, mime, bytes };
     const before = this.snapshot(page);
     this.commit(page, before, { strokes: before.strokes, images: [...before.images, im] });

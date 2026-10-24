@@ -47,6 +47,40 @@ test.describe("app API", () => {
     await expect(page.evaluate(() => window.__pdfink.addStrokes(9, []))).rejects.toThrow(/page/);
   });
 
+  test("addStrokes and addImageItem reject bad shapes without touching the page", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() =>
+      window.__pdfink.addStrokes(0, [{ id: "taken", points: [{ x: 10, y: 10, p: 0.6 }], color: "#000000", width: 1, opacity: 1 }]),
+    );
+    const before = await state(page);
+    const attempt = (bad: unknown) =>
+      page.evaluate((s) => {
+        try {
+          window.__pdfink.addStrokes(0, [s as never]);
+          return "accepted";
+        } catch (e) {
+          return `${(e as Error).name}: ${(e as Error).message}`;
+        }
+      }, bad);
+    expect(await attempt({ color: "#000000", width: 1, opacity: 1 })).toMatch(/^TypeError: .*points/);
+    expect(await attempt({ id: "taken", points: [{ x: 1, y: 1, p: 0.6 }], color: "#000000", width: 1, opacity: 1 })).toMatch(/^TypeError: .*id/);
+    expect(await attempt({ points: [{ x: 1, y: 1, p: 0.6 }], color: "#000000", width: -1, opacity: 1 })).toMatch(/^TypeError: .*width/);
+    expect(await attempt({ points: [{ x: 1, y: 1, p: 0.6 }], color: "#000000", width: 1, opacity: 2 })).toMatch(/^TypeError: .*opacity/);
+    const imageErr = await page.evaluate(() => {
+      try {
+        window.__pdfink.addImageItem(0, new Uint8Array([1, 2, 3]), "image/png", { x: 10, y: 10, w: 20, h: -5 });
+        return "accepted";
+      } catch (e) {
+        return `${(e as Error).name}: ${(e as Error).message}`;
+      }
+    });
+    expect(imageErr).toMatch(/^TypeError: .*rect/);
+    const after = await state(page);
+    expect(after.pages[0].strokes).toEqual(before.pages[0].strokes);
+    expect(after.pages[0].images).toEqual([]);
+    expect(after.undo).toBe(before.undo);
+  });
+
   test("selectRect, selectionInfo and selectionPng describe the union of marquee and strokes", async ({ page }) => {
     await openApp(page);
     await recordEvents(page);
