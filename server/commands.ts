@@ -6,7 +6,8 @@
  *     command = tools/star.py "$PDF" "$PAGE" "$X" "$Y"
  *     reload = true          # reopen the notebook in the browser afterwards
  *     confirm = false        # ask before running
- *     timeout = 60           # seconds
+ *     timeout = 60           # seconds; 0 = none (the default when detached)
+ *     detach = false         # keep running after the menu returns
  *
  * The command runs under `sh -c` with the working directory set to the
  * folder holding the config file, and these variables in its environment
@@ -22,6 +23,13 @@
  *     DX, DY       the same point in display space (points, origin top-left)
  *     PAGE_WIDTH, PAGE_HEIGHT   the page's crop box size in PDF space
  *     ROTATE       the page's /Rotate (0, 90, 180, 270)
+ *     SELECTED     number of selected strokes, or empty when nothing is selected
+ *     SEL_PAGE     page of the selection, 1-based (empty without a selection)
+ *     SEL_X, SEL_Y, SEL_W, SEL_H   the selection's bounding box in PDF user
+ *                  space (points, origin bottom-left; empty without a selection)
+ *     PDFINK_SOCKET  where the command can talk back to the page, when the
+ *                  server provides one
+ *     PDFINK_RUN   identifier of this run, when the server provides one
  *
  * The file is re-read whenever the menu asks for it, so edits apply at once.
  *
@@ -41,8 +49,22 @@ export interface CommandSpec {
   command: string;
   reload: boolean;
   confirm: boolean;
-  /** Seconds before the command is killed. */
+  /** Seconds before the command is killed; 0 = never. */
   timeout: number;
+  /** Runs on after the menu returns, rather than being waited for. */
+  detach: boolean;
+}
+
+/** The current selection's bounding box: PDF points, origin bottom-left. */
+export interface SelectionContext {
+  /** 1-based. */
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Number of selected strokes. */
+  count: number;
 }
 
 export interface CommandContext {
@@ -58,6 +80,7 @@ export interface CommandContext {
   pageWidth: number;
   pageHeight: number;
   rotate: number;
+  selection?: SelectionContext | null;
 }
 
 export interface CommandResult {
@@ -66,6 +89,13 @@ export interface CommandResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+}
+
+/** A started command: its result arrives on `done`; `kill` ends it early. */
+export interface RunningCommand {
+  pid: number | undefined;
+  done: Promise<CommandResult>;
+  kill(): void;
 }
 
 const TRUE = new Set(["1", "true", "yes", "on"]);
@@ -89,13 +119,15 @@ export function parseCommands(text: string): CommandSpec[] {
       for (let n = 2; seen.has(id); n++) id = `${cur.label} (${n})`;
       seen.add(id);
       const t = Number(cur.kv.timeout);
+      const detach = flag(cur.kv.detach, false);
       out.push({
         id,
         label: cur.label,
         command,
         reload: flag(cur.kv.reload, false),
         confirm: flag(cur.kv.confirm, false),
-        timeout: Number.isFinite(t) && t > 0 ? t : 60,
+        timeout: Number.isFinite(t) && t > 0 ? t : detach ? 0 : 60,
+        detach,
       });
     }
     cur = null;
@@ -133,9 +165,10 @@ export async function loadCommands(file: string | null): Promise<CommandSpec[]> 
   return parseCommands(text);
 }
 
-/** Run one command with the context in its environment; never throws. */
-export function runCommand(spec: CommandSpec, ctx: CommandContext, cwd: string): Promise<CommandResult> {
+/** Start one command with the context in its environment; never throws. */
+export function startCommand(spec: CommandSpec, ctx: CommandContext, cwd: string, extraEnv: Record<string, string> = {}): RunningCommand {
   const num = (n: number) => String(Math.round(n * 1000) / 1000);
+  const sel = ctx.selection;
   const env = {
     ...process.env,
     PDF: ctx.pdf,
@@ -150,41 +183,63 @@ export function runCommand(spec: CommandSpec, ctx: CommandContext, cwd: string):
     PAGE_WIDTH: num(ctx.pageWidth),
     PAGE_HEIGHT: num(ctx.pageHeight),
     ROTATE: String(ctx.rotate),
+    SELECTED: sel ? String(sel.count) : "",
+    SEL_PAGE: sel ? String(sel.page) : "",
+    SEL_X: sel ? num(sel.x) : "",
+    SEL_Y: sel ? num(sel.y) : "",
+    SEL_W: sel ? num(sel.w) : "",
+    SEL_H: sel ? num(sel.h) : "",
+    ...extraEnv,
   };
-  return new Promise((resolve) => {
-    // Own process group, so a timeout can kill the whole tree: killing just
-    // `sh` would leave its child running and holding our pipes open.
-    const child = spawn("/bin/sh", ["-c", spec.command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let done = false;
-    const finish = (r: CommandResult) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      resolve(r);
-    };
-    const take = (cur: string, chunk: Buffer) => (cur.length < OUTPUT_CAP ? cur + chunk.toString("utf8") : cur);
-    child.stdout.on("data", (c: Buffer) => (stdout = take(stdout, c)));
-    child.stderr.on("data", (c: Buffer) => (stderr = take(stderr, c)));
-    const killTree = (sig: NodeJS.Signals) => {
-      try {
-        if (child.pid) process.kill(-child.pid, sig);
-      } catch {
-        child.kill(sig);
-      }
-    };
-    const timer = setTimeout(() => {
+  // Own process group, so a kill reaches the whole tree: killing just `sh`
+  // would leave its child running and holding our pipes open.
+  const child = spawn("/bin/sh", ["-c", spec.command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+  let finished = false;
+  let killing = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let resolve!: (r: CommandResult) => void;
+  const done = new Promise<CommandResult>((r) => (resolve = r));
+  const finish = (r: CommandResult) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    resolve(r);
+  };
+  const take = (cur: string, chunk: Buffer) => (cur.length < OUTPUT_CAP ? cur + chunk.toString("utf8") : cur);
+  child.stdout.on("data", (c: Buffer) => (stdout = take(stdout, c)));
+  child.stderr.on("data", (c: Buffer) => (stderr = take(stderr, c)));
+  const killTree = (sig: NodeJS.Signals) => {
+    try {
+      if (child.pid) process.kill(-child.pid, sig);
+    } catch {
+      child.kill(sig);
+    }
+  };
+  const kill = (note = "") => {
+    if (finished || killing) return;
+    killing = true;
+    killTree("SIGTERM");
+    setTimeout(() => killTree("SIGKILL"), 2000);
+    // Even if something survives and keeps a pipe open, answer the client.
+    setTimeout(() => finish({ status: null, signal: "SIGKILL", stdout, stderr: stderr + note, timedOut }), 4000);
+  };
+  if (spec.timeout > 0) {
+    timer = setTimeout(() => {
       timedOut = true;
-      killTree("SIGTERM");
-      setTimeout(() => killTree("SIGKILL"), 2000);
-      // Even if something survives and keeps a pipe open, answer the client.
-      setTimeout(() => finish({ status: null, signal: "SIGKILL", stdout, stderr: stderr + `\n(killed after ${spec.timeout}s)`, timedOut }), 4000);
+      kill(`\n(killed after ${spec.timeout}s)`);
     }, spec.timeout * 1000);
-    child.on("error", (err) => finish({ status: null, signal: null, stdout, stderr: stderr + err.message, timedOut }));
-    child.on("close", (status, signal) => finish({ status, signal, stdout, stderr, timedOut }));
-  });
+  }
+  child.on("error", (err) => finish({ status: null, signal: null, stdout, stderr: stderr + err.message, timedOut }));
+  child.on("close", (status, signal) => finish({ status, signal, stdout, stderr, timedOut }));
+  return { pid: child.pid, done, kill: () => kill() };
+}
+
+/** Run one command to completion; never throws. */
+export function runCommand(spec: CommandSpec, ctx: CommandContext, cwd: string, extraEnv?: Record<string, string>): Promise<CommandResult> {
+  return startCommand(spec, ctx, cwd, extraEnv).done;
 }
 
 /** Default location: beside the notebooks. */
