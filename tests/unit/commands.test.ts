@@ -87,6 +87,20 @@ command = echo again
     expect(junk.timeout).toBe(60);
   });
 
+  it("kill() leaves no timer behind once the process has gone", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = startCommand(parseCommands("[K]\ncommand = sleep 30\ntimeout = 0")[0], ctx, cwd);
+      h.kill();
+      expect(vi.getTimerCount()).toBe(2); // the SIGKILL and the forced answer
+      const r = await h.done; // the child's close, before either fires
+      expect(r.signal).toBe("SIGTERM");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("startCommand with timeout 0 sets no timer", async () => {
     vi.useFakeTimers();
     try {

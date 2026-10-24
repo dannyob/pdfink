@@ -201,12 +201,17 @@ export function startCommand(spec: CommandSpec, ctx: CommandContext, cwd: string
   let finished = false;
   let killing = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let hardKill: ReturnType<typeof setTimeout> | undefined;
+  let giveUp: ReturnType<typeof setTimeout> | undefined;
   let resolve!: (r: CommandResult) => void;
   const done = new Promise<CommandResult>((r) => (resolve = r));
   const finish = (r: CommandResult) => {
     if (finished) return;
     finished = true;
+    // The process group id may be reused once it has gone, and a live timer holds the loop open.
     clearTimeout(timer);
+    clearTimeout(hardKill);
+    clearTimeout(giveUp);
     resolve(r);
   };
   const take = (cur: string, chunk: Buffer) => (cur.length < OUTPUT_CAP ? cur + chunk.toString("utf8") : cur);
@@ -223,9 +228,9 @@ export function startCommand(spec: CommandSpec, ctx: CommandContext, cwd: string
     if (finished || killing) return;
     killing = true;
     killTree("SIGTERM");
-    setTimeout(() => killTree("SIGKILL"), 2000);
+    hardKill = setTimeout(() => killTree("SIGKILL"), 2000);
     // Even if something survives and keeps a pipe open, answer the client.
-    setTimeout(() => finish({ status: null, signal: "SIGKILL", stdout, stderr: stderr + note, timedOut }), 4000);
+    giveUp = setTimeout(() => finish({ status: null, signal: "SIGKILL", stdout, stderr: stderr + note, timedOut }), 4000);
   };
   if (spec.timeout > 0) {
     timer = setTimeout(() => {
