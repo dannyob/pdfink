@@ -14,8 +14,10 @@ describe.skipIf(!haveUv)("tools/star.py", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdfink-star-"));
     const file = path.join(dir, "s.pdf");
     fs.writeFileSync(file, await createBlankPdf(2));
+    fs.chmodSync(file, 0o644);
     const out = execFileSync("uv", ["run", "--script", path.resolve("tools/star.py"), file, "2", "300", "500"], { encoding: "utf8", timeout: 120_000 });
     expect(out).toContain("star at (300, 500) on page 2");
+    expect(fs.statSync(file).mode & 0o777).toBe(0o644); // the rewrite keeps the notebook's mode
     const r = await importPdf(new Uint8Array(fs.readFileSync(file)));
     expect(r.pages[0].strokes).toHaveLength(0);
     expect(r.pages[1].strokes).toHaveLength(1);

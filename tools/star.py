@@ -18,6 +18,7 @@ you can select or erase.
 """
 import math
 import os
+import shutil
 import sys
 import tempfile
 
@@ -98,6 +99,7 @@ def stamp_file(path: str, page_no: int, pts: list[tuple[float, float]]) -> int:
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), suffix=".pdf")
     with os.fdopen(fd, "wb") as f:
         writer.write(f)
+    shutil.copymode(path, tmp)  # mkstemp makes it 0600; keep the notebook's own mode
     os.replace(tmp, path)
     return 0
 
