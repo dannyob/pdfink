@@ -67,7 +67,7 @@ You can also serve the static HTML/javascript build in `dist/` from any static h
 
 The toolbar has Open..., New, Save, Save as... and + Page. Chromium writes back to the file you opened through the File System Access API. Other browsers download the result.
 
-In either mode, the toolbar also has pen, eraser and rectangle select; pen colour and width; copy, cut, paste; undo, redo; and zoom. New makes a blank Letter PDF.
+In either mode, the toolbar also has pen, eraser and rectangle select; pen colour and width; copy, cut, paste; undo, redo; zoom; and a Bookmarks… list. New makes a blank Letter PDF.
 
 Saving in server mode:
 
@@ -77,7 +77,7 @@ Saving in server mode:
 
 ## What it does to your PDF
 
-Each stroke becomes an `/Ink` annotation with an appearance stream and per-point pressure in `PDFTron_Pressure_Thickness` arrays. Ink annotations already in a PDF you open become editable strokes. Other annotations (links, squares) are left alone and cannot be edited.
+Each stroke becomes an `/Ink` annotation with an appearance stream and per-point pressure in `PDFTron_Pressure_Thickness` arrays. Ink annotations already in a PDF you open become editable strokes. Web links (`/Link` annotations with a URI action to an `http`, `https` or `mailto` address) become editable link boxes and are written back as `/Link` annotations, and the PDF's outline becomes the bookmark list. Other annotations (links to another page, squares) are left alone and cannot be edited.
 
 Pressure is drawn as nominal width x (0.4 + pressure). That is an empirical fit to how Xodo renders, which is the app I write notes in. Mice and fingers draw at nominal width.
 
@@ -85,7 +85,7 @@ To prevent large PDFs, on import, objects unreachable from the trailer are delet
 
 ## Editing
 
-- Pen draws. Fingers scroll, except with **finger draws** on (the default on phones and pen-less tablets, switched off as soon as a pen appears): then one finger draws and a second finger scrolls. Eraser end or barrel button erases whole strokes. Many EMR pens don't report their barrel button to the browser; with **barrel button erase** ticked (the default), a pen whose pressure is pinned to exactly 0 while hovering or exactly 1 while touching is taken as a barrel press. Unticked, a barrel press (or a mouse right-click) opens a context menu with the toolbar actions instead. `/stylus-test.html` shows what your pen reports.
+- Pen draws. Fingers scroll, except with **finger draws** on (the default on phones and pen-less tablets, switched off as soon as a pen appears): then one finger draws and a second finger scrolls. Eraser end or barrel button erases whole strokes. Many EMR pens don't report their barrel button to the browser; with **barrel button erase** ticked (the default), a pen whose pressure is pinned to exactly 0 while hovering or exactly 1 while touching is taken as a barrel press. Unticked, a barrel press (or a mouse right-click) opens the pen menu, with the toolbar actions and more, instead. `/stylus-test.html` shows what your pen reports.
 - Select drags a rectangle and picks every stroke with a point inside it. Ctrl+C, Ctrl+X and Ctrl+V work on the selection. Delete removes it.
 - Paste an image from the system clipboard, or drop an image file on the page.
 - Dropping a PDF imports it (server mode) or opens it (browser mode).
@@ -98,6 +98,18 @@ To prevent large PDFs, on import, objects unreachable from the trailer are delet
 | Ctrl+=, Ctrl+-, Ctrl+0 | zoom in, zoom out, fit width |
 | p, e, s | pen, eraser, select |
 | Esc | clear selection |
+
+## Links and bookmarks
+
+A link shows as a faint blue box captioned with its label or URL.
+
+- A short finger tap on a link opens it in a new tab: not while the pen is down or in range, and not with finger draws on.
+- Over a link, the pen menu starts with **Open** *url* and **Edit URL…**.
+- To make a link, drag a rectangle with Select and pick **Add link…** (after Delete in the pen menu). A URL without a scheme gets `https://`; only `http`, `https` and `mailto` are accepted.
+- Select picks up a link whose centre is inside the rectangle, so copy, cut, paste and Delete carry links with the strokes. The eraser leaves links alone; select and delete them instead.
+- Adding, editing and deleting links are undo steps.
+
+Bookmarks are the PDF's outline. The toolbar's Bookmarks… list shows them, indented by level; picking one jumps to its page. If the current page has a top-level bookmark, the list ends with Remove "*title*". **Bookmark this page…** (after Add page in the pen menu) asks for a title, today's date by default, and files the bookmark in page order. Bookmark changes are saved with the notebook but are not undo steps. An outline entry whose page pdfink cannot find is greyed out in the list and saved back as a title with no destination.
 
 ## Deep links
 
@@ -117,7 +129,7 @@ The notebook is saved first, then the command runs under `sh -c` in the config f
 
 Commands run headless. On macOS that means they must not touch Desktop, Documents or Downloads (or anything symlinked into them): the system gates those folders behind a consent dialog, the server's child has no screen to show it on, and the open call hangs until the command times out. Keep scratch files under `~/.cache` or the notebooks folder.
 
-`tools/star.py` is the demo: it stamps a small star at the pen tip as an `/Ink` annotation, so after the reload pdfink treats it as a stroke you can select or erase. It needs only [uv](https://docs.astral.sh/uv/), which fetches pypdf from the script's inline metadata. `tools/journal-page.py` is a second, longer one: it extracts the page, has a vision model (through [llm](https://llm.datasette.io/)) transcribe the entry as markdown under a `## YYYY-MM-DD` heading read from the page itself, and then runs `claude -p` in a [life](https://github.com/dannyob/life) directory to file it in that day's journal. `--dry-run` prints the markdown instead. `pdfink-commands.conf.example` has more.
+`tools/star.py` is the demo: it stamps a small star at the pen tip as an `/Ink` annotation, so after the reload pdfink treats it as a stroke you can select or erase. It needs only [uv](https://docs.astral.sh/uv/), which fetches pypdf from the script's inline metadata. `tools/journal-page.py` is a second, longer one: it extracts the page, has a vision model (through [llm](https://llm.datasette.io/)) transcribe the entry as markdown under a `## YYYY-MM-DD` heading read from the page itself, and then runs `claude -p` in a [life](https://github.com/dannyob/life) directory to file it in that day's journal. Run from the pen menu, it also bookmarks the page it started from with the entry's date. `--dry-run` prints the markdown instead, and bookmarks nothing. `pdfink-commands.conf.example` has more.
 
 ### Talking to the page
 
@@ -146,9 +158,22 @@ sel = page.selection()
 page.toast(f"{len(sel['strokeIds'])} strokes selected" if sel else "nothing selected")
 ```
 
-The module sits next to the uv scripts in `tools/`; a script there finds it by adding its own directory to `sys.path` before the import (`sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`). Its methods are the `window.pdfink` ones in snake_case, plus `call(name, *args)`, `eval(js)` and `events(*names)` for page events such as `selection`, `notebook` and `button`. `connect()` raises `PageGone` when there is no socket to talk to; `connect(optional=True)` returns `None` instead when `$PDFINK_SOCKET` is unset, for scripts that can also work on the file alone. Any call that waits for a reply can raise `PageGone` if the page goes away mid-run. A call the page rejects raises `PageError`.
+The module sits next to the uv scripts in `tools/`; a script there finds it by adding its own directory to `sys.path` before the import (`sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`). Its methods are the `window.pdfink` ones in snake_case, plus `call(name, *args)`, `eval(js)` and `events(*names)` for page events such as `selection`, `notebook`, `button` and `bookmarks` (sent with the new list whenever it changes). `connect()` raises `PageGone` when there is no socket to talk to; `connect(optional=True)` returns `None` instead when `$PDFINK_SOCKET` is unset, for scripts that can also work on the file alone. Any call that waits for a reply can raise `PageGone` if the page goes away mid-run. A call the page rejects raises `PageError`.
 
-The demos use it. `tools/star.py` draws its star in the browser as one undoable stroke, and falls back to rewriting the file when there is no page, which is why its entry keeps `reload = true`. `tools/describe-selection.py` sends a PNG of the selection (or of the page, when nothing is selected) to a vision model and offers the answer in a dialog. `tools/journal-page.py` shows each stage as a progress line and asks for the date when it cannot read one off the page.
+Links and bookmarks have their own calls. Pages are 0-based here, unlike `$PAGE`.
+
+| Call | What it does |
+| --- | --- |
+| `links(page?)` | Links on one page or all of them: `{ id, x, y, w, h, url, label?, page }`, in page space. |
+| `addLink(page, rect, url, { label?, space? })` | Adds a link box as one undo step and returns its id. `space: "pdf"` takes the rect in PDF points, origin bottom-left. A URL that is not `http`, `https` or `mailto` fails with "bad url". |
+| `setLink(id, { url?, label? })` | Changes a link as one undo step; an empty label removes it. |
+| `bookmarks()` | The outline in order: `{ title, page, level }`, `page` null when it could not be resolved. |
+| `addBookmark(page, title, { level? })` | Adds an entry in page order and returns its index. |
+| `removeBookmark(index)` | Removes an entry. |
+
+In Python: `links(page=None)`, `add_link(page, rect, url, label=None, space="page")`, `set_link(id, url=None, label=None)`, `bookmarks()`, `add_bookmark(page, title, level=0)` and `remove_bookmark(index)`.
+
+The demos use it. `tools/star.py` draws its star in the browser as one undoable stroke, and falls back to rewriting the file when there is no page, which is why its entry keeps `reload = true`. `tools/describe-selection.py` sends a PNG of the selection (or of the page, when nothing is selected) to a vision model and offers the answer in a dialog. `tools/journal-page.py` shows each stage as a progress line, asks for the date when it cannot read one off the page, and bookmarks the page with that date unless the same bookmark is already there.
 
 A normal run is never killed because its page went away; its requests just fail with "page gone" until the page returns. A `detach = true` command answers the menu at once and keeps going, with a chip in the toolbar and no timeout unless one is set. It ends when it exits, when you dismiss its chip, when you switch to another notebook, five seconds after its tab closes (a refresh reconnects in time and keeps it), when its session has had no page for ten minutes, when it times out, or when the server stops. Starting the same detached command again from the same tab replaces the old run.
 
@@ -177,8 +202,8 @@ Server mode only. Names are plain basenames ending in `.pdf`; paths are refused.
 | GET | `/api/notebooks` | `[{ name, size, mtime }]`, newest first |
 | GET | `/api/notebooks/<name>` | PDF bytes. `X-Mtime` header is the modification time in ms. |
 | PUT | `/api/notebooks/<name>` | Body is a PDF. `X-If-Mtime: <ms>` must match the file on disk, or be `new` to require that it does not exist. Otherwise 409. |
-| GET | `/api/notebooks/<name>/open` | The notebook parsed on the server: stroke data plus the PDF with ink removed. |
-| PUT | `/api/notebooks/<name>/save` | Stroke and image data. The server rebuilds the PDF and writes it. Same `X-If-Mtime` rules. |
+| GET | `/api/notebooks/<name>/open` | The notebook parsed on the server: stroke, link and bookmark data plus the PDF with ink and web links removed. |
+| PUT | `/api/notebooks/<name>/save` | Stroke, image, link and bookmark data. The server rebuilds the PDF and writes it; without bookmarks the outline is left alone. Same `X-If-Mtime` rules. |
 | GET | `/api/commands` | `[{ id, label, reload, confirm, detach }]` from the commands file, re-read each time. |
 | POST | `/api/commands/<id>` | Body `{ name, page, x, y, session?, selection? }` (pages 0-based, coordinates in display points). Runs the command; returns its run id, exit status, output, and whether the file changed. A detached command answers at once with `detached: true`. |
 | GET | `/api/page?session=<id>` | WebSocket upgrade: the page's end of the command bridge (see `server/bridge.ts`). |

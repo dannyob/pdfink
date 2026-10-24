@@ -10,22 +10,25 @@ Daylight DC-1 tablet) use.
 - Each handwritten blob is a `/Ink` annotation: `/InkList` of polylines in PDF
   user space, `/C` stroke colour, `/BS /W` width, `/CA` opacity, plus an
   `/AP /N` appearance stream (form XObject) that draws the strokes.
-- Other annotations (`/Square`, `/Link`) appear occasionally and are left alone.
+- Other annotations (`/Square`, `/Link`) appear occasionally.
 
 ## Approach
 
 - **Model**: per page, a list of strokes (points in page space: points, origin
-  top-left, y down) and a list of pasted images. Page geometry comes from the
-  PDF crop box and `/Rotate`.
+  top-left, y down), a list of pasted images and a list of link boxes; per
+  document, a flat list of bookmarks (title, 0-based page or null, level).
+  Page geometry comes from the PDF crop box and `/Rotate`.
 - **Import** (pdf-lib): load bytes, pull every `/Ink` annotation into the
-  stroke model, strip those annotations, keep the stripped bytes as the "base".
-  Non-ink annotations are left in place so pdf.js still shows them.
+  stroke model and every URI `/Link` into the link list, strip those
+  annotations, read the outline, and keep the stripped bytes as the "base".
+  Other annotations are left in place so pdf.js still shows them.
 - **Render** (pdf.js): each page is a pdf.js canvas (base) plus an ink canvas
   (strokes, images, selection). Pages render lazily as they scroll into view.
 - **Export** (pdf-lib): load the base bytes, write each stroke back as an
   `/Ink` annotation with an appearance stream (one stroked segment per step
-  when pressure varies) and a `PDFTron_Pressure_Thickness` array; draw pasted
-  images into page content.
+  when pressure varies) and a `PDFTron_Pressure_Thickness` array; add each
+  link as a `/Link` with a URI action; draw pasted images into page content;
+  replace `/Outlines` with the bookmark list.
 - **Two storage modes.** Browser-only: import and export run in the browser;
   files come from and go to the device (File System Access API or download).
   Server: `server/index.ts` keeps a folder of PDFs; it parses on open (and
@@ -41,6 +44,30 @@ Daylight DC-1 tablet) use.
 - **Harness**: `src/harness/stylus-sim.ts` synthesises pen PointerEvents so
   Playwright can "write" on the page; e2e tests draw, erase, select, cut,
   paste, export, and then parse the exported PDF to check the ink came out.
+
+## What pdfink reads and writes
+
+Three things round-trip through the model: ink (`/Ink` annotations), web
+links (`/Link` annotations whose action is `/URI`), and the outline. Every
+other PDF structure stays in the base untouched: other annotations,
+including `/GoTo` and named-destination links, page content, forms, and the
+rest of the catalog.
+
+- **Links** (`src/pdf/links.ts`): only `http`, `https` and `mailto` URLs are
+  read; a URI link with any other scheme stays in the base as it was. Export
+  writes each link with a fresh `/Rect`, `/URI` (UTF-8 when not plain ASCII)
+  and its label as `/Contents`, and skips any URL with another scheme.
+- **Outline** (`src/pdf/outline.ts`): read depth-first, following `/First`
+  and `/Next` (`/Count` ignored, cycles cut), into title, page and level. A
+  destination may be an explicit array, a name in `/Dests` or the `/Names`
+  tree, or a GoTo action. On save the whole outline is rebuilt from the list:
+  nested by level (a jump of more than one level nests under the entry
+  before), titles as UTF-16 hex strings, every item open, each destination
+  the top of its page (`/XYZ null null null`). An entry whose destination
+  could not be resolved to a page in this document (a remote or launch
+  action, a missing name) is kept title-only, with no destination. An empty
+  list removes `/Outlines`; a save that sends no list leaves the file's
+  outline alone.
 
 ## Pressure
 
@@ -82,5 +109,5 @@ holds two kinds of socket and relays between them.
 
 ## Non-goals (for now)
 
-- Editing non-ink annotations, text, forms.
+- Editing other annotations, text, forms.
 - Moving a selection by dragging (cut + paste covers it).

@@ -35,6 +35,9 @@ timeout = 300
 [Journal this page]
 # Transcribes the page with a vision model (simonw's llm) and files it in a
 # journal; see tools/journal-page.py. Slow, so it asks first and gets time.
+# It also bookmarks the page with the entry's date, through the page bridge.
+# Any script can do the same with add_bookmark, or put a web link on the page
+# with add_link (tools/pdfink_page.py).
 command = uv run --script tools/journal-page.py "$PDF" "$PAGE"
 confirm = true
 timeout = 900
