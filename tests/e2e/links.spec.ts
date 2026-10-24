@@ -2,7 +2,7 @@ import { test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { PDFDict, PDFDocument, PDFName, PDFString } from "pdf-lib";
 import { createBlankPdf } from "../../src/pdf/export";
-import { expect, openApp, state, toClient } from "./helpers";
+import { expect, menuAction, menuLabels, openApp, state, toClient } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -221,12 +221,12 @@ test.describe("links", () => {
     const id = await page.evaluate((r) => window.__pdfink.addLink(0, r, "https://example.org/"), BOX);
     const [cx, cy] = await toClient(page, 0, BOX.x + 50, BOX.y + 20);
     await page.mouse.click(cx, cy, { button: "right" });
-    const items = page.locator("#ctx-menu button");
+    const items = page.locator("#ctx-menu .menuitem");
     await expect(items.nth(0)).toHaveText("Open example.org");
     await expect(items.nth(1)).toHaveText("Edit URL…");
-    await expect(items.nth(2)).toHaveText("Pen");
+    await expect(page.locator("#ctx-menu .row").first().locator(".tile").first()).toHaveAttribute("aria-label", "Pen");
 
-    await page.locator("#ctx-menu button", { hasText: "Edit URL…" }).click();
+    await menuAction(page, "Edit URL…");
     await expect(page.locator("#dialog .dialog-input")).toHaveValue("https://example.org/");
     await page.fill("#dialog .dialog-input", "example.com/x");
     await page.keyboard.press("Enter");
@@ -236,14 +236,14 @@ test.describe("links", () => {
 
     // The same url again records no change; a bad scheme is refused with a message.
     await page.mouse.click(cx, cy, { button: "right" });
-    await page.locator("#ctx-menu button", { hasText: "Edit URL…" }).click();
+    await menuAction(page, "Edit URL…");
     await expect(page.locator("#dialog .dialog-input")).toHaveValue("https://example.com/x");
     await page.keyboard.press("Enter");
     await expect(page.locator("#dialog .dialog-input")).toHaveCount(0);
     expect((await state(page)).undo).toBe(undo);
 
     await page.mouse.click(cx, cy, { button: "right" });
-    await page.locator("#ctx-menu button", { hasText: "Edit URL…" }).click();
+    await menuAction(page, "Edit URL…");
     await page.fill("#dialog .dialog-input", "JAVASCRIPT:alert(1)");
     await page.keyboard.press("Enter");
     await expect(page.locator("#status")).toHaveText("Not a web link: JAVASCRIPT:alert(1)");
@@ -251,7 +251,7 @@ test.describe("links", () => {
 
     // Cancelled or emptied leaves it.
     await page.mouse.click(cx, cy, { button: "right" });
-    await page.locator("#ctx-menu button", { hasText: "Edit URL…" }).click();
+    await menuAction(page, "Edit URL…");
     await page.fill("#dialog .dialog-input", "");
     await page.keyboard.press("Enter");
     await expect(page.locator("#dialog .dialog-input")).toHaveCount(0);
@@ -261,8 +261,9 @@ test.describe("links", () => {
     // Away from the link the menu starts with the tools.
     const [ox, oy] = await toClient(page, 0, 400, 400);
     await page.mouse.click(ox, oy, { button: "right" });
-    await expect(items.nth(0)).toHaveText("Pen");
-    await expect(page.locator("#ctx-menu button", { hasText: "Edit URL…" })).toHaveCount(0);
+    await expect(page.locator("#ctx-menu .context")).toHaveCount(0);
+    await expect(items.nth(0)).toHaveText("Add link…");
+    await expect(page.locator("#ctx-menu .menuitem", { hasText: "Edit URL…" })).toHaveCount(0);
   });
 
   test("Open launches the url in a new tab", async ({ page }) => {
@@ -272,7 +273,7 @@ test.describe("links", () => {
     const [cx, cy] = await toClient(page, 0, BOX.x + 50, BOX.y + 20);
     await page.mouse.click(cx, cy, { button: "right" });
     const popup = page.waitForEvent("popup");
-    await page.locator("#ctx-menu button", { hasText: "Open example.org/page" }).click();
+    await menuAction(page, "Open example.org/page");
     const tab = await popup;
     await tab.waitForLoadState();
     expect(tab.url()).toBe("https://example.org/page");
@@ -350,11 +351,11 @@ test.describe("links", () => {
     await openApp(page);
     const [cx, cy] = await toClient(page, 0, 300, 300);
     await page.mouse.click(cx, cy, { button: "right" });
-    const add = page.locator("#ctx-menu button", { hasText: "Add link…" });
+    const add = page.locator("#ctx-menu .menuitem", { hasText: "Add link…" });
     await expect(add).toBeDisabled();
-    // It sits right after Delete.
-    const labels = await page.locator("#ctx-menu button").allTextContents();
-    expect(labels[labels.indexOf("Delete") + 1]).toBe("Add link…");
+    // It is the first text row, straight after the icon rows.
+    const labels = await menuLabels(page);
+    expect(labels[0]).toBe("Add link…");
     await page.keyboard.press("Escape");
 
     // A zero-area marquee cannot hold a link.

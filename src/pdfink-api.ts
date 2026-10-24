@@ -32,7 +32,7 @@ export interface PdfinkApi {
   /** Pick one of `options`; null when cancelled. */
   choose(message: string, options: string[]): Promise<string | null>;
   /** Add (or replace) a command button in the pen menu (default) or the toolbar. */
-  addButton(id: string, label: string, opts?: { where?: "menu" | "toolbar" }): void;
+  addButton(id: string, label: string, opts?: { where?: "menu" | "toolbar"; run?: string }): void;
   /** Remove a command button. */
   removeButton(id: string): void;
   /** Select what a page-space rectangle covers on `page`. */
@@ -97,7 +97,7 @@ export function createPdfinkApi(app: App): PdfinkApi {
     ask: (message, opts) => dialog.ask(message, opts?.default),
     confirm: (message) => dialog.confirm(message),
     choose: (message, options) => dialog.choose(message, options),
-    addButton: (id, label, opts) => app.addButton(id, label, opts?.where ?? "menu"),
+    addButton: (id, label, opts) => app.addButton(id, label, opts?.where ?? "menu", opts?.run),
     removeButton: (id) => app.removeButton(id),
     select: (page, rect) => app.selectRect(page, rect),
     clearSelection: () => app.clearSelection(),

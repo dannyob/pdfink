@@ -2,7 +2,7 @@ import { test } from "@playwright/test";
 import fs from "node:fs";
 import { PDFDocument } from "pdf-lib";
 import { createBlankPdf, exportPdf } from "../../src/pdf/export";
-import { expect, fakeClipboard, inkAnnots, inkPathCount, line, notebookFixture, openApp, penStroke, state, toClient, waitReady } from "./helpers";
+import { expect, fakeClipboard, inkAnnots, inkPathCount, line, menuAction, menuHas, notebookFixture, openApp, penStroke, state, toClient, waitReady } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -196,8 +196,8 @@ test.describe("pen-menu commands", () => {
     await page.evaluate(() => window.__pdfink.views[1].el.scrollIntoView({ block: "start" }));
     const [cx, cy] = await toClient(page, 1, 100, 100);
     await page.mouse.click(cx, cy, { button: "right" });
-    await expect(page.locator("#ctx-menu button", { hasText: "Where am I" })).toBeVisible();
-    await page.locator("#ctx-menu button", { hasText: "Where am I" }).click();
+    expect(await menuHas(page, "Where am I")).toBe(true);
+    await menuAction(page, "Where am I");
     await expect(page.locator("#status")).toContainText("Where am I done");
     const [whereName, whereP, whereX, whereY] = fs.readFileSync(`${DIR}/where.txt`, "utf8").split(" ");
     expect(whereName).toBe(name);
@@ -207,7 +207,7 @@ test.describe("pen-menu commands", () => {
 
     // Snapshot proves the notebook was saved before the command ran.
     await page.mouse.click(cx, cy, { button: "right" });
-    await page.locator("#ctx-menu button", { hasText: "Snapshot the file" }).click();
+    await menuAction(page, "Snapshot the file");
     await expect(page.locator("#status")).toContainText("Snapshot the file done");
     const snap = await PDFDocument.load(fs.readFileSync(`${DIR}/snapshot.pdf`), { updateMetadata: false });
     expect(inkPathCount(inkAnnots(snap, 0)[0])).toBe(1);
@@ -261,7 +261,7 @@ test.describe("pen-menu commands", () => {
     const [cx, cy] = await toClient(page, 0, 200, 300);
     await page.mouse.click(cx, cy, { button: "right" });
     const ran = page.waitForResponse((r) => r.url().includes("/api/commands/") && r.request().method() === "POST", { timeout: 10_000 });
-    await page.locator("#ctx-menu button", { hasText: "Touch the file" }).click();
+    await menuAction(page, "Touch the file");
     await expect(page.locator("#status")).toContainText("Running Touch the file");
     // The command is still running (it sleeps first): add a page meanwhile.
     await page.click("#btn-addpage");
@@ -285,7 +285,7 @@ test.describe("pen-menu commands", () => {
 
     const [cx, cy] = await toClient(page, 0, 200, 300);
     await page.mouse.click(cx, cy, { button: "right" });
-    await page.locator("#ctx-menu button", { hasText: "Replace with two pages" }).click();
+    await menuAction(page, "Replace with two pages");
     await page.waitForFunction(() => window.__pdfink.pages.length === 2);
     const s = await state(page);
     expect(s.scale).toBeCloseTo(scale, 5);

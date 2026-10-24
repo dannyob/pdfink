@@ -4,6 +4,7 @@ import type { Bookmark, ClipContent, ImageItem, LinkItem, PageModel, Point, Rect
 import { DEFAULT_PRESSURE, newId } from "./model";
 import { barrelBit, barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
 import { ContextMenu, type MenuItem } from "./menu";
+import { icons } from "./icons";
 import { dialog } from "./dialog";
 import {
   imageBounds,
@@ -749,35 +750,49 @@ export class App {
     const link = at ? this.linkAt(at.page, at.x, at.y) : null;
     const linkItems: MenuItem[] = link
       ? [
-          { label: `Open ${shortUrl(link.url)}`, action: () => this.openLink(link) },
-          { label: "Edit URL…", action: () => void this.editLinkUrl(link) },
-          { separator: true, label: "" },
+          { label: `Open ${shortUrl(link.url)}`, tint: "context", action: () => this.openLink(link) },
+          { label: "Edit URL…", tint: "context", action: () => void this.editLinkUrl(link) },
+          { separator: true },
         ]
       : [];
     const marquee = this.selectionInfo()?.marquee;
-    const commands: MenuItem[] = this.commands.length
-      ? [{ separator: true, label: "" }, ...this.commands.map((c) => ({ label: c.label, disabled: this.source.kind !== "server", action: () => void this.runMenuCommand(c) }))]
-      : [];
+    const commandItems: MenuItem[] = [
+      ...this.commands.map((c): MenuItem => ({ label: c.label, tint: "command", disabled: this.source.kind !== "server", action: () => void this.runMenuCommand(c) })),
+      ...this.menuButtonItems(),
+    ];
+    const commands: MenuItem[] = commandItems.length ? [{ separator: true }, { kind: "submenu", label: "Commands", heading: "Commands", items: commandItems }] : [];
     return [
       ...linkItems,
-      { label: "Pen", checked: this.tool === "pen", action: () => this.setTool("pen") },
-      { label: "Eraser", checked: this.tool === "eraser", action: () => this.setTool("eraser") },
-      { label: "Select", checked: this.tool === "select", action: () => this.setTool("select") },
-      { separator: true, label: "" },
-      { label: "Copy", disabled: !sel, action: () => void this.copy() },
-      { label: "Cut", disabled: !sel, action: () => void this.cut() },
-      { label: "Paste", action: () => void this.pasteFromButton() },
-      { label: "Delete", disabled: !sel, action: () => this.deleteSelection() },
+      {
+        kind: "row",
+        items: [
+          { label: "Pen", icon: icons.pen, checked: this.tool === "pen", action: () => this.setTool("pen") },
+          { label: "Eraser", icon: icons.eraser, checked: this.tool === "eraser", action: () => this.setTool("eraser") },
+          { label: "Select", icon: icons.select, checked: this.tool === "select", action: () => this.setTool("select") },
+        ],
+      },
+      {
+        kind: "row",
+        items: [
+          { label: "Copy", icon: icons.copy, disabled: !sel, action: () => void this.copy() },
+          { label: "Cut", icon: icons.cut, disabled: !sel, action: () => void this.cut() },
+          { label: "Paste", icon: icons.paste, action: () => void this.pasteFromButton() },
+          { label: "Delete", icon: icons.trash, disabled: !sel, action: () => this.deleteSelection() },
+        ],
+      },
+      {
+        kind: "row",
+        items: [
+          { label: "Undo", icon: icons.undo, disabled: this.undoStack.length === 0, action: () => this.undo() },
+          { label: "Redo", icon: icons.redo, disabled: this.redoStack.length === 0, action: () => this.redo() },
+        ],
+      },
+      { separator: true },
       { label: "Add link…", disabled: !(marquee && marquee.w > 0 && marquee.h > 0), action: () => void this.addLinkOnSelection() },
-      { separator: true, label: "" },
-      { label: "Undo", disabled: this.undoStack.length === 0, action: () => this.undo() },
-      { label: "Redo", disabled: this.redoStack.length === 0, action: () => this.redo() },
-      { separator: true, label: "" },
-      { label: "Add page", action: () => void this.addPage() },
       { label: "Bookmark this page…", action: () => void this.bookmarkMenuPage(at?.page ?? this.currentPage) },
+      { label: "Add page", action: () => void this.addPage() },
       { label: "Save", action: () => void this.save() },
       ...commands,
-      ...this.menuButtonItems(),
     ];
   }
 
@@ -1793,7 +1808,7 @@ export class App {
   private geoms: PageGeom[] = [];
   /** Whether the last `selection` event carried a selection (so clearing twice fires once). */
   private selectionAnnounced = false;
-  private buttons = new Map<string, { label: string; where: "menu" | "toolbar"; el: HTMLButtonElement | null }>();
+  private buttons = new Map<string, { label: string; where: "menu" | "toolbar"; run?: string; el: HTMLButtonElement | null }>();
   private progressText: string | null = null;
 
   on(event: AppEvent, fn: (data: unknown) => void): () => void {
@@ -2075,7 +2090,8 @@ export class App {
   }
 
   /** A command button in the pen menu or the toolbar; pressing it emits `button`. Same id replaces. */
-  addButton(id: string, label: string, where: "menu" | "toolbar"): void {
+  /** `run` names the attached command the button belongs to; menu buttons are grouped under it. */
+  addButton(id: string, label: string, where: "menu" | "toolbar", run?: string): void {
     this.removeButton(id);
     let el: HTMLButtonElement | null = null;
     if (where === "toolbar") {
@@ -2086,7 +2102,7 @@ export class App {
       el.onclick = () => this.emit("button", { id });
       document.getElementById("cmd-buttons")?.appendChild(el);
     }
-    this.buttons.set(id, { label, where, el });
+    this.buttons.set(id, { label, where, run, el });
   }
 
   removeButton(id: string): void {
@@ -2094,12 +2110,20 @@ export class App {
     this.buttons.delete(id);
   }
 
+  /** Buttons added by attached commands, grouped under a label per run, for the Commands level. */
   private menuButtonItems(): MenuItem[] {
-    const items: MenuItem[] = [];
+    const byRun = new Map<string, MenuItem[]>();
     for (const [id, b] of this.buttons) {
-      if (b.where === "menu") items.push({ label: b.label, action: () => this.emit("button", { id }) });
+      if (b.where !== "menu") continue;
+      const list = byRun.get(b.run ?? "") ?? [];
+      list.push({ label: b.label, action: () => this.emit("button", { id }) });
+      byRun.set(b.run ?? "", list);
     }
-    return items.length ? [{ separator: true, label: "" }, ...items] : [];
+    const out: MenuItem[] = [];
+    for (const [run, items] of byRun) {
+      out.push({ kind: "label", label: run ? `Attached: ${run}` : "Buttons" }, ...items);
+    }
+    return out;
   }
 
   /** Compact state for tests. */

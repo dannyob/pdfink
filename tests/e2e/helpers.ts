@@ -200,3 +200,37 @@ export async function inkPixel(page: Page, idx: number, x: number, y: number): P
 }
 
 export { expect };
+
+/**
+ * Activate a pen-menu entry by name: an icon tile (by aria-label), a text
+ * row, or a command/button inside the "Commands" level (drilling in first).
+ */
+export async function menuAction(page: Page, label: string): Promise<void> {
+  const menu = page.locator("#ctx-menu");
+  await expect(menu).toBeVisible();
+  const tile = menu.locator(`.tile[aria-label="${label}"]`);
+  if ((await tile.count()) > 0) return tile.click();
+  const row = menu.locator(".menuitem:not(.submenu)", { hasText: label });
+  if ((await row.count()) > 0) return row.first().click();
+  await menu.locator(".submenu", { hasText: "Commands" }).click();
+  await menu.locator(".menuitem:not(.submenu)", { hasText: label }).first().click();
+}
+
+/** Text rows of the current menu level, in order (tiles are not included). */
+export async function menuLabels(page: Page): Promise<string[]> {
+  const texts = await page.locator("#ctx-menu .menuitem:not(.submenu)").allTextContents();
+  return texts.map((t) => t.trim());
+}
+
+/** True when `label` is reachable in the open menu, drilling into Commands if present (leaves the menu at the top level). */
+export async function menuHas(page: Page, label: string): Promise<boolean> {
+  const menu = page.locator("#ctx-menu");
+  if ((await menu.locator(`.tile[aria-label="${label}"]`).count()) > 0) return true;
+  if ((await menu.locator(".menuitem:not(.submenu)", { hasText: label }).count()) > 0) return true;
+  const sub = menu.locator(".submenu", { hasText: "Commands" });
+  if ((await sub.count()) === 0) return false;
+  await sub.click();
+  const found = (await menu.locator(".menuitem:not(.submenu)", { hasText: label }).count()) > 0;
+  await menu.locator(".back").click();
+  return found;
+}

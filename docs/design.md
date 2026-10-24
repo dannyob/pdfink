@@ -80,6 +80,8 @@ streams, measured in a rasterised page.
 
 ## Page bridge
 
+The pen menu (`src/menu.ts`) is one panel that drills down in place: items are text rows, rows of icon tiles, or a submenu whose items replace the panel's contents under a Back row; nothing opens on hover and the panel is re-clamped to the screen after every level change. Commands and the buttons attached runs add live in its Commands level.
+
 Pen-menu commands can drive the open page while they run. `server/bridge.ts`
 holds two kinds of socket and relays between them.
 

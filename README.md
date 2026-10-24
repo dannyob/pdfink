@@ -85,7 +85,7 @@ To prevent large PDFs, on import, objects unreachable from the trailer are delet
 
 ## Editing
 
-- Pen draws. Fingers scroll, except with **finger draws** on (the default on phones and pen-less tablets, switched off as soon as a pen appears): then one finger draws and a second finger scrolls. Eraser end or barrel button erases whole strokes. Many EMR pens don't report their barrel button to the browser; with **barrel button erase** ticked (the default), a pen whose pressure is pinned to exactly 0 while hovering or exactly 1 while touching is taken as a barrel press. Unticked, a barrel press (or a mouse right-click) opens the pen menu, with the toolbar actions and more, instead. `/stylus-test.html` shows what your pen reports.
+- Pen draws. Fingers scroll, except with **finger draws** on (the default on phones and pen-less tablets, switched off as soon as a pen appears): then one finger draws and a second finger scrolls. Eraser end or barrel button erases whole strokes. Many EMR pens don't report their barrel button to the browser; with **barrel button erase** ticked (the default), a pen whose pressure is pinned to exactly 0 while hovering or exactly 1 while touching is taken as a barrel press. Unticked, a barrel press (or a mouse right-click) opens the pen menu instead: three rows of icon tiles (Pen, Eraser, Select; Copy, Cut, Paste, Delete; Undo, Redo), then Add link…, Bookmark this page…, Add page and Save, then a **Commands ›** row that opens your pen-menu commands in place, with a Back row at the top. Every tile and row is 44 px tall and nothing opens on hover. `/stylus-test.html` shows what your pen reports.
 - Select drags a rectangle and picks every stroke with a point inside it. Ctrl+C, Ctrl+X and Ctrl+V work on the selection. Delete removes it.
 - Paste an image from the system clipboard, or drop an image file on the page.
 - Dropping a PDF imports it (server mode) or opens it (browser mode).
@@ -105,11 +105,11 @@ A link shows as a faint blue box captioned, when there is room, with its label o
 
 - A short finger tap on a link opens it in a new tab: not while the pen is down or in range, and not with finger draws on.
 - Over a link, the pen menu starts with **Open** *url* and **Edit URL…**.
-- To make a link, drag a rectangle with Select and pick **Add link…** (after Delete in the pen menu). A URL without a scheme gets `https://`; only `http`, `https` and `mailto` are accepted.
+- To make a link, drag a rectangle with Select and pick **Add link…** (the first text row of the pen menu). A URL without a scheme gets `https://`; only `http`, `https` and `mailto` are accepted.
 - Select picks up a link whose centre is inside the rectangle, so copy, cut, paste and Delete carry links with the strokes. The eraser leaves links alone; select and delete them instead.
 - Adding, editing and deleting links are undo steps.
 
-Bookmarks are the PDF's outline. The toolbar's Bookmarks… list shows them, indented by level; picking one jumps to its page. If the current page has a top-level bookmark, the list ends with Remove "*title*". **Bookmark this page…** (after Add page in the pen menu) asks for a title, today's date by default, and files the bookmark in page order. Removing a top-level bookmark removes the entries nested under it too. Bookmark changes are saved with the notebook but are not undo steps; until the outline is changed in pdfink, saving leaves it exactly as the file had it. An outline entry whose page pdfink cannot find is greyed out in the list and saved back as a title with no destination.
+Bookmarks are the PDF's outline. The toolbar's Bookmarks… list shows them, indented by level; picking one jumps to its page. If the current page has a top-level bookmark, the list ends with Remove "*title*". **Bookmark this page…** (in the pen menu) asks for a title, today's date by default, and files the bookmark in page order. Removing a top-level bookmark removes the entries nested under it too. Bookmark changes are saved with the notebook but are not undo steps; until the outline is changed in pdfink, saving leaves it exactly as the file had it. An outline entry whose page pdfink cannot find is greyed out in the list and saved back as a title with no destination.
 
 ## Deep links
 

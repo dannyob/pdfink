@@ -2,7 +2,7 @@ import { test } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { createBlankPdf } from "../../src/pdf/export";
-import { expect, inkPixel, line, openApp, penStroke, state } from "./helpers";
+import { expect, inkPixel, line, menuAction, menuHas, openApp, penStroke, state } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 
@@ -208,7 +208,7 @@ test.describe("app API", () => {
     });
     await page.mouse.click(x, y, { button: "right" });
     await expect(page.locator("#ctx-menu")).toBeVisible();
-    await page.locator("#ctx-menu button", { hasText: "Say hello" }).click();
+    await menuAction(page, "Say hello");
     await page.locator("#cmd-buttons button.cmd").click();
     expect((await events(page, "button")).map((e) => e.data)).toEqual([{ id: "hello" }, { id: "tb" }]);
 
@@ -219,7 +219,7 @@ test.describe("app API", () => {
     expect((await state(page)).buttons).toEqual([]);
     await expect(page.locator("#cmd-buttons button")).toHaveCount(0);
     await page.mouse.click(x, y, { button: "right" });
-    await expect(page.locator("#ctx-menu button", { hasText: "Say hello" })).toHaveCount(0);
+    expect(await menuHas(page, "Say hello")).toBe(false);
   });
 
   test("on returns an unsubscribe function", async ({ page }) => {

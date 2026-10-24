@@ -1,6 +1,6 @@
 import { test } from "@playwright/test";
 import { PDFArray, PDFName, PDFNumber } from "pdf-lib";
-import { expect, exportedPdf, inkAnnots, inkPathCount, inkPixel, line, openApp, penStroke, state, toClient } from "./helpers";
+import { expect, exportedPdf, inkAnnots, inkPathCount, inkPixel, line, menuAction, menuHas, openApp, openLocalApp, penStroke, state, toClient } from "./helpers";
 
 test.describe("pen drawing", () => {
   test("new document shows one Letter page", async ({ page }) => {
@@ -361,9 +361,9 @@ test.describe("barrel-button menu", () => {
     await penEvent(page, "pointerdown", 200, 200, { button: 0, buttons: 1, pressure: 1 });
     await expect(page.locator("#ctx-menu")).toBeVisible();
     expect((await state(page)).pages[0].strokes).toHaveLength(1); // nothing erased
-    await expect(page.locator("#ctx-menu button.checked")).toHaveText("Pen");
+    await expect(page.locator("#ctx-menu .tile.checked")).toHaveAttribute("aria-label", "Pen");
     await penEvent(page, "pointerup", 200, 200, { button: 0, buttons: 0, pressure: 0 });
-    await page.locator("#ctx-menu button", { hasText: "Eraser" }).click();
+    await menuAction(page, "Eraser");
     await expect(page.locator("#ctx-menu")).toBeHidden();
     expect((await state(page)).tool).toBe("eraser");
   });
@@ -391,7 +391,7 @@ test.describe("barrel-button menu", () => {
     const [cx, cy] = await toClient(page, 0, 300, 300);
     await page.mouse.click(cx, cy, { button: "right" });
     await expect(page.locator("#ctx-menu")).toBeVisible();
-    await expect(page.locator("#ctx-menu button", { hasText: "Copy" })).toBeDisabled();
+    await expect(page.locator("#ctx-menu .tile[aria-label='Copy']")).toBeDisabled();
     await penStroke(page, 0, line(100, 100, 200, 100));
     await expect(page.locator("#ctx-menu")).toBeHidden();
     expect((await state(page)).pages[0].strokes).toHaveLength(1);
@@ -403,6 +403,31 @@ test.describe("barrel-button menu", () => {
     await penStroke(page, 0, line(200, 170, 200, 230), { pressure: 1 });
     expect((await state(page)).pages[0].strokes).toHaveLength(0);
     await expect(page.locator("#ctx-menu")).toBeHidden();
+  });
+});
+
+test.describe("pen menu shape", () => {
+  test("the pen menu has three icon rows and a Commands level", async ({ page }) => {
+    await openApp(page);
+    const [cx, cy] = await toClient(page, 0, 300, 300);
+    await page.mouse.click(cx, cy, { button: "right" });
+    const rows = page.locator("#ctx-menu .row");
+    await expect(rows).toHaveCount(3);
+    expect(await rows.nth(0).locator(".tile").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).toEqual(["Pen", "Eraser", "Select"]);
+    expect(await rows.nth(1).locator(".tile").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).toEqual(["Copy", "Cut", "Paste", "Delete"]);
+    expect(await rows.nth(2).locator(".tile").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).toEqual(["Undo", "Redo"]);
+    expect(await page.locator("#ctx-menu .menuitem:not(.submenu)").allTextContents()).toEqual(["Add link…", "Bookmark this page…", "Add page", "Save"]);
+    // Server mode with the fixture commands: a Commands level.
+    await expect(page.locator("#ctx-menu .submenu", { hasText: "Commands" })).toBeVisible();
+    expect(await menuHas(page, "Where am I")).toBe(true);
+    await page.keyboard.press("Escape");
+
+    // Local mode, no commands, no attached buttons: no Commands row at all.
+    await openLocalApp(page);
+    const [lx, ly] = await toClient(page, 0, 300, 300);
+    await page.mouse.click(lx, ly, { button: "right" });
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    await expect(page.locator("#ctx-menu .submenu")).toHaveCount(0);
   });
 });
 

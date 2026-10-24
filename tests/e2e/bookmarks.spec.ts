@@ -5,7 +5,7 @@ import { PDFArray, PDFDict, PDFDocument, PDFName, type PDFObject, PDFRef, PDFStr
 import { createBlankPdf, exportPdf } from "../../src/pdf/export";
 import { readOutline } from "../../src/pdf/outline";
 import type { Bookmark, PageModel } from "../../src/model";
-import { FIXTURES, expect, fakeClipboard, line, openApp, penStroke, state, toClient, waitReady } from "./helpers";
+import { FIXTURES, expect, fakeClipboard, line, menuAction, menuLabels, openApp, penStroke, state, toClient, waitReady } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -109,7 +109,7 @@ test.describe("bookmarks", () => {
     await page.evaluate(() => window.__pdfink.views[1].el.scrollIntoView({ block: "start" }));
     const [px, py] = await toClient(page, 1, 300, 300);
     await page.mouse.click(px, py, { button: "right" });
-    await page.locator("#ctx-menu button", { hasText: "Bookmark this page…" }).click();
+    await menuAction(page, "Bookmark this page…");
     await page.fill("#dialog .dialog-input", "Added");
     await page.keyboard.press("Enter");
     await expect.poll(() => bookmarkOptions(page)).toContain("Added");
@@ -259,9 +259,9 @@ test.describe("bookmarks", () => {
     await page.evaluate(() => window.__pdfink.views[1].el.scrollIntoView({ block: "start" }));
     const [px, py] = await toClient(page, 1, 300, 300);
     await page.mouse.click(px, py, { button: "right" });
-    const labels = await page.locator("#ctx-menu button").allTextContents();
-    expect(labels[labels.indexOf("Add page") + 1]).toBe("Bookmark this page…");
-    await page.locator("#ctx-menu button", { hasText: "Bookmark this page…" }).click();
+    const labels = await menuLabels(page);
+    expect(labels[labels.indexOf("Add link…") + 1]).toBe("Bookmark this page…");
+    await menuAction(page, "Bookmark this page…");
     const input = page.locator("#dialog .dialog-input");
     await expect(input).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
     const today = await input.inputValue();
@@ -271,10 +271,10 @@ test.describe("bookmarks", () => {
 
     // Cancelled or empty adds nothing.
     await page.mouse.click(px, py, { button: "right" });
-    await page.locator("#ctx-menu button", { hasText: "Bookmark this page…" }).click();
+    await menuAction(page, "Bookmark this page…");
     await page.keyboard.press("Escape");
     await page.mouse.click(px, py, { button: "right" });
-    await page.locator("#ctx-menu button", { hasText: "Bookmark this page…" }).click();
+    await menuAction(page, "Bookmark this page…");
     await page.fill("#dialog .dialog-input", "  ");
     await page.keyboard.press("Enter");
     await expect(input).toHaveCount(0);

@@ -164,8 +164,13 @@ export class PageLink {
   private call(run: string, name: string, args: unknown[]): unknown {
     const fn = Object.hasOwn(this.api, name) ? (this.api as unknown as Record<string, unknown>)[name] : undefined;
     if (typeof fn !== "function") throw new Error("no such method");
-    const result = (fn as (...a: unknown[]) => unknown).apply(this.api, args);
     const id = args[0];
+    if (name === "addButton" && typeof id === "string") {
+      // Group the button under its run in the menu's Commands level.
+      const opts = (args[2] && typeof args[2] === "object" ? args[2] : {}) as Record<string, unknown>;
+      args = [args[0], args[1], { ...opts, run: this.runs.get(run)?.label ?? run }];
+    }
+    const result = (fn as (...a: unknown[]) => unknown).apply(this.api, args);
     if (name === "addButton" && typeof id === "string") {
       let set = this.buttons.get(run);
       if (!set) this.buttons.set(run, (set = new Set()));

@@ -1,7 +1,7 @@
 import { test, type Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import { createBlankPdf } from "../../src/pdf/export";
-import { expect, line, openApp, penStroke, state, toClient } from "./helpers";
+import { expect, line, menuAction, menuHas, openApp, penStroke, state, toClient } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const haveUv = spawnSync("uv", ["--version"]).status === 0;
@@ -60,7 +60,7 @@ async function openMenuAt(page: Page, idx: number, x: number, y: number): Promis
 }
 
 async function runMenu(page: Page, label: string): Promise<void> {
-  await page.locator("#ctx-menu button", { hasText: label }).click();
+  await menuAction(page, label);
 }
 
 test.describe("page bridge", () => {
@@ -131,7 +131,7 @@ test.describe("page bridge", () => {
     await expect(page.locator("#status")).toHaveText("Buttons attached");
     await expect(page.locator("#cmd-buttons button", { hasText: "Finish" })).toBeVisible({ timeout: 10_000 });
     await openMenuAt(page, 0, 300, 400);
-    await expect(page.locator("#ctx-menu button", { hasText: "Say hello" })).toBeVisible();
+    expect(await menuHas(page, "Say hello")).toBe(true);
     await runMenu(page, "Say hello");
     await expect(page.locator("#status")).toHaveText("hello pressed", { timeout: 10_000 });
 
@@ -139,7 +139,7 @@ test.describe("page bridge", () => {
     await expect(page.locator("#runs .run")).toHaveCount(0, { timeout: 10_000 });
     await expect(page.locator("#cmd-buttons button")).toHaveCount(0);
     await openMenuAt(page, 0, 300, 400);
-    await expect(page.locator("#ctx-menu button", { hasText: "Say hello" })).toHaveCount(0);
+    expect(await menuHas(page, "Say hello")).toBe(false);
     expect((await state(page)).buttons).toEqual([]);
   });
 
