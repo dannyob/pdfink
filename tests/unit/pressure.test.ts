@@ -46,6 +46,7 @@ describe("pressure round trip", () => {
         width: 612,
         height: 792,
         images: [],
+        links: [],
         strokes: [
           { id: "v", color: "#000000", width: 2, opacity: 1, points: [{ x: 10, y: 10, p: 0.2 }, { x: 20, y: 10, p: 0.6 }, { x: 30, y: 10, p: 1 }] },
           { id: "u", color: "#000000", width: 2, opacity: 1, points: [{ x: 10, y: 50, p: 0.6 }, { x: 30, y: 50, p: 0.6 }] },

@@ -25,7 +25,7 @@ afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const page = (): PageModel => ({ width: 612, height: 792, images: [], strokes: [] });
+const page = (): PageModel => ({ width: 612, height: 792, images: [], strokes: [], links: [] });
 
 describe("server-side open", () => {
   it("envelope round-trips pages and base bytes", () => {

@@ -52,12 +52,26 @@ export interface ImageItem {
   bytes: Uint8Array;
 }
 
+/** A URI link: a clickable rectangle in page space (top-left origin, display points). */
+export interface LinkItem {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** http:, https: or mailto: URL. */
+  url: string;
+  /** Optional text, stored as the annotation's /Contents. */
+  label?: string;
+}
+
 export interface PageModel {
   /** Page size in PDF points, after rotation (what the viewer shows). */
   width: number;
   height: number;
   strokes: Stroke[];
   images: ImageItem[];
+  links: LinkItem[];
 }
 
 export interface Rect {
@@ -67,10 +81,11 @@ export interface Rect {
   h: number;
 }
 
-/** Content on the internal clipboard: strokes/images relative to their bbox origin. */
+/** Content on the internal clipboard: strokes/images/links relative to their bbox origin. */
 export interface ClipContent {
   strokes: Stroke[];
   images: ImageItem[];
+  links: LinkItem[];
   width: number;
   height: number;
 }

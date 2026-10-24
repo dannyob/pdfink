@@ -138,7 +138,7 @@ test.describe("notebooks folder", () => {
     const a = unique("swa");
     const b = unique("swb");
     await putNotebook(a, await createBlankPdf(1));
-    await putNotebook(b, await exportPdf(await createBlankPdf(1), [{ width: 612, height: 792, images: [], strokes: [] }]));
+    await putNotebook(b, await exportPdf(await createBlankPdf(1), [{ width: 612, height: 792, images: [], strokes: [], links: [] }]));
     await openApp(page, `?nofs=1&open=${encodeURIComponent(a)}`);
     await penStroke(page, 0, line(100, 100, 300, 100));
     await page.selectOption("#notebook-select", b);

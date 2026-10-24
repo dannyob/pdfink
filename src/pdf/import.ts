@@ -12,9 +12,10 @@ import type { PageModel, Stroke } from "../model.ts";
 import { DEFAULT_PRESSURE, newId } from "../model.ts";
 import { rgbToHex } from "./color.ts";
 import { displaySize, normalizeRotate, pdfToDisplay, type PageGeom } from "./geom.ts";
+import { extractLinks } from "./links.ts";
 
 export interface ImportedDocument {
-  /** The original PDF with all /Ink annotations removed. */
+  /** The original PDF with all /Ink and URI /Link annotations removed. */
   baseBytes: Uint8Array;
   pages: PageModel[];
   geoms: PageGeom[];
@@ -143,11 +144,15 @@ export async function importPdf(bytes: Uint8Array): Promise<ImportedDocument> {
     const geom = pageGeom(page);
     geoms.push(geom);
     const size = displaySize(geom);
-    const model: PageModel = { width: size.width, height: size.height, strokes: [], images: [] };
+    const model: PageModel = { width: size.width, height: size.height, strokes: [], images: [], links: [] };
     const annots = page.node.Annots();
     if (annots) {
-      const { strokes, kept, removed } = extractInk(doc, annots, geom);
-      model.strokes = strokes;
+      const ink = extractInk(doc, annots, geom);
+      const lifted = extractLinks(doc, ink.kept, geom);
+      model.strokes = ink.strokes;
+      model.links = lifted.links;
+      const kept = lifted.kept;
+      const removed = [...ink.removed, ...lifted.removed];
       if (kept.length !== annots.size()) {
         page.node.set(PDFName.of("Annots"), doc.context.obj(kept as never[]));
         for (const ref of removed) doc.context.delete(ref);

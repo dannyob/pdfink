@@ -5,6 +5,7 @@ import { isUniformPressure, pressureFactor, maxPressureFactor } from "../model.t
 import { hexToRgb } from "./color.ts";
 import { displayToPdf, type PageGeom } from "./geom.ts";
 import { pageGeom } from "./import.ts";
+import { addLinkAnnotation } from "./links.ts";
 
 function fmt(n: number): string {
   return (Math.round(n * 1000) / 1000).toString();
@@ -151,6 +152,7 @@ export async function exportPdf(baseBytes: Uint8Array, pages: PageModel[]): Prom
   for (let i = 0; i < pages.length; i++) {
     const geom = pageGeom(doc.getPage(i));
     for (const im of pages[i].images) await drawImageItem(doc, i, geom, im);
+    for (const ln of pages[i].links) addLinkAnnotation(doc, i, geom, ln);
     for (const g of groupStrokes(pages[i].strokes)) addInkAnnotation(doc, i, geom, g);
   }
   doc.setProducer("pdfink");

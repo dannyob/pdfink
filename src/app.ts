@@ -463,7 +463,7 @@ export class App {
     try {
       const bytes = await appendBlankPage(this.baseBytes);
       const last = this.pages[this.pages.length - 1];
-      const pages = [...this.pages, { width: last?.width ?? 612, height: last?.height ?? 792, strokes: [], images: [] }];
+      const pages = [...this.pages, { width: last?.width ?? 612, height: last?.height ?? 792, strokes: [], images: [], links: [] }];
       await this.setDocument(bytes, pages);
       this.baseRevision += 1;
       this.markDirty();
@@ -1227,6 +1227,7 @@ export class App {
     this.clip = {
       strokes: c.strokes.map((s) => translateStroke(s, -b.x, -b.y)),
       images: c.images.map((im) => translateImage(im, -b.x, -b.y)),
+      links: [],
       width: b.w,
       height: b.h,
     };
