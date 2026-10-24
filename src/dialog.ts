@@ -28,15 +28,20 @@ export class Dialog {
       "keydown",
       (e) => {
         if (!this.current) return;
+        // The dialog is modal: no key reaches the app's shortcuts underneath
+        // (Backspace deleting the selection, Ctrl+Z, tool keys). Default
+        // actions still happen, so typing in the input works.
+        e.stopPropagation();
+        // Ctrl/Cmd shortcuts (S, O, ...) would otherwise fall through to the
+        // browser's own; leave them to the input for copy, paste and select-all.
+        if ((e.ctrlKey || e.metaKey) && e.target !== this.input) e.preventDefault();
         if (e.key === "Escape") {
           e.preventDefault();
-          e.stopPropagation();
           this.finish(null);
         } else if (e.key === "Enter") {
           // A focused button answers for itself (Enter on Cancel cancels).
           if ((e.target as HTMLElement)?.tagName === "BUTTON" && root.contains(e.target as Node)) return;
           e.preventDefault();
-          e.stopPropagation();
           if (this.current.kind !== "choose") this.ok();
         }
       },

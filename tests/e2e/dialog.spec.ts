@@ -1,6 +1,6 @@
 import { test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { expect, openApp } from "./helpers";
+import { expect, line, openApp, penStroke, state } from "./helpers";
 
 /** Call a method on the app's `dialog` singleton (the module Vite serves to the page). */
 function callDialog(page: Page, method: "ask" | "confirm" | "choose", ...args: unknown[]): Promise<unknown> {
@@ -68,6 +68,29 @@ test.describe("in-page dialogs", () => {
     await page.click("#dialog .dialog-cancel");
     expect(await ch).toBeNull();
     await expect(page.locator("#dialog")).toBeHidden();
+  });
+
+  test("keys do not reach the app's shortcuts while a dialog is open", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 100, 200, 100));
+    await penStroke(page, 0, line(100, 200, 200, 200));
+    await page.click("#tool-select");
+    await penStroke(page, 0, line(80, 80, 220, 220));
+    const before = await state(page);
+    expect(before.selection?.strokes).toHaveLength(2);
+    const c = page.evaluate(() => window.__pdfink.confirmFn("Delete this?"));
+    await expect(page.locator("#dialog .dialog-ok")).toBeFocused();
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("Control+z");
+    await page.keyboard.press("p");
+    await expect(page.locator("#dialog")).toBeVisible();
+    const during = await state(page);
+    expect(during.selection?.strokes).toEqual(before.selection?.strokes);
+    expect(during.pages[0].strokes).toHaveLength(2);
+    expect(during.undo).toBe(before.undo);
+    expect(during.tool).toBe(before.tool);
+    await page.click("#dialog .dialog-cancel");
+    expect(await c).toBe(false);
   });
 
   test("a second dialog waits for the first", async ({ page }) => {
