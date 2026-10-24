@@ -43,20 +43,30 @@ button.tool.active { background: var(--accent); color: #fff; border-color: var(-
 #runs .dismiss { border: 0; background: none; min-width: 28px; padding: 2px 6px; color: inherit; }
 /* Pen context menu (barrel button when it isn't set to erase, or right-click). */
 #ctx-menu {
-  position: fixed; z-index: 50; min-width: 150px; padding: 4px;
-  background: #fff; border: 1px solid #aaa; border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0,0,0,.18); display: flex; flex-direction: column;
+  position: fixed; z-index: 50; width: 272px; max-width: calc(100vw - 8px); padding: 8px;
+  background: #fff; border: 1px solid #c9ced6; border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.18); display: flex; flex-direction: column; gap: 8px;
+  max-height: calc(100vh - 8px); overflow-y: auto;
   touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
-#ctx-menu button {
-  border: 0; border-radius: 5px; background: none; text-align: left; min-height: 40px;
-  padding: 8px 12px 8px 30px; position: relative; min-width: 0; font-size: 15px;
-}
-#ctx-menu button:hover:not(:disabled) { background: #eef1f6; }
-#ctx-menu button:disabled { opacity: .4; cursor: default; }
-#ctx-menu button.checked::before { content: "✓"; position: absolute; left: 10px; color: var(--accent); }
 #ctx-menu[hidden] { display: none; }
-#ctx-menu .sep { border: 0; border-top: 1px solid #ddd; margin: 4px 6px; }
+#ctx-menu button {
+  border: 0; border-radius: 10px; background: #f1f3f6; color: #1c2330; text-align: left;
+  min-height: 44px; padding: 8px 14px; min-width: 0; font-size: 15px; display: flex; align-items: center;
+}
+#ctx-menu button:hover:not(:disabled) { background: #e4e8ee; }
+#ctx-menu button:disabled { opacity: .35; cursor: default; }
+#ctx-menu .menuitem.checked::before { content: "✓"; margin-right: 8px; color: var(--accent); }
+#ctx-menu .submenu .chev { margin-left: auto; opacity: .5; padding-left: 12px; }
+#ctx-menu .back { background: #e8effc; color: #1d3f7a; }
+#ctx-menu .context { background: #e8effc; color: #1d3f7a; }
+#ctx-menu .command { background: #f7f2e8; }
+#ctx-menu .row { display: flex; gap: 8px; }
+#ctx-menu .tile { flex: 1; justify-content: center; padding: 0; }
+#ctx-menu .tile svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#ctx-menu .tile.checked { background: var(--accent, #2f4a7a); color: #fff; }
+#ctx-menu .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #7a8290; padding: 0 6px; }
+#ctx-menu .sep { border: 0; border-top: 1px solid #e3e6eb; margin: 0 4px; }
 #dialog {
   position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.25);
   display: flex; align-items: center; justify-content: center; padding: 16px;
