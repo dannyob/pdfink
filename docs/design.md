@@ -27,8 +27,10 @@ Daylight DC-1 tablet) use.
 - **Export** (pdf-lib): load the base bytes, write each stroke back as an
   `/Ink` annotation with an appearance stream (one stroked segment per step
   when pressure varies) and a `PDFTron_Pressure_Thickness` array; add each
-  link as a `/Link` with a URI action; draw pasted images into page content;
-  replace `/Outlines` with the bookmark list.
+  link as a `/Link` with a URI action (keeping the border and colour it was
+  imported with); draw pasted images into page content; and, only when the
+  bookmarks were changed since the file was opened, replace `/Outlines` with
+  the bookmark list (otherwise the base's outline is kept as it is).
 - **Two storage modes.** Browser-only: import and export run in the browser;
   files come from and go to the device (File System Access API or download).
   Server: `server/index.ts` keeps a folder of PDFs; it parses on open (and

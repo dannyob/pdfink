@@ -331,6 +331,7 @@ class Page:
         return self.call("addBookmark", page, title, {"level": level})
 
     def remove_bookmark(self, index: int) -> None:
+        """Remove the outline entry at `index` and the entries nested under it."""
         return self.call("removeBookmark", index)
 
 

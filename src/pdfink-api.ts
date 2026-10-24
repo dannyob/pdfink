@@ -57,7 +57,7 @@ export interface PdfinkApi {
   addStrokes(page: number, strokes: Array<Omit<Stroke, "id"> & { id?: string }>, opts?: { space?: "page" | "pdf" }): string[];
   /** Place a base64 PNG on `page` at a page-space rect; returns its id. */
   addImage(page: number, png: string, rect: Rect): Promise<string>;
-  /** Remove strokes and images by id; returns how many went. */
+  /** Remove strokes, images and links by id; returns how many went. */
   removeItems(ids: string[]): number;
   /** Links on `page`, or on every page, each with its page index. */
   links(page?: number): Array<LinkItem & { page: number }>;
@@ -67,9 +67,9 @@ export interface PdfinkApi {
   setLink(id: string, patch: { url?: string; label?: string }): void;
   /** The document outline, in order. */
   bookmarks(): Bookmark[];
-  /** Add an outline entry for `page`, kept in page order; returns its index. */
+  /** Add an outline entry for `page`, kept in page order and after the subtree it follows; returns its index. */
   addBookmark(page: number, title: string, opts?: { level?: number }): number;
-  /** Remove the outline entry at `index`. */
+  /** Remove the outline entry at `index` and the entries nested under it. */
   removeBookmark(index: number): void;
 }
 

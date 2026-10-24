@@ -391,3 +391,12 @@ with the pen menu as the default. The rest were settled as follows:
   browser, then chose links and bookmarks for this round (FreeText and
   attachments deferred). Danny asked for "Open" and "Edit URL…" in the pen menu over a
   link; the finger tap and the bookmark UI are my calls, marked above.
+- After the whole-branch review: a save replaces `/Outlines` only when the
+  bookmarks were changed since the file was opened; otherwise the file's
+  outline is left exactly as it was (closed items, positioned destinations
+  and actions survive ink-only saves). A `/Dest` that names its page by
+  index resolves. Adding a bookmark never adopts the entries nested under
+  the one it follows, and removing an entry removes its subtree. Imported
+  links keep their `/Border` (or `/BS /W`) and `/C` through an optional
+  `style` on the link; `/QuadPoints` and `/AP` are still not kept.
+  `SELECTED` counts selected links as well as strokes and images.

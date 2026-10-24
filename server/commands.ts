@@ -23,7 +23,7 @@
  *     DX, DY       the same point in display space (points, origin top-left)
  *     PAGE_WIDTH, PAGE_HEIGHT   the page's crop box size in PDF space
  *     ROTATE       the page's /Rotate (0, 90, 180, 270)
- *     SELECTED     number of selected items (strokes and images), or empty
+ *     SELECTED     number of selected items (strokes, images and links), or empty
  *                  when nothing is selected
  *     SEL_PAGE     page of the selection, 1-based (empty without a selection)
  *     SEL_X, SEL_Y, SEL_W, SEL_H   the selection's bounding box in PDF user
@@ -64,7 +64,7 @@ export interface SelectionContext {
   y: number;
   w: number;
   h: number;
-  /** Number of selected items (strokes and images). */
+  /** Number of selected items (strokes, images and links). */
   count: number;
 }
 

@@ -77,7 +77,7 @@ Saving in server mode:
 
 ## What it does to your PDF
 
-Each stroke becomes an `/Ink` annotation with an appearance stream and per-point pressure in `PDFTron_Pressure_Thickness` arrays. Ink annotations already in a PDF you open become editable strokes. Web links (`/Link` annotations with a URI action to an `http`, `https` or `mailto` address) become editable link boxes and are written back as `/Link` annotations, and the PDF's outline becomes the bookmark list. Other annotations (links to another page, squares) are left alone and cannot be edited.
+Each stroke becomes an `/Ink` annotation with an appearance stream and per-point pressure in `PDFTron_Pressure_Thickness` arrays. Ink annotations already in a PDF you open become editable strokes. Web links (`/Link` annotations with a URI action to an `http`, `https` or `mailto` address) become editable link boxes and are written back as `/Link` annotations with the border and colour they came with, and the PDF's outline becomes the bookmark list. Other annotations (links to another page, squares) are left alone and cannot be edited.
 
 Pressure is drawn as nominal width x (0.4 + pressure). That is an empirical fit to how Xodo renders, which is the app I write notes in. Mice and fingers draw at nominal width.
 
@@ -101,7 +101,7 @@ To prevent large PDFs, on import, objects unreachable from the trailer are delet
 
 ## Links and bookmarks
 
-A link shows as a faint blue box captioned with its label or URL.
+A link shows as a faint blue box captioned, when there is room, with its label or URL.
 
 - A short finger tap on a link opens it in a new tab: not while the pen is down or in range, and not with finger draws on.
 - Over a link, the pen menu starts with **Open** *url* and **Edit URL…**.
@@ -109,7 +109,7 @@ A link shows as a faint blue box captioned with its label or URL.
 - Select picks up a link whose centre is inside the rectangle, so copy, cut, paste and Delete carry links with the strokes. The eraser leaves links alone; select and delete them instead.
 - Adding, editing and deleting links are undo steps.
 
-Bookmarks are the PDF's outline. The toolbar's Bookmarks… list shows them, indented by level; picking one jumps to its page. If the current page has a top-level bookmark, the list ends with Remove "*title*". **Bookmark this page…** (after Add page in the pen menu) asks for a title, today's date by default, and files the bookmark in page order. Bookmark changes are saved with the notebook but are not undo steps. An outline entry whose page pdfink cannot find is greyed out in the list and saved back as a title with no destination.
+Bookmarks are the PDF's outline. The toolbar's Bookmarks… list shows them, indented by level; picking one jumps to its page. If the current page has a top-level bookmark, the list ends with Remove "*title*". **Bookmark this page…** (after Add page in the pen menu) asks for a title, today's date by default, and files the bookmark in page order. Removing a top-level bookmark removes the entries nested under it too. Bookmark changes are saved with the notebook but are not undo steps; until the outline is changed in pdfink, saving leaves it exactly as the file had it. An outline entry whose page pdfink cannot find is greyed out in the list and saved back as a title with no destination.
 
 ## Deep links
 
@@ -137,7 +137,7 @@ While a command runs it can talk to the browser tab it was started from: read th
 
 | Variable | Meaning |
 | --- | --- |
-| `SELECTED` | Number of selected items (strokes and images); empty when nothing is selected. |
+| `SELECTED` | Number of selected items (strokes, images and links); empty when nothing is selected. |
 | `SEL_PAGE` | Page of the selection, 1-based; empty without one. |
 | `SEL_X`, `SEL_Y`, `SEL_W`, `SEL_H` | The selection's bounding box in PDF points, origin bottom-left; empty without one. |
 | `PDFINK_SOCKET` | A Unix socket that relays requests to the page. |
@@ -168,8 +168,8 @@ Links and bookmarks have their own calls. Pages are 0-based here, unlike `$PAGE`
 | `addLink(page, rect, url, { label?, space? })` | Adds a link box as one undo step and returns its id. `space: "pdf"` takes the rect in PDF points, origin bottom-left. A URL that is not `http`, `https` or `mailto` fails with "bad url". |
 | `setLink(id, { url?, label? })` | Changes a link as one undo step; an empty label removes it. |
 | `bookmarks()` | The outline in order: `{ title, page, level }`, `page` null when it could not be resolved. |
-| `addBookmark(page, title, { level? })` | Adds an entry in page order and returns its index. |
-| `removeBookmark(index)` | Removes an entry. |
+| `addBookmark(page, title, { level? })` | Adds an entry in page order, after any deeper entries nested under the one it follows, and returns its index. |
+| `removeBookmark(index)` | Removes an entry and the entries nested under it. |
 
 In Python: `links(page=None)`, `add_link(page, rect, url, label=None, space="page")`, `set_link(id, url=None, label=None)`, `bookmarks()`, `add_bookmark(page, title, level=0)` and `remove_bookmark(index)`.
 
