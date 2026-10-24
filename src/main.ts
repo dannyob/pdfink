@@ -1,4 +1,5 @@
 import { App } from "./app";
+import { installDeepLinks } from "./deeplink";
 import { stylusSim } from "./harness/stylus-sim";
 import { PageLink } from "./bridge-client";
 import { createPdfinkApi } from "./pdfink-api";
@@ -114,6 +115,12 @@ fileInput.onchange = () => {
   fileInput.value = "";
 };
 
+// A long press with a pen or finger makes the browser offer its own context
+// menu anywhere, including over the pen menu and the toolbar. This is a
+// stylus app: the only context menu is ours (right-click on a page still
+// opens it, see App).
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
 window.addEventListener("beforeunload", (e) => {
   if (app.dirty) e.preventDefault();
 });
@@ -168,6 +175,7 @@ void detectStorage(params).then((mode) => {
     void refreshNotebooks();
   }
   if (params.has("new")) void app.newDocument();
-  const openName = params.get("open");
+  installDeepLinks(app);
+  const openName = params.get("f") ?? params.get("open");
   if (openName && mode === "server") void app.openNotebook(openName).then(showCurrentNotebook);
 });

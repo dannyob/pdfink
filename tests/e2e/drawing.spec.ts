@@ -405,3 +405,28 @@ test.describe("barrel-button menu", () => {
     await expect(page.locator("#ctx-menu")).toBeHidden();
   });
 });
+
+test.describe("browser context menu", () => {
+  test("a long press on the pen menu or toolbar never shows the browser's own menu", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => {
+      const v = window.__pdfink.views[0];
+      const c = v.toClient(200, 200);
+      window.__pdfink.openPenMenu(c.clientX, c.clientY);
+    });
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    const prevented = await page.evaluate(() => {
+      const fire = (el: Element) => {
+        const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 });
+        el.dispatchEvent(ev);
+        return ev.defaultPrevented;
+      };
+      return {
+        menu: fire(document.querySelector("#ctx-menu button")!),
+        toolbar: fire(document.querySelector("#tool-pen")!),
+        status: fire(document.querySelector("#status")!),
+      };
+    });
+    expect(prevented).toEqual({ menu: true, toolbar: true, status: true });
+  });
+});

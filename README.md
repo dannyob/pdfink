@@ -99,6 +99,10 @@ To prevent large PDFs, on import, objects unreachable from the trailer are delet
 | p, e, s | pen, eraser, select |
 | Esc | clear selection |
 
+## Deep links
+
+In server mode the address bar follows you: `?f=2026-10.pdf#page=3` names the notebook and the page you are looking at, and while something is selected the hash carries the selection too, as `#page=3;x=323pdf;y=400pdf;w=200pdf;h=200pdf` (PDF points, origin bottom-left, the same space pen-menu commands see in `$X`/`$Y`). The URL is rewritten in place as you scroll or select, so Back is not flooded. Opening such a link opens the notebook, scrolls to the page and restores the selection.
+
 ## Pen-menu commands
 
 In server mode the pen menu can run your own programs on the notebook. Put a `pdfink-commands.conf` in the notebooks folder (or pass `--commands FILE`), one section per menu item:
