@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -69,6 +69,21 @@ function client(socketPath: string) {
   };
 }
 
+/** A client whose connection the bridge has accepted (proved by a bad-json round trip). */
+async function connected(socketPath: string) {
+  const c = client(socketPath);
+  await c.ready;
+  c.send("hello?");
+  expect(await c.next()).toEqual({ error: "bad json" });
+  return c;
+}
+
+/** Counts how often a run's onKill is called. */
+function killCounter() {
+  const k = { n: 0, fn: () => { k.n++; } };
+  return k;
+}
+
 const exit: ExitInfo = { status: 0, signal: null, timedOut: false, stdout: "", changed: false, mtime: null, reload: false };
 const runInfo = { session: "s1", label: "L", detached: false, notebook: "n.pdf" };
 
@@ -84,6 +99,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await bridge.shutdown();
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -304,5 +320,164 @@ describe("Bridge", () => {
     expect(order).toEqual(["kill"]);
     expect(await c.next()).toEqual({ event: "exit" });
     await c.closed;
+  });
+});
+
+describe("Bridge sessions", () => {
+  // Fake only the timeout functions, so the real socket I/O keeps working.
+  const fakeTimers = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+  it("newest page wins for a session and nothing is killed", async () => {
+    const k = killCounter();
+    const run = await bridge.openRun({ ...runInfo, detached: true }, k.fn);
+    fakeTimers();
+    const fresh = new FakePage();
+    bridge.addPage("s1", fresh);
+    expect(page.closed).toBe(true);
+    expect(bridge.hasPage("s1")).toBe(true);
+    vi.advanceTimersByTime(600_000);
+    expect(k.n).toBe(0);
+    const c = await connected(run.socketPath);
+    c.send({ id: 1, call: "state" });
+    await fresh.waitFor(() => fresh.requests().length === 1);
+    expect(page.requests()).toEqual([]);
+    c.destroy();
+  });
+
+  it("kills detached runs after the grace period, not normal ones, and tells both gone", async () => {
+    const kd = killCounter();
+    const kn = killCounter();
+    const d = await bridge.openRun({ ...runInfo, label: "D", detached: true }, kd.fn);
+    const n = await bridge.openRun({ ...runInfo, label: "N" }, kn.fn);
+    const cd = await connected(d.socketPath);
+    const cn = await connected(n.socketPath);
+    fakeTimers();
+    page.close();
+    page.close(); // a second close changes nothing
+    vi.advanceTimersByTime(599_999);
+    expect(kd.n).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(kd.n).toBe(1);
+    expect(kn.n).toBe(0);
+    expect(await cd.next()).toEqual({ event: "gone" });
+    expect(await cd.next()).toEqual({ event: "exit" });
+    expect(await cn.next()).toEqual({ event: "gone" });
+    vi.advanceTimersByTime(600_000);
+    expect(kd.n).toBe(1);
+    expect(kn.n).toBe(0);
+    cd.destroy(); cn.destroy();
+  });
+
+  it("a reconnect inside the grace period cancels the kill", async () => {
+    const k = killCounter();
+    await bridge.openRun({ ...runInfo, detached: true }, k.fn);
+    fakeTimers();
+    page.close();
+    vi.advanceTimersByTime(300_000);
+    const fresh = new FakePage();
+    bridge.addPage("s1", fresh);
+    vi.advanceTimersByTime(600_000);
+    expect(k.n).toBe(0);
+    // The new page going away starts a fresh grace period.
+    fresh.close();
+    vi.advanceTimersByTime(599_999);
+    expect(k.n).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(k.n).toBe(1);
+  });
+
+  it("bye kills detached runs at once", async () => {
+    const kd = killCounter();
+    const kn = killCounter();
+    const ko = killCounter();
+    const other = new FakePage();
+    bridge.addPage("s2", other);
+    other.emit({ bye: true }); // a session with no runs
+    await bridge.openRun({ ...runInfo, detached: true }, kd.fn);
+    await bridge.openRun({ ...runInfo, label: "N" }, kn.fn);
+    await bridge.openRun({ ...runInfo, session: "s2", detached: true }, ko.fn);
+    page.emit({ bye: true });
+    expect(kd.n).toBe(1);
+    expect(kn.n).toBe(0);
+    expect(ko.n).toBe(0);
+  });
+
+  it("dismiss kills just that run", async () => {
+    const ka = killCounter();
+    const kb = killCounter();
+    const ko = killCounter();
+    const a = await bridge.openRun({ ...runInfo, label: "A", detached: true }, ka.fn);
+    await bridge.openRun({ ...runInfo, label: "B", detached: true }, kb.fn);
+    const o = await bridge.openRun({ ...runInfo, session: "s2", detached: true }, ko.fn);
+    page.emit({ dismiss: "nope00" });
+    page.emit({ dismiss: o.id }); // another session's run
+    page.emit({ dismiss: a.id });
+    expect([ka.n, kb.n, ko.n]).toEqual([1, 0, 0]);
+  });
+
+  it("a notebook switch sends the event then kills runs bound to another notebook", async () => {
+    const kKeep = killCounter();
+    const kGone = killCounter();
+    const kNormal = killCounter();
+    const keep = await bridge.openRun({ ...runInfo, label: "K", detached: true, notebook: "b.pdf" }, kKeep.fn);
+    const gone = await bridge.openRun({ ...runInfo, label: "G", detached: true, notebook: "a.pdf" }, kGone.fn);
+    await bridge.openRun({ ...runInfo, label: "N", notebook: "a.pdf" }, kNormal.fn);
+    const ck = await connected(keep.socketPath);
+    const cg = await connected(gone.socketPath);
+    ck.send({ subscribe: ["notebook"] });
+    cg.send({ subscribe: ["notebook"] });
+    // A round trip each proves the subscribe lines have been read.
+    ck.send("x"); cg.send("x");
+    expect(await ck.next()).toEqual({ error: "bad json" });
+    expect(await cg.next()).toEqual({ error: "bad json" });
+    page.emit({ notebook: "b.pdf" });
+    expect([kKeep.n, kGone.n, kNormal.n]).toEqual([0, 1, 0]);
+    expect(await ck.next()).toEqual({ event: "notebook", data: { name: "b.pdf" } });
+    expect(await cg.next()).toEqual({ event: "notebook", data: { name: "b.pdf" } });
+    expect(await cg.next()).toEqual({ event: "exit" });
+    ck.destroy(); cg.destroy();
+  });
+
+  it("a second detached run with the same label replaces the first", async () => {
+    const k1 = killCounter();
+    const k2 = killCounter();
+    const kOther = killCounter();
+    const kNormal = killCounter();
+    await bridge.openRun({ ...runInfo, detached: true }, k1.fn);
+    await bridge.openRun({ ...runInfo, session: "s2", detached: true }, kOther.fn);
+    await bridge.openRun({ ...runInfo }, kNormal.fn);
+    await bridge.openRun({ ...runInfo, detached: true }, k2.fn);
+    expect([k1.n, k2.n, kOther.n, kNormal.n]).toEqual([1, 0, 0, 0]);
+  });
+
+  it("requests work again after the same session reconnects", async () => {
+    const run = await bridge.openRun(runInfo, () => {});
+    const c = await connected(run.socketPath);
+    page.close();
+    c.send({ id: 1, call: "state" });
+    expect(await c.next()).toEqual({ id: 1, error: "page gone" });
+    const fresh = new FakePage();
+    bridge.addPage("s1", fresh);
+    c.send({ id: 2, call: "state" });
+    await fresh.waitFor(() => fresh.requests().length === 1);
+    fresh.emit({ run: run.id, id: fresh.requests()[0].id, result: "back" });
+    expect(await c.next()).toEqual({ id: 2, result: "back" });
+    c.destroy();
+  });
+
+  it("shutdown kills all runs and removes sockets", async () => {
+    const ks = [killCounter(), killCounter(), killCounter()];
+    const runs = [
+      await bridge.openRun({ ...runInfo, detached: true }, ks[0].fn),
+      await bridge.openRun({ ...runInfo, label: "N" }, ks[1].fn),
+      await bridge.openRun({ ...runInfo, session: null }, ks[2].fn),
+    ];
+    fakeTimers();
+    page.close(); // leaves a grace timer running
+    await bridge.shutdown();
+    expect(ks.map((k) => k.n)).toEqual([1, 1, 1]);
+    for (const r of runs) expect(fs.existsSync(r.socketPath)).toBe(false);
+    expect(bridge.runsFor("s1")).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

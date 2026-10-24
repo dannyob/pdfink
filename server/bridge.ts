@@ -29,6 +29,29 @@
  * live page is answered at once with "page gone", as are requests still
  * waiting when the page goes away. A client that half-closes (ends its write
  * side) still gets its pending replies; then the server ends the connection.
+ *
+ * Sessions. A session has at most one live page; a new page for it closes
+ * the old one (newest wins). A detached run outlives its page for a grace
+ * period (graceMs, default ten minutes) so that a reload or reconnect finds it
+ * still going; a normal run is never killed because its page went away.
+ *
+ *   - page closes:          a grace timer starts; a new page for the session
+ *                           cancels it. When it fires, every connection of every
+ *                           run on the session gets {"event":"gone"}, then each
+ *                           detached run of the session is killed.
+ *   - {"bye":true}:         the page is leaving for good; the session's detached
+ *                           runs are killed at once.
+ *   - {"dismiss":R}:        run R (of this session) is killed.
+ *   - {"notebook":N}:       subscribers on the session get
+ *                           {"event":"notebook","data":{"name":N}}, then the
+ *                           session's detached runs bound to another notebook
+ *                           are killed.
+ *   - a new detached run with the same label and session as a live detached
+ *     run kills the old one first.
+ *   - shutdown() kills every run and removes every socket.
+ *
+ * Killing a run sends {"event":"exit"} to its connections and calls its onKill
+ * once; the run stays until closeRun.
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -90,6 +113,14 @@ interface Run {
   server: net.Server;
   conns: Set<Conn>;
   onKill: () => void;
+  /** killRun has been called; onKill is not called again. */
+  killed: boolean;
+}
+
+interface Session {
+  /** The live page, or null while the session waits out its grace period. */
+  socket: PageSocket | null;
+  graceTimer: NodeJS.Timeout | null;
 }
 
 /** Calls `onLine` for each "\n"-terminated line; buffers partial lines however long. */
@@ -134,7 +165,7 @@ export class Bridge {
   private readonly socketDir: string;
   readonly graceMs: number;
   private readonly runs = new Map<string, Run>();
-  private readonly pages = new Map<string, PageSocket>();
+  private readonly sessions = new Map<string, Session>();
   private connCount = 0;
 
   constructor(opts: BridgeOptions = {}) {
@@ -143,29 +174,45 @@ export class Bridge {
   }
 
   addPage(session: string, socket: PageSocket): void {
+    let s = this.sessions.get(session);
+    if (!s) this.sessions.set(session, (s = { socket: null, graceTimer: null }));
+    const entry = s;
+    if (entry.graceTimer) clearTimeout(entry.graceTimer);
+    entry.graceTimer = null;
     // A new page replaces the old one; what the old one was asked is lost.
-    const previous = this.pages.get(session);
-    this.pages.set(session, socket);
-    if (previous) this.failPending(session);
-    socket.onMessage((text) => { if (this.pages.get(session) === socket) this.fromPage(session, text); });
-    socket.onClose(() => {
-      if (this.pages.get(session) !== socket) return;
-      this.pages.delete(session);
+    const previous = entry.socket;
+    entry.socket = socket;
+    if (previous) {
       this.failPending(session);
+      previous.close();
+    }
+    socket.onMessage((text) => { if (entry.socket === socket) this.fromPage(session, text); });
+    socket.onClose(() => {
+      if (entry.socket !== socket) return;
+      entry.socket = null;
+      this.failPending(session);
+      if (entry.graceTimer) clearTimeout(entry.graceTimer);
+      entry.graceTimer = setTimeout(() => this.graceExpired(session, entry), this.graceMs);
     });
   }
 
   hasPage(session: string): boolean {
-    return this.pages.has(session);
+    return !!this.sessions.get(session)?.socket;
   }
 
   async openRun(info: Omit<RunInfo, "id" | "socketPath">, onKill: () => void): Promise<RunInfo> {
     fs.mkdirSync(this.socketDir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(this.socketDir, 0o700);
+    if (info.detached) {
+      for (const r of this.runs.values()) {
+        if (r.info.detached && r.info.session === info.session && r.info.label === info.label) this.killRun(r.info.id);
+      }
+    }
     let id = newRunId();
     while (this.runs.has(id)) id = newRunId();
     const socketPath = path.join(this.socketDir, `${id}.sock`);
     fs.rmSync(socketPath, { force: true });
-    const run: Run = { info: { ...info, id, socketPath }, server: net.createServer({ allowHalfOpen: true }), conns: new Set(), onKill };
+    const run: Run = { info: { ...info, id, socketPath }, server: net.createServer({ allowHalfOpen: true }), conns: new Set(), onKill, killed: false };
     run.server.on("connection", (socket) => this.accept(run, socket));
     await new Promise<void>((resolve, reject) => {
       run.server.once("error", reject);
@@ -187,7 +234,8 @@ export class Bridge {
 
   killRun(id: string): void {
     const run = this.runs.get(id);
-    if (!run) return;
+    if (!run || run.killed) return;
+    run.killed = true;
     for (const conn of run.conns) write(conn, { event: "exit" });
     run.onKill();
   }
@@ -197,7 +245,11 @@ export class Bridge {
   }
 
   async shutdown(): Promise<void> {
-    await Promise.all([...this.runs.values()].map((r) => this.dispose(r)));
+    for (const s of this.sessions.values()) if (s.graceTimer) clearTimeout(s.graceTimer);
+    this.sessions.clear();
+    const runs = [...this.runs.values()];
+    for (const r of runs) this.killRun(r.info.id);
+    await Promise.all(runs.map((r) => this.dispose(r)));
   }
 
   /** Stop listening, end every connection and remove the socket file. */
@@ -223,6 +275,7 @@ export class Bridge {
   }
 
   private fromClient(run: Run, conn: Conn, line: string): void {
+    if (!this.runs.has(run.info.id)) return; // the run is closing
     const msg = parse(line);
     if (!msg) return write(conn, { error: "bad json" });
     if (Array.isArray(msg.subscribe)) {
@@ -243,13 +296,7 @@ export class Bridge {
   private fromPage(session: string, text: string): void {
     const msg = parse(text);
     if (!msg) return;
-    if (typeof msg.event === "string") {
-      for (const run of this.runs.values()) {
-        if (run.info.session !== session) continue;
-        for (const conn of run.conns) if (conn.subs.has(msg.event)) write(conn, { event: msg.event, data: msg.data });
-      }
-      return;
-    }
+    if (typeof msg.event === "string") return this.fanOut(session, msg.event, msg.data);
     if (typeof msg.run === "string" && typeof msg.id === "string") {
       const run = this.runs.get(msg.run);
       if (!run || run.info.session !== session) return;
@@ -258,7 +305,41 @@ export class Bridge {
       if (!conn || !conn.pending.has(msg.id)) return;
       this.reply(conn, msg.id, "error" in msg ? { error: msg.error } : { result: msg.result });
     }
-    // bye, dismiss and notebook belong to session handling.
+    if (msg.bye === true) return this.killDetached(session, () => true);
+    if (typeof msg.dismiss === "string") {
+      if (this.runs.get(msg.dismiss)?.info.session === session) this.killRun(msg.dismiss);
+      return;
+    }
+    if (typeof msg.notebook === "string") {
+      const name = msg.notebook;
+      this.fanOut(session, "notebook", { name });
+      this.killDetached(session, (r) => r.info.notebook !== name);
+    }
+  }
+
+  /** Send an event to the session's connections subscribed to it. */
+  private fanOut(session: string, event: string, data: unknown): void {
+    for (const run of this.runs.values()) {
+      if (run.info.session !== session) continue;
+      for (const conn of run.conns) if (conn.subs.has(event)) write(conn, { event, data });
+    }
+  }
+
+  /** Kill the session's detached runs that match. */
+  private killDetached(session: string, match: (run: Run) => boolean): void {
+    for (const run of [...this.runs.values()]) {
+      if (run.info.session === session && run.info.detached && match(run)) this.killRun(run.info.id);
+    }
+  }
+
+  /** The session's page did not come back in time. */
+  private graceExpired(session: string, entry: Session): void {
+    entry.graceTimer = null;
+    if (this.sessions.get(session) === entry) this.sessions.delete(session);
+    for (const run of this.runs.values()) {
+      if (run.info.session === session) for (const conn of run.conns) write(conn, { event: "gone" });
+    }
+    this.killDetached(session, () => true);
   }
 
   /** Answer a pending request, ending a half-closed connection once nothing is left. */
@@ -278,6 +359,6 @@ export class Bridge {
   }
 
   private toPage(session: string, frame: Json): void {
-    this.pages.get(session)?.send(JSON.stringify(frame));
+    this.sessions.get(session)?.socket?.send(JSON.stringify(frame));
   }
 }
