@@ -131,6 +131,10 @@ test.describe("page bridge", () => {
     await expect(page.locator("#status")).toHaveText("Buttons attached");
     await expect(page.locator("#cmd-buttons button", { hasText: "Finish" })).toBeVisible({ timeout: 10_000 });
     await openMenuAt(page, 0, 300, 400);
+    await page.locator("#ctx-menu .submenu", { hasText: "Commands" }).click();
+    await expect(page.locator("#ctx-menu .lbl", { hasText: "Attached: Buttons" })).toBeVisible();
+    await expect(page.locator("#ctx-menu .menuitem", { hasText: "Say hello" })).toBeVisible();
+    await page.locator("#ctx-menu .back").click();
     expect(await menuHas(page, "Say hello")).toBe(true);
     await runMenu(page, "Say hello");
     await expect(page.locator("#status")).toHaveText("hello pressed", { timeout: 10_000 });

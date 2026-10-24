@@ -57,7 +57,8 @@ export class ContextMenu {
     );
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !this.el.hidden) {
-        e.stopPropagation();
+        // Other document-level handlers (the app clears the selection on Escape) must not see it.
+        e.stopImmediatePropagation();
         if (this.depth > 0) this.back();
         else this.hide();
       }

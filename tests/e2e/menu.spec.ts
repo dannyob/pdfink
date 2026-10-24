@@ -1,5 +1,5 @@
 import { test } from "@playwright/test";
-import { expect, openApp } from "./helpers";
+import { expect, line, openApp, penStroke, state, toClient } from "./helpers";
 
 /**
  * The context menu component on its own: icon rows, a submenu level that
@@ -132,5 +132,54 @@ test.describe("context menu component", () => {
       document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 8, pointerType: "pen", clientX: 5, clientY: 5 }));
     });
     await expect(page.locator("#ctx-menu")).toBeHidden();
+  });
+
+  test("a hovered checked tile keeps its fill", async ({ page }) => {
+    await openApp(page);
+    await showMenu(page, 200, 200);
+    const tile = page.locator("#ctx-menu .tile[aria-label='b']");
+    const accent = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim());
+    await tile.hover();
+    const bg = await tile.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const expected = await page.evaluate((c) => {
+      const d = document.createElement("div");
+      d.style.color = c;
+      document.body.appendChild(d);
+      const v = getComputedStyle(d).color;
+      d.remove();
+      return v;
+    }, accent);
+    expect(bg).toBe(expected);
+  });
+
+  test("an overflowing level can be scrolled with a finger", async ({ page }) => {
+    await page.setViewportSize({ width: 400, height: 420 });
+    await openApp(page);
+    await page.evaluate(() => {
+      window.__hits = [];
+      window.__pdfink.menu.show(10, 10, [
+        { kind: "submenu", label: "Many", items: Array.from({ length: 30 }, (_, i) => ({ label: `Row ${i + 1}`, action: () => window.__hits.push(String(i + 1)) })) },
+      ]);
+    });
+    await page.locator("#ctx-menu .submenu").click();
+    const m = page.locator("#ctx-menu");
+    expect(await m.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    expect(await m.evaluate((el) => getComputedStyle(el).touchAction)).toBe("pan-y");
+    await m.evaluate((el) => (el.scrollTop = el.scrollHeight));
+    await expect(page.locator("#ctx-menu .menuitem", { hasText: "Row 30" })).toBeInViewport();
+  });
+
+  test("Escape as Back keeps the selection", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 100, 300, 100));
+    await page.evaluate(() => window.__pdfink.selectRect(0, { x: 90, y: 90, w: 220, h: 20 }));
+    expect((await state(page)).selection).not.toBeNull();
+    const [cx, cy] = await toClient(page, 0, 300, 300);
+    await page.mouse.click(cx, cy, { button: "right" });
+    await page.locator("#ctx-menu .submenu", { hasText: "Commands" }).click();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    expect(await page.evaluate(() => window.__pdfink.menu.depth)).toBe(0);
+    expect((await state(page)).selection).not.toBeNull();
   });
 });

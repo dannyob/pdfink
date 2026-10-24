@@ -32,6 +32,7 @@ export interface PdfinkApi {
   /** Pick one of `options`; null when cancelled. */
   choose(message: string, options: string[]): Promise<string | null>;
   /** Add (or replace) a command button in the pen menu (default) or the toolbar. */
+  /** `run` is set by the bridge to the attached command's label and groups the button in the menu's Commands level. */
   addButton(id: string, label: string, opts?: { where?: "menu" | "toolbar"; run?: string }): void;
   /** Remove a command button. */
   removeButton(id: string): void;
