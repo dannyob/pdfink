@@ -484,16 +484,27 @@ export class App {
     }
   }
 
-  async addPage(): Promise<void> {
+  /**
+   * Append a blank page. By default the view moves to the new page; with
+   * `keepView` the scroll position is kept, so a page added from the button
+   * under the last page simply appears there and nothing on screen moves.
+   */
+  async addPage(opts: { keepView?: boolean } = {}): Promise<void> {
     if (!this.baseBytes) return this.newDocument();
     try {
       const bytes = await appendBlankPage(this.baseBytes);
       const last = this.pages[this.pages.length - 1];
       const pages = [...this.pages, { width: last?.width ?? 612, height: last?.height ?? 792, strokes: [], images: [], links: [] }];
+      const { scrollTop, scrollLeft } = this.container;
       await this.setDocument(bytes, pages);
       this.baseRevision += 1;
       this.markDirty();
-      this.scrollToPage(pages.length - 1);
+      if (opts.keepView) {
+        this.container.scrollTop = scrollTop;
+        this.container.scrollLeft = scrollLeft;
+      } else {
+        this.scrollToPage(pages.length - 1);
+      }
       this.setStatus();
     } catch (err) {
       console.error(err);
@@ -654,7 +665,7 @@ export class App {
     b.type = "button";
     b.textContent = "+ Add page";
     b.title = "Add a blank page at the end";
-    b.addEventListener("click", () => void this.addPage());
+    b.addEventListener("click", () => void this.addPage({ keepView: true }));
     return b;
   })();
   /** Pointer whose held barrel button already opened the menu, so a hover doesn't reopen it. */

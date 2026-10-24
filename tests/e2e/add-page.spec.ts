@@ -27,4 +27,35 @@ test.describe("Add page button under the last page", () => {
     await openLocalApp(page);
     await expect(page.locator("#add-page-below")).toBeVisible();
   });
+
+  test("adding from the button keeps the view where it was", async ({ page }) => {
+    await openApp(page);
+    const btn = page.locator("#add-page-below");
+    await btn.scrollIntoViewIfNeeded();
+    const before = await page.evaluate(() => {
+      const c = document.getElementById("pages")!;
+      const first = c.querySelector(".page")!.getBoundingClientRect();
+      return { scrollTop: c.scrollTop, firstTop: first.top, firstBottom: first.bottom };
+    });
+    expect(before.scrollTop).toBeGreaterThan(0);
+    await btn.click();
+    await expect.poll(async () => (await state(page)).pages.length).toBe(2);
+    const after = await page.evaluate(() => {
+      const c = document.getElementById("pages")!;
+      const first = c.querySelector(".page")!.getBoundingClientRect();
+      return { scrollTop: c.scrollTop, firstTop: first.top, firstBottom: first.bottom };
+    });
+    expect(Math.abs(after.scrollTop - before.scrollTop)).toBeLessThanOrEqual(1);
+    expect(Math.abs(after.firstTop - before.firstTop)).toBeLessThanOrEqual(1);
+    // The new page starts where the button used to be, below the old last page.
+    const second = (await page.locator("#pages .page").nth(1).boundingBox())!;
+    expect(second.y).toBeGreaterThanOrEqual(before.firstBottom);
+  });
+
+  test("Add page from the toolbar still brings the new page into view", async ({ page }) => {
+    await openApp(page);
+    await page.click("#btn-addpage");
+    await expect.poll(async () => (await state(page)).pages.length).toBe(2);
+    await expect(page.locator("#pages .page").nth(1)).toBeInViewport();
+  });
 });
