@@ -665,13 +665,14 @@ export class App {
       return;
     }
     const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
+    const changed = this.changedByOther(name, run.changed, run.mtime);
     if (run.status !== 0) {
       const why = run.timedOut ? "timed out" : firstLine(run.stderr) || firstLine(run.stdout) || `exit ${run.status ?? run.signal}`;
       this.setStatus(`${cmd.label} failed: ${why}`);
-      if (run.changed) this.noteExternalChange(name, run.mtime);
+      if (changed) this.noteExternalChange(name, run.mtime);
       return;
     }
-    if (run.changed) {
+    if (changed) {
       if (run.reload) {
         await this.reloadNotebook(name);
       } else {
@@ -684,6 +685,17 @@ export class App {
     this.setStatus(said ? `${cmd.label}: ${said}` : `${cmd.label} done`);
   }
 
+  /**
+   * Whether a finished command's "the file changed" is someone else's doing.
+   * The page may have saved during the run (an autosave in a long or detached
+   * one); when the file's mtime at exit is the one our last save got, the
+   * last writer was us and there is nothing to reload or adopt.
+   */
+  changedByOther(name: string, changed: boolean, mtime: number | null): boolean {
+    if (!changed) return false;
+    return !(this.source.kind === "server" && this.source.name === name && mtime !== null && mtime === this.source.mtime);
+  }
+
   /** The file changed under us (by a command we ran): accept its new mtime so the next save doesn't conflict. */
   noteExternalChange(name: string, mtime: number | null): void {
     if (this.source.kind === "server" && this.source.name === name && mtime !== null) {
@@ -694,6 +706,8 @@ export class App {
 
   /** Reopen the notebook from disk, keeping zoom and scroll position. */
   async reloadNotebook(name: string): Promise<boolean> {
+    // Not under the pen: a reload rebuilds the pages and would drop a stroke in progress.
+    while (this.pointers.size) await new Promise((r) => setTimeout(r, 200));
     const scale = this.scale;
     const { scrollTop, scrollLeft } = this.container;
     const ok = await this.openNotebook(name);

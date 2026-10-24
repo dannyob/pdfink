@@ -213,6 +213,46 @@ test.describe("pen-menu commands", () => {
     expect(inkPathCount(inkAnnots(snap, 0)[0])).toBe(1);
   });
 
+  test("a reload waits for the pen to lift, keeping the stroke in progress", async ({ page }) => {
+    const name = unique("lift");
+    await putNotebook(name, await createBlankPdf(1));
+    await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
+    const [x0, y0] = await toClient(page, 0, 100, 100);
+    const [x1, y1] = await toClient(page, 0, 300, 100);
+    await page.evaluate(
+      ([ax, ay, n]) => {
+        const w = window as unknown as { __reloads: number; __reload: Promise<boolean>; __target: Element };
+        w.__reloads = 0;
+        window.__pdfink.on("notebook", () => w.__reloads++);
+        const target = document.elementFromPoint(ax, ay)!;
+        w.__target = target;
+        const ev = (type: string, x: number, y: number, down: boolean) =>
+          target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, pointerType: "pen", pointerId: 2, isPrimary: true, pressure: down ? 0.6 : 0, buttons: down ? 1 : 0, button: type === "pointermove" ? -1 : 0 }));
+        ev("pointermove", ax, ay, false);
+        ev("pointerdown", ax, ay, true);
+        // A command's exit asks for a reload while the pen is still down.
+        w.__reload = window.__pdfink.reloadNotebook(n);
+      },
+      [x0, y0, name] as const,
+    );
+    await page.waitForTimeout(600);
+    expect(await page.evaluate(() => (window as unknown as { __reloads: number }).__reloads)).toBe(0);
+    await page.evaluate(
+      ([ax, ay, bx, by]) => {
+        const w = window as unknown as { __target: Element };
+        const ev = (type: string, x: number, y: number, down: boolean) =>
+          w.__target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, pointerType: "pen", pointerId: 2, isPrimary: true, pressure: down ? 0.6 : 0, buttons: down ? 1 : 0, button: type === "pointermove" ? -1 : 0 }));
+        for (let i = 1; i <= 10; i++) ev("pointermove", ax + ((bx - ax) * i) / 10, ay + ((by - ay) * i) / 10, true);
+        ev("pointerup", bx, by, false);
+      },
+      [x0, y0, x1, y1] as const,
+    );
+    expect(await page.evaluate(() => (window as unknown as { __reload: Promise<boolean> }).__reload)).toBe(true);
+    expect(await page.evaluate(() => (window as unknown as { __reloads: number }).__reloads)).toBe(1);
+    // The stroke was saved before the reload and came back with it.
+    expect((await state(page)).pages[0].strokes).toHaveLength(1);
+  });
+
   test("a page added while a command touches the file still saves", async ({ page }) => {
     const name = unique("touch");
     await putNotebook(name, await createBlankPdf(1));

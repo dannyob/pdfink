@@ -222,8 +222,10 @@ export class PageLink {
     this.app.progress(null);
     // A normal run's result comes back on its HTTP request, which handles the
     // file change itself; only a detached run's change is ours to apply.
-    if (!info?.detached || !exit.changed || notebook === undefined) return;
+    if (!info?.detached || notebook === undefined) return;
     if (this.app.source.kind !== "server" || this.app.source.name !== notebook) return;
+    // The page's own autosaves during the run change the file too.
+    if (!this.app.changedByOther(notebook, exit.changed, exit.mtime)) return;
     if (exit.reload) await this.app.reloadNotebook(notebook);
     else this.app.noteExternalChange(notebook, exit.mtime);
   }

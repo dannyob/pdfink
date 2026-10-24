@@ -153,6 +153,40 @@ test.describe("page bridge", () => {
     await expect(page.locator("#cmd-buttons button")).toHaveCount(0);
   });
 
+  for (const label of ["Buttons", "Finish and reload"]) {
+    test(`a detached run's exit does not count the page's own autosaves as a change (${label})`, async ({ page }) => {
+      const name = await openNotebook(page, "own");
+      await page.evaluate(() => {
+        window.__pdfink.autosaveDelay = 200;
+        const w = window as unknown as { __statuses: string[] };
+        w.__statuses = [];
+        const el = document.getElementById("status")!;
+        new MutationObserver(() => w.__statuses.push(el.textContent ?? "")).observe(el, { childList: true, characterData: true, subtree: true });
+      });
+      await openMenuAt(page, 0, 300, 400);
+      await runMenu(page, label);
+      await expect(page.locator("#runs .run")).toHaveCount(1, { timeout: 10_000 });
+      const finish = page.locator("#cmd-buttons button", { hasText: "Finish" });
+      await expect(finish).toBeVisible({ timeout: 10_000 });
+      // The page autosaves while the run is going: the file changes, but by our hand.
+      await penStroke(page, 0, line(100, 100, 200, 100));
+      await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving && window.__pdfink.lastSaved !== null, null, { timeout: 10_000 });
+      const before = await state(page);
+      await finish.click();
+      await expect(page.locator("#runs .run")).toHaveCount(0, { timeout: 10_000 });
+      await page.waitForTimeout(1000); // room for a reload, were one coming
+      const after = await state(page);
+      expect(after.undo).toBe(before.undo); // not reloaded: the undo history is intact
+      expect(after.source).toEqual(before.source);
+      // A further stroke autosaves without a conflict.
+      await penStroke(page, 0, line(100, 140, 200, 140));
+      await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving, null, { timeout: 10_000 });
+      const statuses = await page.evaluate(() => (window as unknown as { __statuses: string[] }).__statuses);
+      expect(statuses.filter((t) => /changed on disk|Could not save/.test(t))).toEqual([]);
+      expect((await state(page)).source.name).toBe(name);
+    });
+  }
+
   test("a browser refresh keeps the session id", async ({ page }) => {
     await openNotebook(page, "session");
     const before = await page.evaluate(() => sessionStorage.getItem("pdfink.session"));
