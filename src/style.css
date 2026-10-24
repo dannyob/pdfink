@@ -102,6 +102,12 @@ button.tool.active { background: var(--accent); color: #fff; border-color: var(-
   position: relative; margin: 0 auto 16px; background: #fff;
   box-shadow: 0 1px 4px rgba(0,0,0,0.35);
 }
+#add-page-below {
+  display: block; margin: 8px auto 0; min-height: 44px; padding: 0 22px; font-size: 15px;
+  border: 1px dashed #9aa3b2; border-radius: 10px; background: #f7f8fa; color: #2f4a7a;
+  touch-action: manipulation;
+}
+#add-page-below:hover { background: #eef1f6; }
 .page canvas { position: absolute; left: 0; top: 0; display: block; }
 .page canvas.ink { touch-action: inherit; }
 .page.current { outline: 2px solid rgba(47, 74, 122, 0.4); }

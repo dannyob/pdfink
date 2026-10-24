@@ -532,6 +532,7 @@ export class App {
       this.container.appendChild(v.el);
       this.observer.observe(v.el);
     }
+    this.container.appendChild(this.addPageBtn);
     this.fitWidth();
   }
 
@@ -646,6 +647,16 @@ export class App {
 
   /** The pen's context menu: barrel button (when it isn't set to erase) or right-click. */
   readonly menu = new ContextMenu();
+  /** "+ Add page", kept as the last child of the pages container, centred under the last page. */
+  private readonly addPageBtn: HTMLButtonElement = (() => {
+    const b = document.createElement("button");
+    b.id = "add-page-below";
+    b.type = "button";
+    b.textContent = "+ Add page";
+    b.title = "Add a blank page at the end";
+    b.addEventListener("click", () => void this.addPage());
+    return b;
+  })();
   /** Pointer whose held barrel button already opened the menu, so a hover doesn't reopen it. */
   private menuPointer: number | null = null;
   private lastPointerType = "";
