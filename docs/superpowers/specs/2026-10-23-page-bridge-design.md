@@ -1,6 +1,7 @@
 # Page bridge: pen-menu commands that talk to the page
 
-Status: draft for Danny's approval, 2026-10-23.
+Status: for Danny's approval, 2026-10-23. Reviewed once by a fresh builder; the
+"Calls made after review" section records what that settled.
 
 ## Intent
 
@@ -99,14 +100,17 @@ flag in the config; that was considered and dropped.
 
 - The page opens a WebSocket to `/api/page?session=<id>` whenever it is in
   server mode. The session id is random, created once per tab and kept in
-  `sessionStorage`, so an in-place reload (`reload = true`) reconnects as the
-  same session. Reconnect with backoff; a connection drop does not disturb
-  editing.
+  `sessionStorage`, so a browser refresh comes back as the same session.
+  (`reload = true` and `pdfink.reload()` are the in-app reopen,
+  `reloadNotebook()`; they never drop the socket.) Reconnect with backoff; a
+  connection drop does not disturb editing. A closing tab sends `{"bye":true}`
+  from `pagehide` when it can.
 - Messages both ways are JSON text frames.
-- The command POST (`/api/commands/<id>`) body gains `session` (the id) and
-  `selection` (the current selection's rectangle in display points, or
-  null), so the server can route the command's socket to that page and fill
-  the selection environment variables.
+- The command POST (`/api/commands/<id>`) body gains `session` (the id,
+  optional so an old page still runs bridge-less commands) and `selection`
+  (`{page, rect}` in display points, or null; the selection may be on a
+  different page from the menu point), so the server can route the command's
+  socket to that page and fill the selection environment variables.
 
 ### 2. Server to command: a Unix socket per run
 
@@ -153,8 +157,11 @@ harness). Methods, all returning plain JSON-able values:
 
 - Inspect: `state()` (today's `getState()`), `notebook()` (`{name, pages,
   page, dirty}`), `selection()` (`{page, rect, pdfRect, strokeIds, imageIds}`
-  or null; `rect` in page points top-left, `pdfRect` in PDF points
-  bottom-left), `selectionInk()` (the selected strokes with points, pressure,
+  or null; `rect` is the rectangle handed to commands: the union of the
+  marquee and the bounds of the selected strokes and images, so nothing
+  selected is cropped; `marquee` and `bounds` are also given separately;
+  all in page points, top-left origin, with `pdfRect` the same union in PDF
+  points, bottom-left origin), `selectionInk()` (the selected strokes with points, pressure,
   colour and width, in page points), `selectionPng({scale})` (base64 PNG of
   the selected region as the page shows it: page background and ink; the
   existing clipboard renderer is the starting point), `pagePng(page, {scale})`.
@@ -162,14 +169,18 @@ harness). Methods, all returning plain JSON-able values:
   `progress(message | null)` (a persistent line while a command works, cleared
   with null and on exit), `ask(message, {default})` → string or null,
   `confirm(message)` → boolean, `choose(message, options)` → the chosen
-  option or null, `addButton(id, label)` / `removeButton(id)` (pressing a
-  button emits a `button` event with the id; buttons of a run are removed
-  when it exits).
+  option or null, `addButton(id, label, {where})` / `removeButton(id)`
+  (pressing a button emits a `button` event with the id; buttons of a run
+  are removed when it exits; `where` is `"menu"`, an entry in the pen menu
+  below the commands, which is the default because that is where the pen
+  already is, or `"toolbar"`, a button in the header bar).
 - Act: `select(page, rect)`, `clearSelection()`, `setTool(tool)`, `save()`,
   `reload()`, `undo()`, `redo()`, `addPage()`, `scrollToPage(page)`.
 - Events available to `subscribe`: `selection` (changed or cleared), `save`,
-  `page` (the page under the pen changed), `button`, `stroke` (a stroke
-  finished; data is the stroke in page points), `exit` (own run ended).
+  `page` (the page under the pen changed), `notebook` (the tab opened a
+  different notebook), `button`, `stroke` (a stroke finished; data is the
+  stroke in page points), `exit` (the server is about to end this run; sent
+  just before SIGTERM).
 
 Dialogs (`ask`, `confirm`, `choose`) are in-page elements that work with a
 stylus and on iOS, not `window.prompt`. Only one dialog shows at a time;
@@ -181,15 +192,25 @@ a second request queues.
   process exits, with stdout, stderr, exit status, `changed` and `reload`.
   The bridge is available for the whole run, so a normal command can still
   ask questions and show progress before it exits. `timeout` as today.
+- A normal run is never ended because its page went away: `journal-page.py`
+  must finish even when the tablet is put down and the tab suspended. Bridge
+  requests from a run whose page is gone get `{"error":"page gone"}`.
 - `detach = true`: the response arrives once the process is running, with
-  `{detached: true, run: id}`. The page shows an "attached" chip with the
-  command's label and a dismiss control. `timeout` defaults to unlimited
-  (`0`) for detached commands and still applies if set.
-- A run is killed (process group, SIGTERM then SIGKILL, as today) when: its
-  page's session has been disconnected for 30 seconds (an in-place reload
-  reconnects well inside that), Danny dismisses it from the chip, the server
-  shuts down, or its timeout fires. A detached run that exits by itself
-  clears its chip through the `exited` message.
+  `{detached: true, run: id}`. The page shows an "attached" chip in the
+  toolbar with the command's label and a dismiss control. `timeout` defaults
+  to unlimited (`0`) for detached commands and still applies if set.
+- A detached run is killed (process group, SIGTERM then SIGKILL, as today)
+  when: its tab says goodbye or opens a different notebook (its `$PDF` would
+  be stale), its session has been silent for ten minutes (tablets drop
+  WebSockets within seconds of being backgrounded, so a short grace would
+  kill runs every time Danny switches apps), Danny dismisses it from the
+  chip, the server shuts down, or its timeout fires. A detached run that
+  exits by itself clears its chip through the `exited` message.
+- File changes: a run that rewrites the PDF calls `pdfink.reload()` afterwards;
+  that is the sanctioned path and what the demos do. The server also stats
+  the file when any run exits and puts `changed`, `mtime` and `reload`
+  (honouring `reload = true`) into the `exited` message, so the page adopts
+  the new mtime instead of raising a conflict on its next autosave.
 - The server keeps at most one detached run per label per session; starting
   the same detached command again replaces the earlier run.
 
@@ -202,7 +223,8 @@ All of today's variables, plus:
 | `PDFINK_SOCKET` | path of the run's Unix socket |
 | `PDFINK_RUN` | the run id |
 | `SELECTED` | number of selected strokes and images, or empty when nothing is selected |
-| `SEL_X`, `SEL_Y`, `SEL_W`, `SEL_H` | the selection rectangle in PDF points, origin bottom-left (empty when none) |
+| `SEL_PAGE` | 1-based page the selection is on (empty when none) |
+| `SEL_X`, `SEL_Y`, `SEL_W`, `SEL_H` | the selection rectangle (marquee united with the selected items' bounds) in PDF points, origin bottom-left (empty when none) |
 
 ### 7. Python library and demos
 
@@ -214,7 +236,9 @@ All of today's variables, plus:
   `choose()`, `toast()`, `progress()`, `add_button()`, `select()`, …),
   `Page.events(*names)` as a generator, `Page.close()` and context-manager
   support. Requests have a timeout (default 60 s; dialogs wait indefinitely
-  unless told otherwise).
+  unless told otherwise). `toast()` and `progress()` are fire-and-forget and
+  never raise when the page is gone; `ask()`, `confirm()`, `choose()` and
+  data calls raise `PageGone`.
 - `tools/describe-selection.py`: a normal (non-detached) demo. Takes the
   selection PNG, asks a vision model through `llm` what it shows, and offers
   the answer through `choose` (copy to status / print / cancel). Degrades to
@@ -255,3 +279,26 @@ All of today's variables, plus:
 - Base64 PNG size limits and the `scale` default (3 px per point matches the
   clipboard renderer).
 - How the Vite proxy is configured for the WebSocket path.
+
+## Calls made after review
+
+A fresh builder read the draft and asked six questions. Danny answered one:
+where a command's buttons go is specified in the `addButton` call (`where`),
+with the pen menu as the default. The rest were settled as follows:
+
+- Only detached runs are tied to their page; normal runs always finish.
+  Detached runs end on goodbye, notebook switch, dismiss, ten minutes of
+  silence, server shutdown or timeout.
+- Switching notebooks in a tab ends that tab's detached runs; a `notebook`
+  event exists for scripts that want to know first.
+- Runs that write the PDF call `reload()`; the server also reports file
+  changes in `exited`.
+- The selection rectangle given to commands is the union of the marquee and
+  the selected items' bounds; both parts are exposed too.
+- `reload()` is the in-app reopen; the session id in `sessionStorage` only
+  matters for a browser refresh.
+- Also noted by the reviewer and adopted: the server treats a client
+  half-close (the `nc -U` one-liner) as "flush pending replies, then close";
+  run ids are short so socket paths stay under the macOS 104-byte limit;
+  when two tabs share a copied session id the newest WebSocket wins; e2e
+  fixture commands use `node -e` rather than `nc` for CI portability.
