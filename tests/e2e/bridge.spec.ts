@@ -4,6 +4,7 @@ import { createBlankPdf } from "../../src/pdf/export";
 import { expect, line, openApp, penStroke, state, toClient } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
+const haveUv = spawnSync("uv", ["--version"]).status === 0;
 
 /**
  * Record the page's WebSockets in window.__sockets, and while
@@ -42,10 +43,10 @@ function unique(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}.pdf`;
 }
 
-/** Open a fresh one-page server notebook with the commands loaded. */
-async function openNotebook(page: Page, prefix: string): Promise<string> {
+/** Open a fresh server notebook (one page by default) with the commands loaded. */
+async function openNotebook(page: Page, prefix: string, pages = 1): Promise<string> {
   const name = unique(prefix);
-  await putNotebook(name, await createBlankPdf(1));
+  await putNotebook(name, await createBlankPdf(pages));
   await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
   await page.waitForFunction((n) => window.__pdfink.source.name === n && window.__pdfink.commands.some((c) => c.label === "Buttons"), name);
   return name;
@@ -101,6 +102,25 @@ test.describe("page bridge", () => {
     expect(s.bounds.y).toBeCloseTo(400, -1);
     await page.click("#btn-undo");
     expect((await state(page)).pages[0].strokes).toHaveLength(before.pages[0].strokes.length);
+  });
+
+  test("the star demo draws through the bridge", async ({ page }) => {
+    test.skip(!haveUv, "needs uv");
+    test.setTimeout(120_000); // a cold uv cache installs pypdf first
+    await openNotebook(page, "star", 2);
+    await page.evaluate(() => window.__pdfink.views[1].el.scrollIntoView({ block: "start" }));
+    const before = await state(page);
+    await openMenuAt(page, 1, 300, 400);
+    await runMenu(page, "Star via bridge");
+    await expect(page.locator("#status")).toContainText("drawn in the browser", { timeout: 60_000 });
+    const after = await state(page);
+    expect(after.pages[0].strokes).toHaveLength(before.pages[0].strokes.length);
+    expect(after.pages[1].strokes).toHaveLength(before.pages[1].strokes.length + 1);
+    const s = after.pages[1].strokes.at(-1)!;
+    expect(s.color).toBe("#d91a1a");
+    // A radius-12 star centred on the pen point (300, 400).
+    expect(s.bounds.x + s.bounds.w / 2).toBeCloseTo(300, 0);
+    expect(s.bounds.y).toBeCloseTo(388, -1);
   });
 
   test("a detached command shows a chip, its buttons work, dismiss removes everything", async ({ page }) => {
