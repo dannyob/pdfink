@@ -105,6 +105,8 @@ class FakeBridge:
             self._send(conn, {"id": i, "result": BIG})
         elif name == "ask":
             self._later(0.2, conn, {"id": i, "result": "Danny"})
+        elif name == "addLink" and not msg["args"][2].startswith(("http:", "https:", "mailto:")):
+            self._send(conn, {"id": i, "error": "bad url"})
         elif name == "boom":
             self._send(conn, {"id": i, "error": "no such method"})
         elif name == "gone":
@@ -182,6 +184,24 @@ class PageTests(unittest.TestCase):
         self.assertEqual(self.page.page_png(2, scale=2), b"ABC")
         self.assertEqual(self.server.last("pagePng")["args"], [2, {"scale": 2}])
 
+    def test_links_and_bookmarks_mirror(self) -> None:
+        rect = {"x": 300, "y": 500, "w": 100, "h": 50}
+        self.assertEqual(self.page.links(), {"call": "links", "args": []})
+        self.assertEqual(self.page.links(2)["args"], [2])
+        self.assertEqual(self.page.add_link(0, rect, "https://x.org/")["args"], [0, rect, "https://x.org/", {"space": "page"}])
+        r = self.page.add_link(1, rect, "mailto:a@b.org", label="Mail", space="pdf")
+        self.assertEqual(r, {"call": "addLink", "args": [1, rect, "mailto:a@b.org", {"label": "Mail", "space": "pdf"}]})
+        self.assertEqual(self.page.set_link("ln1", url="https://y.org/")["args"], ["ln1", {"url": "https://y.org/"}])
+        self.assertEqual(self.page.set_link("ln1", label="")["args"], ["ln1", {"label": ""}])
+        self.assertEqual(self.page.set_link("ln1", url="http://z.org/", label="Z")["args"], ["ln1", {"url": "http://z.org/", "label": "Z"}])
+        self.assertEqual(self.page.bookmarks(), {"call": "bookmarks", "args": []})
+        self.assertEqual(self.page.add_bookmark(3, "2026-10-23")["args"], [3, "2026-10-23", {"level": 0}])
+        self.assertEqual(self.page.add_bookmark(3, "Sub", level=1)["args"], [3, "Sub", {"level": 1}])
+        self.assertEqual(self.page.remove_bookmark(4), {"call": "removeBookmark", "args": [4]})
+        with self.assertRaises(PageError) as e:
+            self.page.add_link(0, rect, "javascript:x")
+        self.assertEqual(str(e.exception), "bad url")
+
     def test_large_result_one_line(self) -> None:
         png = self.page.selection_png()
         self.assertIsInstance(png, bytes)
@@ -243,6 +263,7 @@ class PageTests(unittest.TestCase):
         self.assertEqual(self.page.state(), {"tool": "pen"})
 
     def test_bad_lines_are_skipped(self) -> None:
+        self.page.state()  # a round trip, so the server has registered the connection
         with self.server.lock:
             conn = self.server.conns[0]
             conn.sendall(b"not json\n{\"id\": 999, \"result\": 1}\n[1,2]\n\n")

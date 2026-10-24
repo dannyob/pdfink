@@ -9,6 +9,12 @@ newline-delimited JSON to the browser page (see server/bridge.ts). A Page holds
 one connection to it; its methods mirror window.pdfink (src/pdfink-api.ts) with
 snake_case names, and call(name, *args) or eval(js) reach anything else.
 
+    state notebook selection selection_ink selection_png page_png
+    toast progress ask confirm choose add_button remove_button
+    select clear_selection set_tool save reload undo redo add_page
+    scroll_to_page add_strokes add_image remove_items
+    links add_link set_link bookmarks add_bookmark remove_bookmark
+
 Errors:
   PageGone   no page to talk to: $PDFINK_SOCKET is unset, the socket is dead or
              closed, or the server answered "page gone".
@@ -295,6 +301,37 @@ class Page:
 
     def remove_items(self, ids: list[str]) -> int:
         return self.call("removeItems", list(ids))
+
+    def links(self, page: int | None = None) -> list[dict[str, Any]]:
+        """Links on `page` (or every page), each with its "page" index."""
+        return self.call("links") if page is None else self.call("links", page)
+
+    def add_link(self, page: int, rect: dict[str, float], url: str, label: str | None = None, space: str = "page") -> str:
+        """A link box at a page-space or "pdf"-point rect; its id. PageError("bad url") unless http, https or mailto."""
+        opts: dict[str, Any] = {"space": space}
+        if label is not None:
+            opts = {"label": label, **opts}
+        return self.call("addLink", page, rect, url, opts)
+
+    def set_link(self, id: str, url: str | None = None, label: str | None = None) -> None:
+        """Change a link's url and/or label; label="" removes the label."""
+        patch: dict[str, Any] = {}
+        if url is not None:
+            patch["url"] = url
+        if label is not None:
+            patch["label"] = label
+        return self.call("setLink", id, patch)
+
+    def bookmarks(self) -> list[dict[str, Any]]:
+        """The outline: [{"title", "page" (0-based or None), "level"}, ...]."""
+        return self.call("bookmarks")
+
+    def add_bookmark(self, page: int, title: str, level: int = 0) -> int:
+        """Add an outline entry for `page`, kept in page order; its index."""
+        return self.call("addBookmark", page, title, {"level": level})
+
+    def remove_bookmark(self, index: int) -> None:
+        return self.call("removeBookmark", index)
 
 
 def connect(optional: bool = False, timeout: float = 60.0) -> Page | None:

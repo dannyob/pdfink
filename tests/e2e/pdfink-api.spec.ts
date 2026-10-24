@@ -5,6 +5,7 @@ const METHODS = [
   "state", "notebook", "selection", "selectionInk", "selectionPng", "pagePng", "toast", "progress",
   "ask", "confirm", "choose", "addButton", "removeButton", "select", "clearSelection", "setTool",
   "save", "reload", "undo", "redo", "addPage", "scrollToPage", "addStrokes", "addImage", "removeItems",
+  "links", "addLink", "setLink", "bookmarks", "addBookmark", "removeBookmark",
 ];
 
 const stroke = (x0: number, y0: number, x1: number, y1: number) => ({
@@ -60,6 +61,43 @@ test.describe("window.pdfink", () => {
       return window.__pdfink.pages[0].strokes.find((x) => x.id === rid)!.points.map((p) => [p.x, p.y]);
     }, stroke(300, 500, 310, 500));
     expect(rotated).toEqual([[500, 300], [500, 310]]);
+  });
+
+  test("addLink in pdf space, setLink and links go through to the app", async ({ page }) => {
+    await openApp(page);
+    const id = await page.evaluate(() => window.pdfink.addLink(0, { x: 300, y: 500, w: 100, h: 50 }, "https://example.com/", { label: "Ex", space: "pdf" }));
+    expect(await page.evaluate(() => window.pdfink.links())).toEqual([{ id, x: 300, y: 242, w: 100, h: 50, url: "https://example.com/", label: "Ex", page: 0 }]);
+    // Default space is page (display) space.
+    const id2 = await page.evaluate(() => window.pdfink.addLink(0, { x: 10, y: 20, w: 30, h: 40 }, "mailto:a@b.org"));
+    expect((await page.evaluate(() => window.pdfink.links(0))).find((l) => l.id === id2)).toEqual({ id: id2, x: 10, y: 20, w: 30, h: 40, url: "mailto:a@b.org", page: 0 });
+    // A rotated page goes through its geometry: at 90°, display (x, y) = (yp, xp).
+    const rotated = await page.evaluate(() => {
+      window.__pdfink.pageGeom = () => ({ cx: 0, cy: 0, cw: 612, ch: 792, rotate: 90 });
+      const rid = window.pdfink.addLink(0, { x: 300, y: 500, w: 100, h: 50 }, "http://x.org/", { space: "pdf" });
+      const { x, y, w, h } = window.pdfink.links(0).find((l) => l.id === rid)!;
+      return { x, y, w, h };
+    });
+    expect(rotated).toEqual({ x: 500, y: 300, w: 50, h: 100 });
+    await expect(page.evaluate(() => window.pdfink.addLink(0, { x: 0, y: 0, w: 1, h: 1 }, "javascript:alert(1)"))).rejects.toThrow(/bad url/);
+    await page.evaluate((i) => window.pdfink.setLink(i, { url: "https://example.org/", label: "" }), id);
+    const ln = (await state(page)).pages[0].links.find((l) => l.id === id)!;
+    expect([ln.url, ln.label]).toEqual(["https://example.org/", undefined]);
+    expect(await page.evaluate(() => window.pdfink.links(1))).toEqual([]);
+  });
+
+  test("bookmarks round trip: addBookmark, bookmarks, removeBookmark", async ({ page }) => {
+    await openApp(page);
+    expect(await page.evaluate(() => window.pdfink.bookmarks())).toEqual([]);
+    expect(await page.evaluate(() => window.pdfink.addBookmark(0, "2026-10-23"))).toBe(0);
+    expect(await page.evaluate(() => window.pdfink.addBookmark(0, "Sub", { level: 1 }))).toBe(1);
+    expect(await page.evaluate(() => window.pdfink.bookmarks())).toEqual([
+      { title: "2026-10-23", page: 0, level: 0 },
+      { title: "Sub", page: 0, level: 1 },
+    ]);
+    expect((await state(page)).bookmarks).toHaveLength(2);
+    await page.evaluate(() => window.pdfink.removeBookmark(0));
+    expect(await page.evaluate(() => window.pdfink.bookmarks())).toEqual([{ title: "Sub", page: 0, level: 1 }]);
+    await expect(page.evaluate(() => window.pdfink.removeBookmark(5))).rejects.toThrow(/No bookmark 5/);
   });
 
   test("addImage, removeItems, undo and toast go through to the app", async ({ page }) => {

@@ -26,8 +26,10 @@ works from a shell too. Steps:
    entry. `--dry-run` stops after step 2 and prints the markdown.
 
 From the pen menu ($PDFINK_SOCKET set) it also shows each stage as a progress
-line in the page, and when the page has no legible date and --date was not
-given it asks for the day instead of giving up.
+line in the page, when the page has no legible date and --date was not
+given it asks for the day instead of giving up, and once the entry is
+transcribed it bookmarks the entry's first page with its date (unless that
+bookmark is already there; --dry-run too).
 
 Keys come from `llm keys set ...` as usual (the shared llm user directory).
 Model: --model, else $PDFINK_JOURNAL_MODEL, else openrouter/google/gemini-3.7-flash.
@@ -84,6 +86,17 @@ def ask_date(today: str) -> str | None:
         log(f"could not ask the page for a date: {e}")
         return None
     return answer.strip() if isinstance(answer, str) and answer.strip() else None
+
+
+def bookmark_entry(page_index: int, date: str) -> None:
+    """Bookmark the entry's first page with its date, unless already so; a no-op without a page."""
+    if PAGE is None:
+        return
+    try:
+        if not any(b["title"] == date and b["page"] == page_index for b in PAGE.bookmarks()):
+            PAGE.add_bookmark(page_index, date)
+    except (pdfink_page.PageGone, pdfink_page.PageError, TimeoutError, TypeError, KeyError) as e:
+        log(f"could not bookmark the page: {e}")
 
 
 def life_dir(explicit: str | None) -> Path:
@@ -329,6 +342,7 @@ def run(a: argparse.Namespace, pdf: Path) -> int:
     out = out_dir / f"journal-{dates[0]}-{pdf.stem}-p{a.page}.md"
     out.write_text(text + "\n", encoding="utf8")
     log(f"transcript of {span} saved to {out}")
+    bookmark_entry(a.page - 1, dates[0])
 
     if a.dry_run:
         print(text)

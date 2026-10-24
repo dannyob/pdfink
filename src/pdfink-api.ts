@@ -5,7 +5,7 @@
  */
 import type { App, Tool } from "./app";
 import { dialog } from "./dialog";
-import type { Rect, Stroke } from "./model";
+import type { Bookmark, LinkItem, Rect, Stroke } from "./model";
 import { pdfToDisplay } from "./pdf/geom";
 
 export interface PdfinkApi {
@@ -59,6 +59,18 @@ export interface PdfinkApi {
   addImage(page: number, png: string, rect: Rect): Promise<string>;
   /** Remove strokes and images by id; returns how many went. */
   removeItems(ids: string[]): number;
+  /** Links on `page`, or on every page, each with its page index. */
+  links(page?: number): Array<LinkItem & { page: number }>;
+  /** Add a link box (http, https or mailto; else "bad url") at a page-space (default) or PDF-point rect; returns its id. */
+  addLink(page: number, rect: Rect, url: string, opts?: { label?: string; space?: "page" | "pdf" }): string;
+  /** Change a link's url and/or label (an empty label removes it), as one undo step. */
+  setLink(id: string, patch: { url?: string; label?: string }): void;
+  /** The document outline, in order. */
+  bookmarks(): Bookmark[];
+  /** Add an outline entry for `page`, kept in page order; returns its index. */
+  addBookmark(page: number, title: string, opts?: { level?: number }): number;
+  /** Remove the outline entry at `index`. */
+  removeBookmark(index: number): void;
 }
 
 declare global {
@@ -114,6 +126,20 @@ export function createPdfinkApi(app: App): PdfinkApi {
       return app.addImageItem(page, base64ToBytes(png), "image/png", rect);
     },
     removeItems: (ids) => app.removeItems(ids),
+    links: (page) => app.links(page),
+    addLink(page, rect, url, opts) {
+      if (opts?.space === "pdf" && rect) {
+        const g = app.pageGeom(page);
+        const a = pdfToDisplay(g, rect.x, rect.y);
+        const b = pdfToDisplay(g, rect.x + rect.w, rect.y + rect.h);
+        rect = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+      }
+      return app.addLink(page, rect, url, opts?.label);
+    },
+    setLink: (id, patch) => app.setLink(id, patch),
+    bookmarks: () => app.bookmarks.map((b) => ({ ...b })),
+    addBookmark: (page, title, opts) => app.addBookmark(page, title, opts?.level ?? 0),
+    removeBookmark: (index) => app.removeBookmark(index),
   };
 }
 
