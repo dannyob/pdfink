@@ -33,7 +33,13 @@ button:disabled { opacity: 0.4; cursor: default; }
 button.tool.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 #status { margin-left: auto; font-size: 12px; color: #555; white-space: nowrap; }
 #progress { font-size: 12px; color: var(--accent); white-space: nowrap; }
-#progress:empty, #cmd-buttons:empty { display: none; }
+#progress:empty, #cmd-buttons:empty, #runs:empty { display: none; }
+/* A detached command that is still running, with a button to stop it. */
+#runs .run {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px 2px 2px 10px;
+  font-size: 12px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); background: #fff;
+}
+#runs .dismiss { border: 0; background: none; min-width: 28px; padding: 2px 6px; color: inherit; }
 /* Pen context menu (barrel button when it isn't set to erase, or right-click). */
 #ctx-menu {
   position: fixed; z-index: 50; min-width: 150px; padding: 4px;

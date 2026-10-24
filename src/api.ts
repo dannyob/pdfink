@@ -1,5 +1,5 @@
 /** Client for the pdfink server API (see server/index.ts). */
-import type { PageModel, Stroke } from "./model";
+import type { PageModel, Rect, Stroke } from "./model";
 
 export interface NotebookInfo {
   name: string;
@@ -159,6 +159,18 @@ export interface CommandInfo {
   label: string;
   reload: boolean;
   confirm: boolean;
+  /** Runs in the background with a chip in the toolbar; the request answers at once. */
+  detach: boolean;
+}
+
+/** What a command run is told: where the pen was, this tab's session and the selection. */
+export interface RunRequest {
+  name: string;
+  page: number;
+  x: number;
+  y: number;
+  session?: string;
+  selection?: { page: number; rect: Rect; count: number } | null;
 }
 
 export interface CommandRun {
@@ -170,6 +182,10 @@ export interface CommandRun {
   changed: boolean;
   mtime: number | null;
   reload: boolean;
+  /** True when the command was detached: it has started and goes on in the background. */
+  detached?: boolean;
+  /** The bridge's id for the run. */
+  run?: string;
 }
 
 export async function listCommands(): Promise<CommandInfo[]> {
@@ -179,11 +195,11 @@ export async function listCommands(): Promise<CommandInfo[]> {
 }
 
 /** Run command `id` for display point (x, y) on page index `page` of notebook `name`. */
-export async function runCommand(id: string, name: string, page: number, x: number, y: number): Promise<CommandRun> {
+export async function runCommand(id: string, req: RunRequest): Promise<CommandRun> {
   const res = await fetch(`/api/commands/${encodeURIComponent(id)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, page, x, y }),
+    body: JSON.stringify(req),
   });
   if (!res.ok) throw new Error(`Could not run command: ${await errorMessage(res)}`);
   return (await res.json()) as CommandRun;

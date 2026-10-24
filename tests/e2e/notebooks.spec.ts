@@ -189,7 +189,7 @@ test.describe("pen-menu commands", () => {
     fs.rmSync(`${DIR}/where.txt`, { force: true });
     fs.rmSync(`${DIR}/snapshot.pdf`, { force: true });
     await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
-    await page.waitForFunction(() => window.__pdfink.commands.length === 3);
+    await page.waitForFunction(() => window.__pdfink.commands.some((c) => c.label === "Replace with two pages"));
 
     // Draw, then open the menu with a right-click on page 2 at page point (100, 100), unsaved.
     await penStroke(page, 0, line(100, 100, 300, 100));
@@ -218,7 +218,7 @@ test.describe("pen-menu commands", () => {
     await putNotebook(name, await createBlankPdf(1));
     fs.writeFileSync(`${DIR}/two-pages.pdf`, await createBlankPdf(2));
     await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
-    await page.waitForFunction(() => window.__pdfink.commands.length === 3);
+    await page.waitForFunction(() => window.__pdfink.commands.some((c) => c.label === "Replace with two pages"));
     await page.click("#btn-zoom-out");
     const scale = (await state(page)).scale;
     await page.evaluate(() => (document.getElementById("pages")!.scrollTop = 120));

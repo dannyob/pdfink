@@ -649,12 +649,19 @@ export class App {
     // The command works on the file, so it must see what is on screen.
     if (this.dirty && !(await this.saveToServer())) return;
     const { name } = this.source;
-    this.setStatus(`Running ${cmd.label}…`);
+    const running = `Running ${cmd.label}…`;
+    this.setStatus(running);
+    const sel = this.selectionInfo();
+    const selection = sel ? { page: sel.page, rect: sel.rect, count: sel.strokeIds.length + sel.imageIds.length } : null;
     let run;
     try {
-      run = await runCommand(cmd.id, name, at.page, at.x, at.y);
+      run = await runCommand(cmd.id, { name, page: at.page, x: at.x, y: at.y, session: this.session ?? undefined, selection });
     } catch (err) {
       this.setStatus((err as Error).message);
+      return;
+    }
+    if (run.detached) {
+      this.setStatus(`${cmd.label} attached`);
       return;
     }
     const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
@@ -672,6 +679,8 @@ export class App {
       }
     }
     const said = firstLine(run.stdout);
+    // A command that showed its own message (pdfink.toast) and printed nothing keeps it.
+    if (!said && this.status.textContent !== running) return;
     this.setStatus(said ? `${cmd.label}: ${said}` : `${cmd.label} done`);
   }
 

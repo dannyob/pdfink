@@ -14,7 +14,7 @@ export default defineConfig({
     strictPort: true,
     host: true,
     allowedHosts,
-    proxy: { "/api": process.env.PDFINK_API ?? "http://127.0.0.1:5174" },
+    proxy: { "/api": { target: process.env.PDFINK_API ?? "http://127.0.0.1:5174", ws: true } },
   },
   preview: { port: 5173, strictPort: true, host: true, allowedHosts },
   build: { target: "es2022" },

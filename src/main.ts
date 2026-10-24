@@ -1,5 +1,6 @@
 import { App } from "./app";
 import { stylusSim } from "./harness/stylus-sim";
+import { PageLink } from "./bridge-client";
 import { createPdfinkApi } from "./pdfink-api";
 
 const app = new App(document.getElementById("pages") as HTMLElement);
@@ -131,7 +132,8 @@ declare global {
 }
 window.__pdfink = app;
 window.__stylusSim = stylusSim;
-window.pdfink = createPdfinkApi(app);
+const api = createPdfinkApi(app);
+window.pdfink = api;
 
 /**
  * Storage mode: `?storage=local|server` wins, then the VITE_STORAGE build
@@ -159,7 +161,12 @@ void detectStorage(params).then((mode) => {
   app.storage = mode;
   document.body.dataset.storage = mode;
   void app.refreshCommands();
-  if (mode === "server") void refreshNotebooks();
+  if (mode === "server") {
+    const link = new PageLink(app, api);
+    app.session = link.session;
+    link.connect();
+    void refreshNotebooks();
+  }
   if (params.has("new")) void app.newDocument();
   const openName = params.get("open");
   if (openName && mode === "server") void app.openNotebook(openName).then(showCurrentNotebook);
