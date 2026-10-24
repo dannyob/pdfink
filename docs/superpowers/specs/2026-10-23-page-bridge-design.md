@@ -1,4 +1,4 @@
-# Page bridge: pen-menu commands that talk to the page
+# Page bridge: pen-menu commands that talk to the page, plus links and bookmarks
 
 Status: for Danny's approval, 2026-10-23. Reviewed once by a fresh builder; the
 "Calls made after review" section records what that settled.
@@ -23,6 +23,20 @@ socket so a script reads like `png = page.selection_png()`.
 Because the line is live, the command pulls exactly the data it needs when it
 needs it. There is no JSON blob on stdin and no per-command "selection detail"
 flag in the config; that was considered and dropped.
+
+While talking it through, two more things came up and were taken into this
+round. First, commands should be able to put ink and images on the page
+through the browser instead of rewriting the PDF and reloading, so that an
+attached command can react to strokes without churn and its work is undoable.
+Second, pdfink should gain its first non-ink structures: clickable URL boxes
+(`/Link` annotations) and bookmarks (the document outline), both readable,
+writable, visible in the page, and reachable from the bridge, so a script can
+leave a link next to a note or bookmark the page it just transcribed. FreeText
+and file attachments were considered and left for later.
+
+This is two pieces of work sharing one transport. Part A is the bridge and
+browser-side insertion; Part B is links and bookmarks. A is built first; B
+depends on A only for its bridge calls and can follow in the same plan.
 
 ## Goals
 
@@ -176,6 +190,17 @@ harness). Methods, all returning plain JSON-able values:
   already is, or `"toolbar"`, a button in the header bar).
 - Act: `select(page, rect)`, `clearSelection()`, `setTool(tool)`, `save()`,
   `reload()`, `undo()`, `redo()`, `addPage()`, `scrollToPage(page)`.
+- Insert and remove (Part A): `addStrokes(page, strokes, {space})` with
+  strokes as point lists carrying pressure, colour, width and opacity, in
+  page points by default or PDF points with `space: "pdf"`; `addImage(page,
+  png, rect)` with a base64 PNG, the path paste already uses, and also how a
+  script puts text on the page (render it to an image first; pdfink has no
+  text item); `removeItems(ids)` for strokes, images and links. All three go
+  through the page model like a pen stroke: drawn at once, one undo entry,
+  saved by the normal autosave, never racing the file.
+- Links and bookmarks (Part B): `links(page?)`, `addLink(page, rect, url,
+  {label, space})`, `bookmarks()`, `addBookmark(page, title, {level})`,
+  `removeBookmark(index)`.
 - Events available to `subscribe`: `selection` (changed or cleared), `save`,
   `page` (the page under the pen changed), `notebook` (the tab opened a
   different notebook), `button`, `stroke` (a stroke finished; data is the
@@ -185,6 +210,52 @@ harness). Methods, all returning plain JSON-able values:
 Dialogs (`ask`, `confirm`, `choose`) are in-page elements that work with a
 stylus and on iOS, not `window.prompt`. Only one dialog shows at a time;
 a second request queues.
+
+### 4b. Part B: links and bookmarks in the model and the file
+
+Links:
+
+- A third item kind, `LinkItem {id, x, y, w, h, url, label?}` in page space,
+  in `PageModel.links`, with the wire format, undo snapshots, copy/cut/paste
+  and selection membership extended to match. A link's rectangle selects
+  like an image's.
+- Import lifts `/Link` annotations whose action is `/URI` into items and
+  removes them from the base, exactly as ink is lifted. Links with other
+  actions (internal `GoTo`, named destinations) stay in the base untouched.
+- Export writes each link back as a `/Link` annotation with `/A << /S /URI
+  /URI (url) >>`, `/Border [0 0 1]`, `/C [0 0 1]` and `/Contents` set to the
+  label, so Xodo and other readers show and open it.
+- The page draws links itself (pdf.js draws nothing for a bare `/Link`): a
+  faint blue outline, with the label or a shortened URL as a small caption
+  when the box is big enough. The pen writes over links freely.
+- Following a link (my call, not yet tried on the Daylight): the pen menu
+  opened over a link gets an "Open <url>" entry at the top; a finger tap on a
+  link opens it in a new tab (a finger tap is never a stroke, and finger-draws
+  mode shows the entry in the menu instead). Links open with
+  `noopener,noreferrer`.
+- Creating one by hand: the pen menu gets "Add link…" when there is a
+  selection, asking for the URL with the in-page dialog and placing the box
+  on the selection rectangle. Scripts use `addLink`.
+
+Bookmarks:
+
+- A document-level list `bookmarks: {title, page, level}[]`, flat with a
+  nesting level, in the document model and the wire format. One level is
+  all pdfink's UI creates; deeper outlines in a base PDF survive the round
+  trip.
+- Import walks `/Outlines` (`First`/`Next`/`Count`, destinations given
+  directly or through `GoTo` actions, named destinations resolved where
+  possible) into the list; entries whose destination cannot be resolved are
+  kept with `page: null` and written back unchanged. Export rebuilds
+  `/Outlines` from the list; pdf-lib has no outline API, so the dictionaries
+  are built by hand. Page-level `/Dest` arrays use `/XYZ null null null` so
+  readers keep their zoom.
+- UI (my call): a "Bookmarks" select in the toolbar lists them and jumps on
+  pick; the pen menu gets "Bookmark this page…", which asks for a title with
+  today's date in ISO form as the default. Removing is through the select's
+  "Remove this bookmark" entry while on a bookmarked page.
+- `journal-page.py`, when the bridge is present, adds a bookmark named for
+  the entry's date at the page it transcribed, if none is there already.
 
 ### 5. Lifecycle
 
@@ -239,6 +310,10 @@ All of today's variables, plus:
   unless told otherwise). `toast()` and `progress()` are fire-and-forget and
   never raise when the page is gone; `ask()`, `confirm()`, `choose()` and
   data calls raise `PageGone`.
+- `tools/star.py` draws through the bridge (`add_strokes`) when
+  `PDFINK_SOCKET` is set, so the star appears at once and is undoable, and
+  falls back to rewriting the file and `reload = true` when it is not. It is
+  the smallest example of the library and shows the degrade path.
 - `tools/describe-selection.py`: a normal (non-detached) demo. Takes the
   selection PNG, asks a vision model through `llm` what it shows, and offers
   the answer through `choose` (copy to status / print / cancel). Degrades to
@@ -261,6 +336,11 @@ All of today's variables, plus:
   disappears on dismiss; the in-place reload keeping the session.
 - Python: the library against a fake socket server, run under uv and skipped
   when uv is absent (same pattern as `star.test.ts`).
+- Part B: round-trip tests for links and outlines (import, export, re-import
+  equal; a base PDF with `GoTo` links and a nested outline comes back
+  byte-for-byte in those parts); e2e for drawing a link, opening it with a
+  finger tap and from the pen menu, adding a bookmark and jumping to it;
+  the real-notebook tests (`PDFINK_SAMPLES`) still pass.
 
 ### 9. Documentation
 
@@ -279,6 +359,9 @@ All of today's variables, plus:
 - Base64 PNG size limits and the `scale` default (3 px per point matches the
   clipboard renderer).
 - How the Vite proxy is configured for the WebSocket path.
+- Link caption typography and the outline-selection styling; how a link is
+  moved once selected (image handling is the model).
+- Whether `GoTo` links in a base PDF become clickable later; out of scope now.
 
 ## Calls made after review
 
@@ -302,3 +385,7 @@ with the pen menu as the default. The rest were settled as follows:
   run ids are short so socket paths stay under the macOS 104-byte limit;
   when two tabs share a copied session id the newest WebSocket wins; e2e
   fixture commands use `node -e` rather than `nc` for CI portability.
+- Later in the conversation Danny asked for ink insertion through the
+  browser, then chose links and bookmarks for this round (FreeText and
+  attachments deferred). How a link is followed on the tablet and the
+  bookmark UI are my calls, marked above.
