@@ -1012,6 +1012,15 @@ export class App {
     this.scheduleAutosave();
   }
 
+  /**
+   * A snapshot taken when a gesture began, with the page's texts as they are
+   * now. Gestures never change texts, so texts set quietly while one ran (the
+   * automatic OCR) must not land in its undo step or be put back over.
+   */
+  private withCurrentTexts(page: number, snap: PageSnapshot): PageSnapshot {
+    return { ...snap, texts: this.pages[page].texts };
+  }
+
   /** Replace a page's content, recording an undo step. */
   private commit(page: number, before: PageSnapshot, after: PageSnapshot): void {
     if (before.strokes === after.strokes && before.images === after.images && before.links === after.links && before.texts === after.texts) return;
@@ -1141,7 +1150,7 @@ export class App {
         if (drawing) {
           this.pointers.delete(drawing.pointerId);
           this.paintToolButtons();
-          if (drawing.mode === "erase" && drawing.snapshot) this.apply(drawing.page, drawing.snapshot);
+          if (drawing.mode === "erase" && drawing.snapshot) this.apply(drawing.page, this.withCurrentTexts(drawing.page, drawing.snapshot));
           else this.redraw(drawing.page);
           if (!this.touchScroll) this.touchScroll = { id: e.pointerId, x: e.clientX, y: e.clientY };
           return;
@@ -1209,7 +1218,7 @@ export class App {
     const h = this.hoverErase;
     if (!h) return;
     this.hoverErase = null;
-    if (h.erased && h.snapshot) this.commit(h.page, h.snapshot, this.snapshot(h.page));
+    if (h.erased && h.snapshot) this.commit(h.page, this.withCurrentTexts(h.page, h.snapshot), this.snapshot(h.page));
     this.paintToolButtons();
   }
 
@@ -1321,7 +1330,7 @@ export class App {
       ptr.stroke = undefined;
       ptr.drawnUpTo = undefined;
     } else if (ptr.mode === "erase" && ptr.snapshot) {
-      if (ptr.erased) this.commit(page, ptr.snapshot, this.snapshot(page));
+      if (ptr.erased) this.commit(page, this.withCurrentTexts(page, ptr.snapshot), this.snapshot(page));
       ptr.snapshot = undefined;
       ptr.erased = false;
       ptr.keep = undefined;
@@ -1374,7 +1383,7 @@ export class App {
         this.redraw(page);
       }
     } else if (ptr.mode === "erase" && ptr.snapshot) {
-      if (ptr.erased) this.commit(page, ptr.snapshot, this.snapshot(page));
+      if (ptr.erased) this.commit(page, this.withCurrentTexts(page, ptr.snapshot), this.snapshot(page));
     } else if (ptr.mode === "select" && this.selection) {
       const r = this.selection.rect;
       if (!r || (r.w < MIN_SELECT && r.h < MIN_SELECT)) {

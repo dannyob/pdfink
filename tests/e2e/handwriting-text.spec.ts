@@ -173,6 +173,53 @@ test.describe("handwriting text", () => {
     expect(s.pages[0].texts.map((t) => t.text)).toEqual(["hello world"]);
   });
 
+  test("a quiet update during an erase gesture is not caught in its undo step", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(80, 100, 260, 100));
+    await penStroke(page, 0, line(80, 200, 260, 200));
+    await page.evaluate(() => window.__pdfink.setTool("eraser"));
+    // A mouse erase across the first stroke, with a quiet update in the middle of it.
+    const [ax, ay] = await toClient(page, 0, 170, 90);
+    const [bx, by] = await toClient(page, 0, 170, 110);
+    await page.mouse.move(ax, ay);
+    await page.mouse.down();
+    await page.mouse.move(bx, by, { steps: 5 });
+    await page.evaluate((a) => window.__pdfink.setInkText(0, [a], { quiet: true }), LINE1);
+    await page.mouse.move(bx, by + 2);
+    await page.mouse.up();
+    let s = await state(page);
+    expect(s.pages[0].strokes).toHaveLength(1);
+    await page.evaluate(() => window.__pdfink.undo());
+    s = await state(page);
+    expect(s.pages[0].strokes).toHaveLength(2);
+    expect(s.pages[0].texts.map((t) => t.text)).toEqual(["hello world"]);
+    await page.evaluate(() => window.__pdfink.redo());
+    expect((await state(page)).pages[0].texts.map((t) => t.text)).toEqual(["hello world"]);
+
+    // A finger erase cancelled by a second finger puts the ink back but keeps a quiet update.
+    await page.evaluate(() => window.__pdfink.setFingerDraws(true));
+    const touch = (type: string, x: number, y: number, id: number) =>
+      page.evaluate(
+        ([t, cx, cy, pid]) => {
+          const el = document.elementFromPoint(cx, cy) ?? document.body;
+          el.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, pointerType: "touch", pointerId: pid, isPrimary: pid === 7, pressure: 0.5, buttons: 1, button: t === "pointermove" ? -1 : 0, width: 20, height: 20 }));
+        },
+        [type, x, y, id] as const,
+      );
+    const [cx, cy] = await toClient(page, 0, 170, 190);
+    const [dx, dy] = await toClient(page, 0, 170, 210);
+    await touch("pointerdown", cx, cy, 7);
+    const [mx, my] = await toClient(page, 0, 170, 200);
+    await touch("pointermove", mx, my, 7);
+    await touch("pointermove", dx, dy, 7);
+    expect((await state(page)).pages[0].strokes).toHaveLength(0);
+    await page.evaluate((a) => window.__pdfink.setInkText(0, [a], { quiet: true }), LINE2);
+    await touch("pointerdown", dx + 40, dy, 8);
+    s = await state(page);
+    expect(s.pages[0].strokes).toHaveLength(1);
+    expect(s.pages[0].texts.map((t) => t.text)).toEqual(["second line"]);
+  });
+
   test("New makes a notebook: the Notebook row is ticked; untick it and save → tag false", async ({ page }) => {
     await fakeClipboard(page);
     await page.goto("/");
