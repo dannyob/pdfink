@@ -6,6 +6,7 @@ const METHODS = [
   "ask", "confirm", "choose", "addButton", "removeButton", "select", "clearSelection", "setTool",
   "save", "reload", "undo", "redo", "addPage", "scrollToPage", "addStrokes", "addImage", "removeItems",
   "links", "addLink", "setLink", "bookmarks", "addBookmark", "removeBookmark",
+  "pageText", "inkText", "setInkText", "strokes", "notebookTag", "setNotebookTag",
 ];
 
 const stroke = (x0: number, y0: number, x1: number, y1: number) => ({
@@ -83,6 +84,100 @@ test.describe("window.pdfink", () => {
     const ln = (await state(page)).pages[0].links.find((l) => l.id === id)!;
     expect([ln.url, ln.label]).toEqual(["https://example.org/", undefined]);
     expect(await page.evaluate(() => window.pdfink.links(1))).toEqual([]);
+  });
+
+  test("setInkText, inkText and pageText: page and pdf space, quiet, within, bad lines", async ({ page }) => {
+    await openApp(page);
+    const line = { x: 300, y: 500, w: 100, h: 20, text: "hello", sig: "s1", note: 0 };
+    const [id] = await page.evaluate((l) => window.pdfink.setInkText(0, [l]), line);
+    expect(await page.evaluate(() => window.pdfink.inkText(0))).toEqual([{ id, ...line }]);
+    const undo = (await state(page)).undo;
+    // PDF space flips y like addLink: y = 792 - 500 - 20.
+    const [id2] = await page.evaluate((l) => window.pdfink.setInkText(0, [l], { space: "pdf", quiet: true }), line);
+    expect(await page.evaluate(() => window.pdfink.inkText(0))).toEqual([{ ...line, id: id2, y: 272 }]);
+    expect((await state(page)).undo).toBe(undo); // quiet: no undo step
+    // within (in the same space as the lines) replaces only the texts inside it.
+    const [id3] = await page.evaluate(() => window.pdfink.setInkText(0, [{ x: 10, y: 10, w: 50, h: 10, text: "top" }], { within: { x: 0, y: 0, w: 200, h: 50 } }));
+    expect((await page.evaluate(() => window.pdfink.inkText(0))).map((t) => t.id)).toEqual([id2, id3]);
+    await page.evaluate(() => window.pdfink.setInkText(0, [], { space: "pdf", within: { x: 0, y: 742, w: 200, h: 50 } }));
+    expect((await page.evaluate(() => window.pdfink.inkText(0))).map((t) => t.id)).toEqual([id2]);
+    await page.evaluate(() => window.pdfink.undo());
+    expect((await page.evaluate(() => window.pdfink.inkText(0))).map((t) => t.id)).toEqual([id2, id3]);
+    // A rotated page goes through its geometry: at 90°, display (x, y) = (yp, xp).
+    const rotated = await page.evaluate(() => {
+      const g = window.__pdfink.pageGeom;
+      window.__pdfink.pageGeom = () => ({ cx: 0, cy: 0, cw: 612, ch: 792, rotate: 90 });
+      window.pdfink.setInkText(0, [{ x: 300, y: 500, w: 100, h: 20, text: "r" }], { space: "pdf" });
+      window.__pdfink.pageGeom = g;
+      const { x, y, w, h } = window.pdfink.inkText(0)[0];
+      return { x, y, w, h };
+    });
+    expect(rotated).toEqual({ x: 500, y: 300, w: 20, h: 100 });
+    for (const bad of [{ ...line, x: Number.NaN }, { ...line, text: 5 }, { ...line, w: "1" }]) {
+      for (const space of ["page", "pdf"] as const) {
+        await expect(page.evaluate(([l, sp]) => window.pdfink.setInkText(0, [l as never], { space: sp as "page" | "pdf" }), [bad, space] as const)).rejects.toThrow(/lines\[0\]/);
+      }
+    }
+    await expect(page.evaluate((l) => window.pdfink.setInkText(3, [l]), line)).rejects.toThrow(/No page 3/);
+    await expect(page.evaluate(() => window.pdfink.inkText(3))).rejects.toThrow(/No page 3/);
+    await expect(page.evaluate(() => window.pdfink.pageText(3))).rejects.toThrow(/No page 3/);
+    const pt = await page.evaluate(() => window.pdfink.pageText(0));
+    expect(pt).toEqual({ own: [], ink: await page.evaluate(() => window.pdfink.inkText(0)), notebook: true });
+    expect(pt.ink).toHaveLength(1);
+  });
+
+  test("strokes in page and pdf space", async ({ page }) => {
+    await openApp(page);
+    const [id] = await page.evaluate((s) => window.pdfink.addStrokes(0, [s]), stroke(300, 500, 310, 500));
+    expect(await page.evaluate(() => window.pdfink.strokes(0))).toEqual([{ id, ...stroke(300, 500, 310, 500) }]);
+    const pdf = await page.evaluate(() => window.pdfink.strokes(0, { space: "pdf" }));
+    expect(pdf).toEqual([{ id, ...stroke(300, 292, 310, 292) }]);
+    // Round trip: pdf-space strokes added back land where the first one is.
+    const { id: _, ...back } = pdf[0];
+    const [id2] = await page.evaluate((s) => window.pdfink.addStrokes(0, [s], { space: "pdf" }), back);
+    expect((await page.evaluate(() => window.pdfink.strokes(0)))[1]).toEqual({ id: id2, ...stroke(300, 500, 310, 500) });
+    // A copy: changing it leaves the page alone.
+    await page.evaluate(() => { window.pdfink.strokes(0)[0].points.length = 0; });
+    expect((await page.evaluate(() => window.pdfink.strokes(0)))[0].points).toHaveLength(2);
+    await expect(page.evaluate(() => window.pdfink.strokes(2))).rejects.toThrow(/No page 2/);
+  });
+
+  test("notebookTag and setNotebookTag", async ({ page }) => {
+    await openApp(page);
+    expect(await page.evaluate(() => window.pdfink.notebookTag())).toBe(true); // New makes a notebook
+    await page.evaluate(() => window.pdfink.setNotebookTag(false));
+    expect(await page.evaluate(() => window.pdfink.notebookTag())).toBe(false);
+    expect((await page.evaluate(() => window.pdfink.pageText(0))).notebook).toBe(false);
+    expect((await state(page)).dirty).toBe(true);
+    await page.evaluate(() => window.pdfink.setNotebookTag(null));
+    expect(await page.evaluate(() => window.pdfink.notebookTag())).toBeNull();
+    await expect(page.evaluate(() => window.pdfink.setNotebookTag("yes" as never))).rejects.toThrow(/true, false or null/);
+  });
+
+  test("the bridge forwards ink events", async ({ page }) => {
+    await page.addInitScript(() => {
+      const w = window as unknown as { __sent: string[]; __sockets: WebSocket[] };
+      w.__sent = [];
+      w.__sockets = [];
+      const Real = window.WebSocket;
+      window.WebSocket = class extends Real {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          super(url, protocols);
+          w.__sockets.push(this);
+        }
+        send(data: Parameters<WebSocket["send"]>[0]) {
+          if (typeof data === "string") w.__sent.push(data);
+          super.send(data);
+        }
+      };
+    });
+    await openApp(page);
+    await page.waitForFunction(() => (window as unknown as { __sockets: WebSocket[] }).__sockets.some((s) => s.readyState === WebSocket.OPEN && s.url.includes("/api/page")));
+    // Only what follows the stroke: the document-open ink events are already out (or dropped).
+    await page.evaluate(() => ((window as unknown as { __sent: string[] }).__sent.length = 0));
+    await page.evaluate((s) => window.pdfink.addStrokes(0, [s]), stroke(300, 500, 310, 500));
+    const ink = await page.evaluate(() => (window as unknown as { __sent: string[] }).__sent.map((m) => JSON.parse(m)).filter((m) => m.event === "ink"));
+    expect(ink).toEqual([{ event: "ink", data: { page: 0 } }]);
   });
 
   test("bookmarks round trip: addBookmark, bookmarks, removeBookmark", async ({ page }) => {

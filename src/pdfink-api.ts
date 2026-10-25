@@ -5,8 +5,8 @@
  */
 import type { App, Tool } from "./app";
 import { dialog } from "./dialog";
-import type { Bookmark, LinkItem, Rect, Stroke } from "./model";
-import { pdfToDisplay } from "./pdf/geom";
+import type { Bookmark, LinkItem, Rect, Stroke, TextItem } from "./model";
+import { displayToPdf, pdfToDisplay, type PageGeom } from "./pdf/geom";
 
 export interface PdfinkApi {
   /** The app's compact state snapshot. */
@@ -72,6 +72,22 @@ export interface PdfinkApi {
   addBookmark(page: number, title: string, opts?: { level?: number }): number;
   /** Remove the outline entry at `index` and the entries nested under it. */
   removeBookmark(index: number): void;
+  /** Everything known about `page`'s text: the document's own (page space), the handwriting text, and whether it saves as a notebook page. */
+  pageText(page: number): Promise<{ own: Array<{ text: string; x: number; y: number; w: number; h: number }>; ink: TextItem[]; notebook: boolean }>;
+  /** The page's handwriting text, in page space. */
+  inkText(page: number): TextItem[];
+  /**
+   * Replace the page's handwriting text (with `within`, only the texts whose
+   * centre is inside it) with `lines`, in page space (default) or PDF points
+   * (`within` too); one undo step unless `quiet`. Returns the new ids.
+   */
+  setInkText(page: number, lines: Array<Omit<TextItem, "id">>, opts?: { space?: "page" | "pdf"; quiet?: boolean; within?: Rect }): string[];
+  /** The page's strokes, copied, in page space (default) or PDF points. */
+  strokes(page: number, opts?: { space?: "page" | "pdf" }): Stroke[];
+  /** The file's notebook tag: true, false, or null (decided per page). */
+  notebookTag(): boolean | null;
+  /** Set the notebook tag (null: decide per page). Not an undo step. */
+  setNotebookTag(v: boolean | null): void;
 }
 
 declare global {
@@ -129,19 +145,53 @@ export function createPdfinkApi(app: App): PdfinkApi {
     removeItems: (ids) => app.removeItems(ids),
     links: (page) => app.links(page),
     addLink(page, rect, url, opts) {
-      if (opts?.space === "pdf" && rect) {
-        const g = app.pageGeom(page);
-        const a = pdfToDisplay(g, rect.x, rect.y);
-        const b = pdfToDisplay(g, rect.x + rect.w, rect.y + rect.h);
-        rect = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
-      }
+      if (opts?.space === "pdf" && rect) rect = rectFromPdf(app.pageGeom(page), rect);
       return app.addLink(page, rect, url, opts?.label);
     },
     setLink: (id, patch) => app.setLink(id, patch),
     bookmarks: () => app.bookmarks.map((b) => ({ ...b })),
     addBookmark: (page, title, opts) => app.addBookmark(page, title, opts?.level ?? 0),
     removeBookmark: (index) => app.removeBookmark(index),
+    async pageText(page) {
+      const ink = app.inkText(page);
+      const [own, notebook] = await Promise.all([app.ownText(page), app.isNotebookPage(page)]);
+      return { own, ink, notebook };
+    },
+    inkText: (page) => app.inkText(page),
+    setInkText(page, lines, opts) {
+      let within = opts?.within;
+      if (opts?.space === "pdf") {
+        const g = app.pageGeom(page);
+        if (Array.isArray(lines)) lines = lines.map((l) => (isRect(l) ? { ...l, ...rectFromPdf(g, l) } : l));
+        if (isRect(within)) within = rectFromPdf(g, within);
+      }
+      return app.setInkText(page, lines, { quiet: opts?.quiet, within });
+    },
+    strokes(page, opts) {
+      const g = app.pageGeom(page); // checks the page
+      const toPdf = opts?.space === "pdf";
+      return app.pages[page].strokes.map((s) => ({
+        ...s,
+        points: s.points.map((p) => (toPdf ? { ...p, ...displayToPdf(g, p.x, p.y) } : { ...p })),
+      }));
+    },
+    notebookTag: () => app.notebookTag,
+    setNotebookTag: (v) => app.setNotebookTag(v),
   };
+}
+
+/** Whether `r` has finite numbers for x, y, w and h (anything else is left for App's checks to reject). */
+function isRect(r: unknown): r is Rect {
+  if (!r || typeof r !== "object") return false;
+  const { x, y, w, h } = r as Record<string, unknown>;
+  return [x, y, w, h].every((v) => typeof v === "number" && Number.isFinite(v));
+}
+
+/** A PDF-point rect as a page-space one, through the page's geometry. */
+function rectFromPdf(g: PageGeom, rect: Rect): Rect {
+  const a = pdfToDisplay(g, rect.x, rect.y);
+  const b = pdfToDisplay(g, rect.x + rect.w, rect.y + rect.h);
+  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
 }
 
 /** Evaluate a JavaScript expression with `pdfink` and `app` in scope; the awaited result goes through toJson. */

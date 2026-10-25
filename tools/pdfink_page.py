@@ -14,6 +14,7 @@ snake_case names, and call(name, *args) or eval(js) reach anything else.
     select clear_selection set_tool save reload undo redo add_page
     scroll_to_page add_strokes add_image remove_items
     links add_link set_link bookmarks add_bookmark remove_bookmark
+    page_text ink_text set_ink_text strokes notebook_tag set_notebook_tag
 
 Errors:
   PageGone   no page to talk to: $PDFINK_SOCKET is unset, the socket is dead or
@@ -333,6 +334,44 @@ class Page:
     def remove_bookmark(self, index: int) -> None:
         """Remove the outline entry at `index` and the entries nested under it."""
         return self.call("removeBookmark", index)
+
+    def page_text(self, page: int) -> dict[str, Any]:
+        """{"own": the document's own text [{text, x, y, w, h}], "ink": the
+        handwriting text [{id, x, y, w, h, text, sig?, note?}], "notebook":
+        whether the page saves as a notebook page}, all in page space."""
+        return self.call("pageText", page)
+
+    def ink_text(self, page: int) -> list[dict[str, Any]]:
+        """The page's handwriting text, in page space."""
+        return self.call("inkText", page)
+
+    def set_ink_text(
+        self,
+        page: int,
+        lines: list[dict[str, Any]],
+        space: str = "page",
+        quiet: bool = False,
+        within: dict[str, float] | None = None,
+    ) -> list[str]:
+        """Replace the page's handwriting text with `lines` ({x, y, w, h, text,
+        sig?, note?}) in page space or "pdf" points; with `within` (same space),
+        only the texts centred inside it. One undo step unless `quiet`. Their ids."""
+        opts: dict[str, Any] = {"space": space, "quiet": quiet}
+        if within is not None:
+            opts["within"] = within
+        return self.call("setInkText", page, list(lines), opts)
+
+    def strokes(self, page: int, space: str = "page") -> list[dict[str, Any]]:
+        """The page's strokes [{id, points: [{x, y, p}], color, width, opacity}], in page space or "pdf" points."""
+        return self.call("strokes", page, {"space": space})
+
+    def notebook_tag(self) -> bool | None:
+        """The file's notebook tag: True, False, or None (decided per page)."""
+        return self.call("notebookTag")
+
+    def set_notebook_tag(self, value: bool | None) -> None:
+        """Set the notebook tag; None leaves it to each page. Not an undo step."""
+        return self.call("setNotebookTag", value)
 
 
 def connect(optional: bool = False, timeout: float = 60.0) -> Page | None:

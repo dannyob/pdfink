@@ -158,7 +158,7 @@ sel = page.selection()
 page.toast(f"{len(sel['strokeIds'])} strokes selected" if sel else "nothing selected")
 ```
 
-The module sits next to the uv scripts in `tools/`; a script there finds it by adding its own directory to `sys.path` before the import (`sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`). Its methods are the `window.pdfink` ones in snake_case, plus `call(name, *args)`, `eval(js)` and `events(*names)` for page events such as `selection`, `notebook`, `button` and `bookmarks` (sent with the new list whenever it changes). `connect()` raises `PageGone` when there is no socket to talk to; `connect(optional=True)` returns `None` instead when `$PDFINK_SOCKET` is unset, for scripts that can also work on the file alone. Any call that waits for a reply can raise `PageGone` if the page goes away mid-run. A call the page rejects raises `PageError`.
+The module sits next to the uv scripts in `tools/`; a script there finds it by adding its own directory to `sys.path` before the import (`sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`). Its methods are the `window.pdfink` ones in snake_case, plus `call(name, *args)`, `eval(js)` and `events(*names)` for page events such as `selection`, `notebook`, `button`, `ink` and `bookmarks` (sent with the new list whenever it changes). `connect()` raises `PageGone` when there is no socket to talk to; `connect(optional=True)` returns `None` instead when `$PDFINK_SOCKET` is unset, for scripts that can also work on the file alone. Any call that waits for a reply can raise `PageGone` if the page goes away mid-run. A call the page rejects raises `PageError`.
 
 Links and bookmarks have their own calls. Pages are 0-based here, unlike `$PAGE`.
 
@@ -172,6 +172,19 @@ Links and bookmarks have their own calls. Pages are 0-based here, unlike `$PAGE`
 | `removeBookmark(index)` | Removes an entry and the entries nested under it. |
 
 In Python: `links(page=None)`, `add_link(page, rect, url, label=None, space="page")`, `set_link(id, url=None, label=None)`, `bookmarks()`, `add_bookmark(page, title, level=0)` and `remove_bookmark(index)`.
+
+Handwriting text, strokes and the notebook tag have calls too. A handwriting text line is `{ id, x, y, w, h, text, sig?, note? }` in page space: `sig` fingerprints the strokes it was read from, and lines with the same `note` number form one paragraph.
+
+| Call | What it does |
+| --- | --- |
+| `pageText(page)` | `{ own, ink, notebook }`: the document's own text as `{ text, x, y, w, h }` runs, the handwriting text, and whether the page saves as a notebook page (with an invisible text layer). |
+| `inkText(page)` | The page's handwriting text. |
+| `setInkText(page, lines, { space?, quiet?, within? })` | Replaces the page's handwriting text with `lines` (each without `id`) and returns the new ids. With `within`, only texts whose centre is inside that rect are replaced. `space: "pdf"` takes the lines and `within` in PDF points, origin bottom-left. One undo step, or none with `quiet`. A line with a non-finite number or non-string text fails. |
+| `strokes(page, { space? })` | The page's strokes: `{ id, points: [{ x, y, p }], color, width, opacity }`, in page space or, with `space: "pdf"`, PDF points. |
+| `notebookTag()` | The file's notebook tag: `true`, `false`, or `null` when each page decides (a page with no text of its own is a notebook page). |
+| `setNotebookTag(v)` | Sets the tag (`true`, `false` or `null`); not an undo step. |
+
+The `ink` event, `{ page }`, fires when a page's strokes change, and for every page when a document opens. In Python: `page_text(page)`, `ink_text(page)`, `set_ink_text(page, lines, space="page", quiet=False, within=None)`, `strokes(page, space="page")`, `notebook_tag()` and `set_notebook_tag(value)`.
 
 The demos use it. `tools/star.py` draws its star in the browser as one undoable stroke, and falls back to rewriting the file when there is no page, which is why its entry keeps `reload = true`. `tools/describe-selection.py` sends a PNG of the selection (or of the page, when nothing is selected) to a vision model and offers the answer in a dialog. `tools/journal-page.py` shows each stage as a progress line, asks for the date when it cannot read one off the page, and bookmarks the page with that date unless the same bookmark is already there.
 

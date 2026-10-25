@@ -202,6 +202,21 @@ class PageTests(unittest.TestCase):
             self.page.add_link(0, rect, "javascript:x")
         self.assertEqual(str(e.exception), "bad url")
 
+    def test_text_strokes_and_notebook_tag_mirror(self) -> None:
+        line = {"x": 1, "y": 2, "w": 3, "h": 4, "text": "hi"}
+        rect = {"x": 0, "y": 0, "w": 10, "h": 10}
+        self.assertEqual(self.page.page_text(2), {"call": "pageText", "args": [2]})
+        self.assertEqual(self.page.ink_text(1), {"call": "inkText", "args": [1]})
+        r = self.page.set_ink_text(0, [line])
+        self.assertEqual(r, {"call": "setInkText", "args": [0, [line], {"space": "page", "quiet": False}]})
+        r = self.page.set_ink_text(0, [line], space="pdf", quiet=True, within=rect)
+        self.assertEqual(r["args"], [0, [line], {"space": "pdf", "quiet": True, "within": rect}])
+        self.assertEqual(self.page.strokes(3), {"call": "strokes", "args": [3, {"space": "page"}]})
+        self.assertEqual(self.page.strokes(3, space="pdf")["args"], [3, {"space": "pdf"}])
+        self.assertEqual(self.page.notebook_tag(), {"call": "notebookTag", "args": []})
+        for v in (True, False, None):
+            self.assertEqual(self.page.set_notebook_tag(v), {"call": "setNotebookTag", "args": [v]})
+
     def test_large_result_one_line(self) -> None:
         png = self.page.selection_png()
         self.assertIsInstance(png, bytes)
