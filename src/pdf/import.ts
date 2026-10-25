@@ -14,14 +14,17 @@ import { rgbToHex } from "./color.ts";
 import { displaySize, normalizeRotate, pdfToDisplay, type PageGeom } from "./geom.ts";
 import { extractLinks } from "./links.ts";
 import { readOutline } from "./outline.ts";
+import { readNotebookTag, readTexts, stripLayer } from "./text.ts";
 
 export interface ImportedDocument {
-  /** The original PDF with all /Ink and URI /Link annotations removed. */
+  /** The original PDF with all /Ink and URI /Link annotations, /PdfinkText and the text layer removed. */
   baseBytes: Uint8Array;
   pages: PageModel[];
   geoms: PageGeom[];
   /** The document outline, depth-first. */
   bookmarks: Bookmark[];
+  /** The /PdfinkNotebook tag: true, false, or null when the file has none. */
+  notebook: boolean | null;
 }
 
 export function pageGeom(page: { getCropBox(): { x: number; y: number; width: number; height: number }; getRotation(): { angle: number } }): PageGeom {
@@ -147,7 +150,9 @@ export async function importPdf(bytes: Uint8Array): Promise<ImportedDocument> {
     const geom = pageGeom(page);
     geoms.push(geom);
     const size = displaySize(geom);
-    const model: PageModel = { width: size.width, height: size.height, strokes: [], images: [], links: [] };
+    const model: PageModel = { width: size.width, height: size.height, strokes: [], images: [], links: [], texts: readTexts(page, geom) };
+    page.node.delete(PDFName.of("PdfinkText"));
+    stripLayer(doc, page);
     const annots = page.node.Annots();
     if (annots) {
       const ink = extractInk(doc, annots, geom);
@@ -164,7 +169,8 @@ export async function importPdf(bytes: Uint8Array): Promise<ImportedDocument> {
     pages.push(model);
   }
   const bookmarks = readOutline(doc);
+  const notebook = readNotebookTag(doc);
   collectGarbage(doc);
   const baseBytes = await doc.save({ useObjectStreams: false, updateFieldAppearances: false });
-  return { baseBytes, pages, geoms, bookmarks };
+  return { baseBytes, pages, geoms, bookmarks, notebook };
 }

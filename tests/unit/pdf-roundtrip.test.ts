@@ -6,7 +6,7 @@ import { displayToPdf, pdfToDisplay } from "../../src/pdf/geom";
 import type { PageModel } from "../../src/model";
 
 function page(w = 612, h = 792): PageModel {
-  return { width: w, height: h, strokes: [], images: [], links: [] };
+  return { width: w, height: h, strokes: [], images: [], links: [], texts: [] };
 }
 
 describe("geom", () => {
@@ -28,7 +28,7 @@ describe("geom", () => {
 describe("pdf export/import", () => {
   it("refuses to export more pages of ink than the base has", async () => {
     const base = await createBlankPdf(1);
-    const pages = [{ width: 612, height: 792, strokes: [], images: [], links: [] }, { width: 612, height: 792, strokes: [], images: [], links: [] }];
+    const pages = [{ width: 612, height: 792, strokes: [], images: [], links: [], texts: [] }, { width: 612, height: 792, strokes: [], images: [], links: [], texts: [] }];
     await expect(exportPdf(base, pages)).rejects.toThrow(/2 pages but the PDF has 1/);
   });
 

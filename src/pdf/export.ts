@@ -1,4 +1,4 @@
-import { PDFDict, PDFDocument, PDFName, PDFString, degrees } from "pdf-lib";
+import { PDFDict, PDFDocument, PDFHexString, PDFName, PDFString, degrees, type PDFFont } from "pdf-lib";
 import type { Bookmark, ImageItem, PageModel, Stroke } from "../model.ts";
 import { LETTER } from "../model.ts";
 import { isUniformPressure, pressureFactor, maxPressureFactor } from "../model.ts";
@@ -7,6 +7,7 @@ import { displayToPdf, type PageGeom } from "./geom.ts";
 import { pageGeom } from "./import.ts";
 import { addLinkAnnotation } from "./links.ts";
 import { writeOutline } from "./outline.ts";
+import { addLayer, layerFont, notesText, stripLayer, writeNotebookTag, writeTexts } from "./text.ts";
 
 function fmt(n: number): string {
   return (Math.round(n * 1000) / 1000).toString();
@@ -138,12 +139,32 @@ async function drawImageItem(doc: PDFDocument, pageIndex: number, geom: PageGeom
   page.drawImage(img, { x: q.x, y: q.y, width: im.w, height: im.h, rotate: degrees(geom.rotate) });
 }
 
+/** Put the page's notes on its first /Ink annotation as /Contents. */
+function setInkContents(doc: PDFDocument, pageIndex: number, text: string): void {
+  const annots = doc.getPage(pageIndex).node.Annots();
+  if (!annots) return;
+  for (let k = 0; k < annots.size(); k++) {
+    const d = annots.lookup(k);
+    if (d instanceof PDFDict && d.get(PDFName.of("Subtype")) === PDFName.of("Ink")) {
+      d.set(PDFName.of("Contents"), PDFHexString.fromText(text));
+      return;
+    }
+  }
+}
+
+export interface ExportOptions {
+  /** The /PdfinkNotebook tag: undefined leaves it, null removes it, a boolean sets it. */
+  notebook?: boolean | null;
+  /** `textLayers[i]` writes page i's texts as an invisible text layer too. */
+  textLayers?: boolean[];
+}
+
 /**
  * Write the model back into `baseBytes` (a PDF with no ink annotations) and
  * return the finished PDF bytes. `bookmarks` replaces the outline (an empty
  * array removes it); left undefined, the base's /Outlines stay untouched.
  */
-export async function exportPdf(baseBytes: Uint8Array, pages: PageModel[], bookmarks?: Bookmark[]): Promise<Uint8Array> {
+export async function exportPdf(baseBytes: Uint8Array, pages: PageModel[], bookmarks?: Bookmark[], opts: ExportOptions = {}): Promise<Uint8Array> {
   const doc = await PDFDocument.load(baseBytes, { ignoreEncryption: true, updateMetadata: false });
   const count = doc.getPageCount();
   if (pages.length > count) {
@@ -151,22 +172,33 @@ export async function exportPdf(baseBytes: Uint8Array, pages: PageModel[], bookm
     // example a page added in the browser that the server never received).
     throw new Error(`ink for ${pages.length} pages but the PDF has ${count}`);
   }
+  let font: PDFFont | undefined;
   for (let i = 0; i < pages.length; i++) {
     const geom = pageGeom(doc.getPage(i));
     for (const im of pages[i].images) await drawImageItem(doc, i, geom, im);
     for (const ln of pages[i].links) addLinkAnnotation(doc, i, geom, ln);
     for (const g of groupStrokes(pages[i].strokes)) addInkAnnotation(doc, i, geom, g);
+    const texts = pages[i].texts ?? []; // pages from older clients have none
+    const page = doc.getPage(i);
+    stripLayer(doc, page); // a base that still has one never gets two
+    writeTexts(doc, page, geom, texts);
+    if (texts.length) {
+      setInkContents(doc, i, notesText(texts));
+      if (opts.textLayers?.[i]) addLayer(doc, page, geom, texts, (font ??= await layerFont(doc)));
+    }
   }
   if (bookmarks !== undefined) writeOutline(doc, bookmarks);
   doc.setProducer("pdfink");
+  if (opts.notebook !== undefined) writeNotebookTag(doc, opts.notebook);
   doc.setModificationDate(new Date());
   return doc.save({ useObjectStreams: false });
 }
 
-export async function createBlankPdf(pageCount = 1): Promise<Uint8Array> {
+export async function createBlankPdf(pageCount = 1, opts: { notebook?: boolean } = {}): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   for (let i = 0; i < pageCount; i++) doc.addPage([LETTER.width, LETTER.height]);
   doc.setProducer("pdfink");
+  if (opts.notebook !== undefined) writeNotebookTag(doc, opts.notebook);
   return doc.save({ useObjectStreams: false });
 }
 

@@ -70,6 +70,23 @@ export interface LinkItem {
   style?: { border: number[]; color?: number[] };
 }
 
+/**
+ * Handwriting as text: one line of recognised writing over its box in page
+ * space (top-left origin, display points), like a link.
+ */
+export interface TextItem {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
+  /** Fingerprint of the strokes the text was read from. */
+  sig?: string;
+  /** Lines with the same note number form one paragraph of the page's notes. */
+  note?: number;
+}
+
 /** One outline entry: a title, the 0-based page it opens (null when it has no destination in this document), and its depth (0 = top). */
 export interface Bookmark {
   title: string;
@@ -84,6 +101,7 @@ export interface PageModel {
   strokes: Stroke[];
   images: ImageItem[];
   links: LinkItem[];
+  texts: TextItem[];
 }
 
 export interface Rect {
@@ -93,11 +111,12 @@ export interface Rect {
   h: number;
 }
 
-/** Content on the internal clipboard: strokes/images/links relative to their bbox origin. */
+/** Content on the internal clipboard: strokes/images/links/texts relative to their bbox origin. */
 export interface ClipContent {
   strokes: Stroke[];
   images: ImageItem[];
   links: LinkItem[];
+  texts: TextItem[];
   width: number;
   height: number;
 }

@@ -24,7 +24,7 @@ function unique(prefix: string): string {
 }
 
 function blankPages(n: number): PageModel[] {
-  return Array.from({ length: n }, () => ({ width: 612, height: 792, strokes: [], images: [], links: [] }));
+  return Array.from({ length: n }, () => ({ width: 612, height: 792, strokes: [], images: [], links: [], texts: [] }));
 }
 
 /** The option texts of the bookmark select. */

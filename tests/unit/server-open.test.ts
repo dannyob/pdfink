@@ -25,7 +25,7 @@ afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const page = (): PageModel => ({ width: 612, height: 792, images: [], strokes: [], links: [] });
+const page = (): PageModel => ({ width: 612, height: 792, images: [], strokes: [], links: [], texts: [] });
 
 
 /** The /Link annotations on page `i`, as dicts. */
@@ -62,7 +62,7 @@ describe("server-side open", () => {
   it("envelope round-trips pages and base bytes", () => {
     const pages = [page()];
     pages[0].strokes.push({ id: "s", color: "#ff0000", width: 2, opacity: 0.5, points: [{ x: 1.5, y: 2.5, p: 0.25 }, { x: 3, y: 4, p: 1 }] });
-    const buf = encodeOpened({ baseBytes: new Uint8Array([37, 80, 68, 70]), pages, geoms: [], bookmarks: [] });
+    const buf = encodeOpened({ baseBytes: new Uint8Array([37, 80, 68, 70]), pages, geoms: [], bookmarks: [], notebook: null });
     const back = decodeOpened(new Uint8Array(buf).buffer as ArrayBuffer);
     expect(Array.from(back.baseBytes)).toEqual([37, 80, 68, 70]);
     expect(back.pages[0].strokes[0]).toMatchObject({ id: "s", color: "#ff0000", width: 2, opacity: 0.5 });
@@ -176,7 +176,7 @@ describe("server-side open", () => {
     const pages = [page()];
     pages[0].links.push({ id: "ln", x: 1.25, y: 2.5, w: 30, h: 40, url: "mailto:a@example.org" });
     const bms: Bookmark[] = [{ title: "T", page: null, level: 0 }];
-    const back = decodeOpened(new Uint8Array(encodeOpened({ baseBytes: new Uint8Array([37]), pages, geoms: [], bookmarks: bms })).buffer as ArrayBuffer);
+    const back = decodeOpened(new Uint8Array(encodeOpened({ baseBytes: new Uint8Array([37]), pages, geoms: [], bookmarks: bms, notebook: null })).buffer as ArrayBuffer);
     expect(back.pages[0].links).toEqual(pages[0].links);
     expect(back.bookmarks).toEqual(bms);
     // The save envelope only names bookmarks when given them.

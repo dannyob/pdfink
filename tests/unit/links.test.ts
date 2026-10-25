@@ -5,7 +5,7 @@ import { importPdf } from "../../src/pdf/import";
 import { linkUrlOk } from "../../src/pdf/links";
 import type { LinkItem, PageModel } from "../../src/model";
 
-const page = (w: number, h: number, links: LinkItem[] = []): PageModel => ({ width: w, height: h, strokes: [], images: [], links });
+const page = (w: number, h: number, links: LinkItem[] = []): PageModel => ({ width: w, height: h, strokes: [], images: [], links, texts: [] });
 
 /** One Letter page whose /Annots is an indirect array holding `annots` (each registered). */
 async function pdfWithAnnots(build: (doc: PDFDocument, pageRef: PDFRef) => PDFDict[]): Promise<Uint8Array> {

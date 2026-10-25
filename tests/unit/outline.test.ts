@@ -5,7 +5,7 @@ import { importPdf } from "../../src/pdf/import";
 import { readOutline, writeOutline } from "../../src/pdf/outline";
 import type { Bookmark, PageModel } from "../../src/model";
 
-const blankPages = (n: number): PageModel[] => Array.from({ length: n }, () => ({ width: 612, height: 792, strokes: [], images: [], links: [] }));
+const blankPages = (n: number): PageModel[] => Array.from({ length: n }, () => ({ width: 612, height: 792, strokes: [], images: [], links: [], texts: [] }));
 
 /** Hand-build an outline: `items` become a flat chain of top-level entries under a fresh /Outlines. */
 async function pdfWithOutline(pageCount: number, build: (doc: PDFDocument) => { items: Record<string, unknown>[]; count?: number }): Promise<Uint8Array> {

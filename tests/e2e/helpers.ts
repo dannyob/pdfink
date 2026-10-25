@@ -13,8 +13,8 @@ export async function notebookFixture(): Promise<string> {
   const file = path.join(FIXTURES, "notebook.pdf");
   const base = await createBlankPdf(2);
   const pages: PageModel[] = [
-    { width: 612, height: 792, strokes: [], images: [], links: [] },
-    { width: 612, height: 792, strokes: [], images: [], links: [] },
+    { width: 612, height: 792, strokes: [], images: [], links: [], texts: [] },
+    { width: 612, height: 792, strokes: [], images: [], links: [], texts: [] },
   ];
   for (let i = 0; i < 5; i++) {
     const pts = [];

@@ -28,6 +28,7 @@ describe("rotated pages", () => {
         height: size.height,
         images: [{ id: "a", x: 40, y: 40, w: 200, h: 120, mime: "image/png", bytes: png }],
         links: [],
+        texts: [],
         strokes: [
           {
             id: "s",

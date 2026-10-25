@@ -53,6 +53,7 @@ export function fromWirePages(pages: WirePage[]): PageModel[] {
     height: p.height,
     images: [],
     links: p.links ?? [],
+    texts: [],
     strokes: p.strokes.map((s): Stroke => {
       const points = [];
       for (let i = 0; i + 2 < s.points.length; i += 3) points.push({ x: s.points[i], y: s.points[i + 1], p: s.points[i + 2] });
