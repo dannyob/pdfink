@@ -1,4 +1,5 @@
 import * as pdfjs from "pdfjs-dist";
+import { pdfjsAssetOptions } from "./pdf/pdfjs-assets.ts";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { Bookmark, ClipContent, ImageItem, LinkItem, PageModel, Point, Rect, Stroke } from "./model";
 import { DEFAULT_PRESSURE, newId } from "./model";
@@ -516,7 +517,7 @@ export class App {
   private async setDocument(baseBytes: Uint8Array, pages: PageModel[]): Promise<void> {
     // Parse first so a bad file leaves the current document untouched.
     // pdf.js transfers the buffer to the worker, so give it a copy.
-    const pdfDoc = await pdfjs.getDocument({ data: baseBytes.slice() }).promise;
+    const pdfDoc = await pdfjs.getDocument({ data: baseBytes.slice(), ...pdfjsAssetOptions() }).promise;
     const geoms = await Promise.all(
       Array.from({ length: pdfDoc.numPages }, async (_, i): Promise<PageGeom> => {
         const { view, rotate } = await pdfDoc.getPage(i + 1);
