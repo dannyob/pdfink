@@ -93,7 +93,7 @@ text of its own", with a file tag overriding.*
 `PageModel` gains `texts: TextItem[]`:
 
 ```ts
-interface TextItem { id: string; x: number; y: number; w: number; h: number; text: string; sig?: string }
+interface TextItem { id: string; x: number; y: number; w: number; h: number; text: string; sig?: string; note?: number }
 ```
 
 Page space like links (top-left origin, display points). One item per line of
@@ -106,15 +106,18 @@ it, and moves with the strokes.
 ### In the file
 
 - **Source of truth:** a page dictionary entry `/PdfinkText`, an array of
-  `[x0 y0 x1 y1 (text) (sig)]` in PDF user space. Import reads it into `texts`;
+  `[x0 y0 x1 y1 (text) (sig) note]` in PDF user space. Import reads it into `texts`;
   export writes it from `texts`.
 - **Notebook pages:** export appends one content stream to the page that
   begins `% pdfink handwriting text` and holds the lines as invisible text
   (render mode 3), Helvetica, each line's font size its box height and its
   horizontal scaling stretched to its box width. Import removes a stream
   starting with that marker from the base, as it removes ink.
-- **Every page with text:** export writes the page's lines, top to bottom,
-  joined by newlines, as `/Contents` of the page's first ink annotation.
+- **Every page with text:** export writes the page's text as `/Contents` of
+  the page's first ink annotation: one paragraph per note (its lines joined
+  by spaces), notes in reading order separated by blank lines, e.g. "(this
+  is a pdfink note)\n\nI wonder what these folks ended up doing?". `TextItem`
+  carries a `note` number for this; items without one are a note each.
 - **The tag:** `/PdfinkNotebook` in the document information dictionary,
   `true` or `false`; absent means decide per page. A page "has text of its
   own" when pdf.js finds any non-blank text item in the base (the base no
@@ -141,9 +144,21 @@ pypdf or `pdftotext` on the file already do.
 `ocr-page.py PAGE` from the pen menu (needs the page bridge; without it,
 it says so and exits 1):
 
-1. Get the page's strokes and group them into lines: sort by vertical centre,
-   join a stroke to a line when they overlap vertically by at least half the
-   smaller height; small strokes (dots, commas) join the nearest line.
+1. Get the page's strokes and group them into lines, then lines into notes.
+   Annotating a paper (Danny's sample, "Attention Is All You Need") showed
+   what this has to cope with: margin notes in narrow columns of one to three
+   words a line, notes level with each other on opposite sides of a figure,
+   and connectors (a dash or arrow before most notes, a long arc from a word
+   in the text to its note).
+   - *Connectors* are set aside first: strokes much wider than a line is
+     tall and thin for their length. They are not words and must not stretch
+     a line's box.
+   - *Lines*: strokes join a line when they overlap vertically by at least
+     half the smaller height **and** sit within a few line-heights of it
+     horizontally, so notes level with each other stay apart. Small strokes
+     (dots, commas) join the nearest line.
+   - *Notes*: lines stacked closely with overlapping horizontal extents form
+     one note.
 2. Render the page (`pagePng`) and draw a small red number in the margin
    beside each line, on that copy only.
 3. Ask the vision model (same default and `llm` keys as journal-page.py) for
@@ -199,7 +214,10 @@ that sets the tag; New sets it to `true`.
 
 ## Left to the builder
 
-Whether a local vision model on the server machine is good enough for the automatic mode
+Check the grouping and the OCR against Danny's annotated paper
+(`NIPS-2017-attention-is-all-you-need-Paper.pdf` in the notebooks folder,
+pages 1 to 4) as well as the notebook pages; never commit it, fixtures are
+generated. Whether a local vision model on the server machine is good enough for the automatic mode
 (`--model` takes any `llm` model; test it against the same three pages as
 macOS Vision). Line-grouping thresholds; the exact JSON prompt; how the number labels are
 drawn; test fixtures.
@@ -209,3 +227,5 @@ drawn; test fixtures.
 - Copy puts the selection's handwriting text on the clipboard as plain text.
 - A find bar searching both kinds of text.
 - journal-page.py reusing the page's handwriting text instead of OCRing again.
+- Anchoring a margin note to the printed text its connector points at (the
+  word under the arrow's end), so a command can say what a note is about.
