@@ -54,6 +54,23 @@ def cursive(x: float, y: float, w: float, h: float) -> dict:
     return stroke(pts)
 
 
+def loopy(x: float, y: float, w: float, h: float, loops: int) -> dict:
+    """Cursive with loops: x runs back on itself at each loop."""
+    pts = []
+    for i in range(401):
+        t = i / 400 * loops * 2 * math.pi
+        pts.append((x + w * i / 400 - 4 * math.sin(t), y + h / 2 - h / 2 * math.cos(t)))
+    return stroke(pts)
+
+
+def polyline(corners: list[tuple[float, float]], k: int = 20) -> dict:
+    """Straight segments between corners, k points per segment."""
+    pts = []
+    for (a, b), (c, d) in zip(corners, corners[1:]):
+        pts += [(a + (c - a) * i / k, b + (d - b) * i / k) for i in range(k)]
+    return stroke(pts + [corners[-1]])
+
+
 def word(x: float, y: float, letters: int = 3) -> list[dict]:
     """A word of `letters` zig-zag strokes, 10 pt wide with 2 pt gaps."""
     return [zigzag(x + i * 12.0, y) for i in range(letters)]
@@ -127,10 +144,40 @@ class Connectors(unittest.TestCase):
         self.assertEqual((l1.x, l1.y, l1.w, l1.h), bbox(note1))
         self.assertEqual((l2.x, l2.y, l2.w, l2.h), bbox(note2))
 
-    def test_very_wide_stroke_is_connector_even_if_tall(self) -> None:
-        loop = stroke([(0, 0), (50, 60), (100, 0)])  # 100 x 60, >= 6 x 14 wide
-        self.assertTrue(is_connector(loop, H))
+    def test_tall_simple_curve_is_connector_but_zigzag_is_not(self) -> None:
+        peak = stroke([(0, 0), (50, 60), (100, 0)])  # 100 x 60, one reversal
+        self.assertTrue(is_connector(peak, H))
         self.assertFalse(is_connector(zigzag(0, 0, 40, H), H))
+
+    def test_arc_ending_in_a_head_pointing_down_right(self) -> None:
+        arc = [(i * 3.0, -40 * math.sin(math.pi * i / 100)) for i in range(101)]
+        barbs_above_left = stroke(arc + [(288, -4), (300, 0), (296, -12)])
+        retraced = stroke(arc + [(290, -10), (300, 0), (305, -12)])
+        self.assertTrue(is_connector(barbs_above_left, 20.0))
+        self.assertTrue(is_connector(retraced, 20.0))
+
+    def test_vertical_arrows_with_heads(self) -> None:
+        down = polyline([(0, 0), (0, 100), (-8, 90), (0, 100), (8, 90)])
+        up = polyline([(0, 100), (0, 0), (-8, 10), (0, 0), (8, 10)])
+        self.assertTrue(is_connector(down, 20.0))
+        self.assertTrue(is_connector(up, 20.0))
+
+    def test_arc_with_head_to_a_margin_note_does_not_swell_a_line(self) -> None:
+        rows = []
+        for r in range(3):
+            x, row = 40.0, []
+            for w in (60, 80, 50):
+                row.append(cursive(x, 100 + r * 35, w, 20))
+                x += w + 12
+            rows.append(row)
+        note = [cursive(420, 300, 60, 20), cursive(492, 300, 50, 20)]
+        arrow = stroke([(150 + i * 2.5, 175 + 125 * i / 100 - 40 * math.sin(math.pi * i / 100)) for i in range(101)]
+                       + [(395, 292), (400, 300), (390, 298)])
+        lines = group([s for row in rows for s in row] + note + [arrow])
+        self.assertEqual(len(lines), 4)
+        self.assertFalse(any(arrow["id"] in l.stroke_ids for l in lines))
+        for line, row in zip(lines, rows + [note]):
+            self.assertEqual((line.x, line.y, line.w, line.h), bbox(row))
 
 
 class Cursive(unittest.TestCase):
@@ -168,6 +215,18 @@ class Cursive(unittest.TestCase):
         self.assertFalse(is_connector(long_word, m))
         (line,) = group([long_word] + others)
         self.assertIn(long_word["id"], line.stroke_ids)
+
+    def test_short_and_loopy_words_are_kept(self) -> None:
+        m = 20.0
+        for name, w in [
+            ("of", cursive(0, 0, 22, 20)),
+            ("loopy 80x20", loopy(0, 0, 80, 20, 6)),
+            ("loopy 120x28", loopy(0, 0, 120, 28, 8)),
+            ("minimum", cursive(0, 0, 100, 12)),
+            ("mm", cursive(0, 0, 60, 25)),
+            ("lol", loopy(0, 0, 70, 30, 2)),
+        ]:
+            self.assertFalse(is_connector(w, m), name)
 
     def test_underline_under_a_word_is_a_connector(self) -> None:
         w = word(100, 200, 4)

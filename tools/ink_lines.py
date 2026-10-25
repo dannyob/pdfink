@@ -29,8 +29,13 @@ CONNECTOR_MIN_LENGTH = 3.0  # x median stroke height
 # ... and its ink is nearly a simple curve: path length close to its bbox
 # diagonal (about 1-1.3 for a dash or arc, well over 2 for writing) ...
 CONNECTOR_MAX_PATH_RATIO = 1.6  # path length / bbox diagonal
-# ... with few vertical direction reversals, ignoring jitter.
+# ... with few reversals across its main direction (in y for a stroke wider
+# than tall, in x otherwise), ignoring jitter. A long arc may reverse a few
+# times more (an arrowhead's barbs): it is allowed REVERSALS_PER_HEIGHT per
+# median height of its bbox diagonal. Cursive reverses about 2-3 times per
+# median height.
 CONNECTOR_MAX_REVERSALS = 2
+CONNECTOR_REVERSALS_PER_HEIGHT = 0.5
 REVERSAL_JITTER = 0.1  # x median stroke height
 # Lines.
 LINE_MIN_OVERLAP = 0.5  # of the smaller height
@@ -108,24 +113,28 @@ def _reversals(ys: list[float], jitter: float) -> int:
 
 
 def is_connector(stroke: dict, median_h: float | None = None) -> bool:
-    """True for a dash, underline, arrow shaft or arc: long relative to the
-    median stroke height, and its ink nearly a simple curve (path length close
-    to its bbox diagonal, few vertical reversals). Joined cursive words are
-    long too, but their ink zig-zags. `median_h` is the page's median stroke
-    height (TYPICAL_STROKE_HEIGHT when not given)."""
+    """True for a dash, underline, arrow (head and all) or arc: long relative
+    to the median stroke height, and its ink nearly a simple curve (path
+    length close to its bbox diagonal, few reversals across its main
+    direction). Joined cursive words are long too, but their ink zig-zags.
+    `median_h` is the page's median stroke height (TYPICAL_STROKE_HEIGHT when
+    not given)."""
     b = _bbox(stroke)
     if b is None:
         return False
     m = TYPICAL_STROKE_HEIGHT if median_h is None else median_h
     if m <= 0:
         return False
-    diag = math.hypot(b[2] - b[0], b[3] - b[1])
+    w, h = b[2] - b[0], b[3] - b[1]
+    diag = math.hypot(w, h)
     if diag < CONNECTOR_MIN_LENGTH * m:
         return False
     pts = stroke["points"]
     if _path_length(pts) > CONNECTOR_MAX_PATH_RATIO * diag:
         return False
-    return _reversals([p["y"] for p in pts], REVERSAL_JITTER * m) <= CONNECTOR_MAX_REVERSALS
+    across = [p["y"] for p in pts] if w >= h else [p["x"] for p in pts]
+    allowed = max(CONNECTOR_MAX_REVERSALS, CONNECTOR_REVERSALS_PER_HEIGHT * diag / m)
+    return _reversals(across, REVERSAL_JITTER * m) <= allowed
 
 
 def signature(strokes: list[dict]) -> str:
