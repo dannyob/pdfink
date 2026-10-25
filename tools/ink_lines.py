@@ -5,11 +5,14 @@ Pure stdlib. Strokes are dicts as the page API returns them, in page space
     {"id": str, "points": [{"x", "y", "p"}, ...], "color", "width", "opacity"}
 
 Rules (see docs/superpowers/specs/2026-10-25-handwriting-text-design.md):
-- Connectors (dashes, arrows, long arcs to a note) are set aside first.
+- Connectors (dashes, underlines, arrows, long arcs to a note) are set aside
+  first: strokes long for the line height whose ink is nearly a simple curve.
+  Joined cursive words are long too, but their ink zig-zags, so they stay.
 - A stroke joins a line when it overlaps the line vertically by at least half
   the smaller height and sits within a few line-heights of it horizontally,
   so notes level with each other on opposite sides of a figure stay apart.
-- Dots (and commas) join the nearest line.
+- Dots (and commas) join the nearest line, if it is close; stray ones are
+  left out.
 - Lines stacked closely with overlapping horizontal extents form one note.
 
 The thresholds below are starting values; tune them here.
@@ -17,19 +20,25 @@ The thresholds below are starting values; tune them here.
 from __future__ import annotations
 
 import hashlib
+import math
 import statistics
 from dataclasses import dataclass
 
-# Connector: wide and flat ...
-CONNECTOR_MIN_WIDTH = 3.0  # x median stroke height
-CONNECTOR_MAX_FLATNESS = 0.35  # height / width
-# ... or simply very wide.
-CONNECTOR_WIDE = 6.0  # x median stroke height
+# Connector: long relative to the median stroke height (bbox diagonal) ...
+CONNECTOR_MIN_LENGTH = 3.0  # x median stroke height
+# ... and its ink is nearly a simple curve: path length close to its bbox
+# diagonal (about 1-1.3 for a dash or arc, well over 2 for writing) ...
+CONNECTOR_MAX_PATH_RATIO = 1.6  # path length / bbox diagonal
+# ... with few vertical direction reversals, ignoring jitter.
+CONNECTOR_MAX_REVERSALS = 2
+REVERSAL_JITTER = 0.1  # x median stroke height
 # Lines.
 LINE_MIN_OVERLAP = 0.5  # of the smaller height
 LINE_MAX_GAP = 2.5  # x the line's height
 # Dots: both dimensions below this fraction of the median height.
 DOT_MAX = 0.3
+# A dot joins the nearest line only within this many of its line heights.
+DOT_MAX_DIST = 1.5
 # Notes.
 NOTE_MAX_GAP = 1.2  # x the taller line's height
 # Notes whose tops are within this many median heights read left to right.
@@ -66,25 +75,57 @@ def _union(a: Box, b: Box) -> Box:
 
 
 def median_height(strokes: list[dict]) -> float:
-    """Median bbox height of the strokes that have points (0 if none)."""
+    """Median bbox height of the strokes with points, leaving out strokes much
+    flatter than the raw median (dots, commas, dashes, underlines) so they do
+    not drag it down. 0 if there are no strokes."""
     hs = [b[3] - b[1] for b in map(_bbox, strokes) if b is not None]
-    return statistics.median(hs) if hs else 0.0
+    if not hs:
+        return 0.0
+    raw = statistics.median(hs)
+    tall = [h for h in hs if h >= DOT_MAX * raw]
+    return statistics.median(tall) if tall else raw
+
+
+def _path_length(pts: list[dict]) -> float:
+    return sum(math.hypot(b["x"] - a["x"], b["y"] - a["y"]) for a, b in zip(pts, pts[1:]))
+
+
+def _reversals(ys: list[float], jitter: float) -> int:
+    """Vertical direction changes, counting a turn only once the pen has come
+    back at least `jitter` from the last extreme."""
+    count, direction, extreme = 0, 0, ys[0]
+    for y in ys[1:]:
+        d = y - extreme
+        if direction == 0:
+            if abs(d) >= jitter:
+                direction, extreme = (1 if d > 0 else -1), y
+        elif direction * d > 0:
+            extreme = y
+        elif abs(d) >= jitter:
+            count += 1
+            direction, extreme = -direction, y
+    return count
 
 
 def is_connector(stroke: dict, median_h: float | None = None) -> bool:
-    """True for a dash, arrow or arc: much wider than a line is tall and thin
-    for its length, or simply very wide. `median_h` is the page's median
-    stroke height (TYPICAL_STROKE_HEIGHT when not given)."""
+    """True for a dash, underline, arrow shaft or arc: long relative to the
+    median stroke height, and its ink nearly a simple curve (path length close
+    to its bbox diagonal, few vertical reversals). Joined cursive words are
+    long too, but their ink zig-zags. `median_h` is the page's median stroke
+    height (TYPICAL_STROKE_HEIGHT when not given)."""
     b = _bbox(stroke)
     if b is None:
         return False
     m = TYPICAL_STROKE_HEIGHT if median_h is None else median_h
     if m <= 0:
         return False
-    w, h = b[2] - b[0], b[3] - b[1]
-    if w >= CONNECTOR_WIDE * m:
-        return True
-    return w >= CONNECTOR_MIN_WIDTH * m and h <= CONNECTOR_MAX_FLATNESS * w
+    diag = math.hypot(b[2] - b[0], b[3] - b[1])
+    if diag < CONNECTOR_MIN_LENGTH * m:
+        return False
+    pts = stroke["points"]
+    if _path_length(pts) > CONNECTOR_MAX_PATH_RATIO * diag:
+        return False
+    return _reversals([p["y"] for p in pts], REVERSAL_JITTER * m) <= CONNECTOR_MAX_REVERSALS
 
 
 def signature(strokes: list[dict]) -> str:
@@ -218,7 +259,9 @@ def group(strokes: list[dict]) -> list[Line]:
         words, dots = dots, []
     lines = _lines(words)
     for sid, b in dots:
-        min(lines, key=lambda g: _dist(b, g.box)).add(sid, b)
+        near = min(lines, key=lambda g: _dist(b, g.box))
+        if _dist(b, near.box) <= DOT_MAX_DIST * (near.box[3] - near.box[1]):
+            near.add(sid, b)
 
     out: list[Line] = []
     for n, note in enumerate(_notes(lines, m)):

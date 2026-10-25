@@ -12,6 +12,8 @@ margin-note size; the layouts mimic notes on an annotated paper.
 """
 from __future__ import annotations
 
+import math
+import random
 import sys
 import unittest
 from pathlib import Path
@@ -39,6 +41,16 @@ def stroke(points: list[tuple[float, float]], sid: str | None = None) -> dict:
 def zigzag(x: float, y: float, w: float = 10.0, h: float = H, n: int = 4) -> dict:
     """A zig-zag stroke filling the box (x, y, w, h)."""
     pts = [(x + w * i / n, y + (h if i % 2 else 0.0)) for i in range(n + 1)]
+    return stroke(pts)
+
+
+def cursive(x: float, y: float, w: float, h: float) -> dict:
+    """A joined cursive word as one stroke: oscillates full height, period ~8 pt."""
+    steps = int(w * 2)
+    pts = []
+    for i in range(steps + 1):
+        t = i / steps
+        pts.append((x + w * t, y + h / 2 + h / 2 * math.sin(t * w / 8 * 2 * math.pi)))
     return stroke(pts)
 
 
@@ -121,7 +133,70 @@ class Connectors(unittest.TestCase):
         self.assertFalse(is_connector(zigzag(0, 0, 40, H), H))
 
 
+class Cursive(unittest.TestCase):
+    def test_notebook_page_of_joined_words_is_kept(self) -> None:
+        rnd = random.Random(1)
+        rows = []
+        for r in range(4):
+            x, row = 40.0, []
+            for _ in range(4):
+                w = rnd.choice([40, 60, 80, 110, 150])
+                h = rnd.choice([15, 20, 25, 30])
+                row.append(cursive(x, 100 + r * 35 + (30 - h), w, h))
+                x += w + 12
+            rows.append(row)
+        strokes = [s for row in rows for s in row]
+        m = ink_lines.median_height(strokes)
+        self.assertEqual([s["id"] for s in strokes if is_connector(s, m)], [])
+        lines = group(strokes)
+        self.assertEqual(len(lines), 4)
+        for line, row in zip(lines, rows):
+            self.assertEqual(set(line.stroke_ids), ids(row))
+        self.assertEqual({l.note for l in lines}, {0})
+
+    def test_single_stroke_word_among_its_kind_is_kept(self) -> None:
+        words = [cursive(40, 100, 100, 20), cursive(150, 100, 60, 20), cursive(220, 100, 80, 20)]
+        m = ink_lines.median_height(words)
+        self.assertFalse(is_connector(words[0], m))
+        (line,) = group(words)
+        self.assertEqual(set(line.stroke_ids), ids(words))
+
+    def test_long_cursive_word_is_kept(self) -> None:
+        long_word = cursive(40, 100, 170, 18)
+        others = [cursive(220, 100, 50, 18), cursive(280, 100, 70, 18)]
+        m = ink_lines.median_height(others + [long_word])
+        self.assertFalse(is_connector(long_word, m))
+        (line,) = group([long_word] + others)
+        self.assertIn(long_word["id"], line.stroke_ids)
+
+    def test_underline_under_a_word_is_a_connector(self) -> None:
+        w = word(100, 200, 4)
+        underline = stroke([(98, 217), (125, 217.6), (150, 217.2)])  # 52 x 0.6
+        self.assertTrue(is_connector(underline, ink_lines.median_height(w + [underline])))
+        (line,) = group(w + [underline])
+        self.assertEqual(set(line.stroke_ids), ids(w))
+        self.assertEqual((line.x, line.y, line.w, line.h), bbox(w))
+
+    def test_jittery_arc_is_still_a_connector(self) -> None:
+        pts = [(100 + i * 3, 300 - 60 * math.sin(math.pi * i / 100) + (0.4 if i % 2 else 0)) for i in range(101)]
+        arc = stroke(pts)
+        self.assertTrue(is_connector(arc, H))
+
+
 class Dots(unittest.TestCase):
+    def test_far_stray_dot_is_left_out(self) -> None:
+        w = word(40, 100, 3) + word(80, 100, 3)
+        dot = stroke([(500, 700)])
+        (line,) = group(w + [dot])
+        self.assertNotIn(dot["id"], line.stroke_ids)
+        self.assertEqual((line.x, line.y, line.w, line.h), bbox(w))
+
+    def test_dots_and_dashes_do_not_drag_the_median_down(self) -> None:
+        w = [zigzag(100 + i * 12, 100, h=h) for i, h in enumerate([10, 12, 14, 16, 18])]
+        tiny = [stroke([(200, 300)]), stroke([(210, 300), (211, 300.5)]),
+                stroke([(220, 300), (260, 301)]), stroke([(270, 300), (300, 300)])]
+        self.assertAlmostEqual(ink_lines.median_height(w + tiny), 14)
+
     def test_dot_over_an_i_joins_its_line(self) -> None:
         w = word(100, 200, 3)
         dot = stroke([(113, 194), (114, 194.5)])  # above the line, 1 x 0.5
