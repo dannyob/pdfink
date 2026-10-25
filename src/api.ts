@@ -1,5 +1,5 @@
 /** Client for the pdfink server API (see server/index.ts). */
-import type { Bookmark, LinkItem, PageModel, Rect, Stroke } from "./model";
+import type { Bookmark, LinkItem, PageModel, Rect, Stroke, TextItem } from "./model";
 
 export interface NotebookInfo {
   name: string;
@@ -45,6 +45,8 @@ interface WirePage {
   strokes: { id: string; color: string; width: number; opacity: number; points: number[] }[];
   /** Absent from envelopes sent by older servers. */
   links?: LinkItem[];
+  /** Absent from envelopes sent by older servers. */
+  texts?: TextItem[];
 }
 
 export function fromWirePages(pages: WirePage[]): PageModel[] {
@@ -53,7 +55,7 @@ export function fromWirePages(pages: WirePage[]): PageModel[] {
     height: p.height,
     images: [],
     links: p.links ?? [],
-    texts: [],
+    texts: p.texts ?? [],
     strokes: p.strokes.map((s): Stroke => {
       const points = [];
       for (let i = 0; i + 2 < s.points.length; i += 3) points.push({ x: s.points[i], y: s.points[i + 1], p: s.points[i + 2] });
@@ -62,17 +64,26 @@ export function fromWirePages(pages: WirePage[]): PageModel[] {
   }));
 }
 
-/** Decode the /open envelope: 4-byte JSON length, JSON { pages, bookmarks }, base PDF. */
-export function decodeOpened(buf: ArrayBuffer): { baseBytes: Uint8Array; pages: PageModel[]; bookmarks: Bookmark[] } {
+/** What the server's /open sends back, decoded. */
+export interface OpenedNotebook {
+  baseBytes: Uint8Array;
+  pages: PageModel[];
+  bookmarks: Bookmark[];
+  /** The file's notebook tag; null when it has none (or the server is older). */
+  notebook: boolean | null;
+}
+
+/** Decode the /open envelope: 4-byte JSON length, JSON { pages, bookmarks, notebook }, base PDF. */
+export function decodeOpened(buf: ArrayBuffer): OpenedNotebook {
   const view = new DataView(buf);
   const jsonLen = view.getUint32(0);
   const json = new TextDecoder().decode(new Uint8Array(buf, 4, jsonLen));
-  const { pages, bookmarks } = JSON.parse(json) as { pages: WirePage[]; bookmarks?: Bookmark[] };
-  return { baseBytes: new Uint8Array(buf, 4 + jsonLen), pages: fromWirePages(pages), bookmarks: bookmarks ?? [] };
+  const { pages, bookmarks, notebook } = JSON.parse(json) as { pages: WirePage[]; bookmarks?: Bookmark[]; notebook?: boolean | null };
+  return { baseBytes: new Uint8Array(buf, 4 + jsonLen), pages: fromWirePages(pages), bookmarks: bookmarks ?? [], notebook: notebook ?? null };
 }
 
 /** Open a notebook parsed on the server (ink already separated from the base PDF). */
-export async function openNotebookParsed(name: string): Promise<{ baseBytes: Uint8Array; pages: PageModel[]; bookmarks: Bookmark[]; mtime: number }> {
+export async function openNotebookParsed(name: string): Promise<OpenedNotebook & { mtime: number }> {
   const res = await fetch(`/api/notebooks/${encodeURIComponent(name)}/open`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Could not open ${name}: ${await errorMessage(res)}`);
   const mtime = Number(res.headers.get("X-Mtime") ?? 0);
@@ -92,11 +103,22 @@ interface WireImage {
 }
 
 /**
- * Build the /save envelope: JSON { pages, images, baseLength, bookmarks? } plus
- * concatenated image bytes (and base PDF, if given). Leave `bookmarks`
- * undefined to keep the file's outline; an array (even empty) replaces it.
+ * How the server should write a saved notebook. `textLayers[i]` adds page i's
+ * invisible text layer; `notebook` undefined leaves the file's notebook tag,
+ * null removes it, a boolean sets it.
  */
-export function encodeSaveEnvelope(pages: PageModel[], baseBytes: Uint8Array | null = null, bookmarks?: Bookmark[]): Uint8Array {
+export interface SaveOptions {
+  textLayers?: boolean[];
+  notebook?: boolean | null;
+}
+
+/**
+ * Build the /save envelope: JSON { pages, images, baseLength, bookmarks?,
+ * textLayers?, notebook? } plus concatenated image bytes (and base PDF, if
+ * given). Leave `bookmarks` undefined to keep the file's outline; an array
+ * (even empty) replaces it. Options left undefined are left out.
+ */
+export function encodeSaveEnvelope(pages: PageModel[], baseBytes: Uint8Array | null = null, bookmarks?: Bookmark[], opts: SaveOptions = {}): Uint8Array {
   const wirePages = pages.map((p): WirePage => ({
     width: p.width,
     height: p.height,
@@ -108,6 +130,7 @@ export function encodeSaveEnvelope(pages: PageModel[], baseBytes: Uint8Array | n
       points: s.points.flatMap((q) => [Math.round(q.x * 1000) / 1000, Math.round(q.y * 1000) / 1000, Math.round(q.p * 10000) / 10000]),
     })),
     links: p.links,
+    texts: p.texts,
   }));
   const images: WireImage[] = [];
   const blobs: Uint8Array[] = [];
@@ -120,7 +143,16 @@ export function encodeSaveEnvelope(pages: PageModel[], baseBytes: Uint8Array | n
     }
   });
   const baseLength = baseBytes ? baseBytes.length : 0;
-  const json = new TextEncoder().encode(JSON.stringify({ pages: wirePages, images, baseLength, ...(bookmarks !== undefined ? { bookmarks } : {}) }));
+  const json = new TextEncoder().encode(
+    JSON.stringify({
+      pages: wirePages,
+      images,
+      baseLength,
+      ...(bookmarks !== undefined ? { bookmarks } : {}),
+      ...(opts.textLayers !== undefined ? { textLayers: opts.textLayers } : {}),
+      ...(opts.notebook !== undefined ? { notebook: opts.notebook } : {}),
+    }),
+  );
   const out = new Uint8Array(4 + json.length + offset + baseLength);
   new DataView(out.buffer).setUint32(0, json.length);
   out.set(json, 4);
@@ -134,10 +166,10 @@ export function encodeSaveEnvelope(pages: PageModel[], baseBytes: Uint8Array | n
 }
 
 /** Save a server notebook by sending only the ink; the server rebuilds the PDF. */
-export async function saveNotebookParsed(name: string, pages: PageModel[], ifMtime: number | null, baseBytes: Uint8Array | null = null, bookmarks?: Bookmark[]): Promise<NotebookInfo> {
+export async function saveNotebookParsed(name: string, pages: PageModel[], ifMtime: number | null, baseBytes: Uint8Array | null = null, bookmarks?: Bookmark[], opts: SaveOptions = {}): Promise<NotebookInfo> {
   const headers: Record<string, string> = { "Content-Type": "application/octet-stream" };
   if (ifMtime !== null) headers["X-If-Mtime"] = String(ifMtime);
-  const res = await fetch(`/api/notebooks/${encodeURIComponent(name)}/save`, { method: "PUT", headers, body: encodeSaveEnvelope(pages, baseBytes, bookmarks) as BodyInit });
+  const res = await fetch(`/api/notebooks/${encodeURIComponent(name)}/save`, { method: "PUT", headers, body: encodeSaveEnvelope(pages, baseBytes, bookmarks, opts) as BodyInit });
   if (res.status === 409) {
     const j = (await res.json()) as { error: string; mtime: number | null };
     throw new ConflictError(j.error, j.mtime);

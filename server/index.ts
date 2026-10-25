@@ -21,8 +21,9 @@
  *   PUT /api/notebooks/<name>     → body = PDF bytes. Header X-If-Mtime: "<ms>"
  *                                   (must match the file on disk) or "new"
  *                                   (file must not exist). 409 on mismatch.
- *   PUT /api/notebooks/<name>/save → body = envelope of stroke/image/link
- *                                   data and, optionally, the bookmarks (see
+ *   PUT /api/notebooks/<name>/save → body = envelope of stroke/image/link/
+ *                                   text data and, optionally, the bookmarks,
+ *                                   the text-layer pages and the notebook tag (see
  *                                   decodeSaveEnvelope); the server rebuilds
  *                                   the PDF from its ink-free base and writes
  *                                   it. Without bookmarks the file's outline
@@ -30,8 +31,9 @@
  *                                   plain PUT.
  *   GET /api/notebooks/<name>/open → the notebook parsed on the server: a
  *                                   binary envelope (see encodeOpened) holding
- *                                   the page/stroke/link JSON, the bookmarks
- *                                   and the PDF with the ink and URI links
+ *                                   the page/stroke/link/text JSON, the
+ *                                   bookmarks, the notebook tag and the PDF
+ *                                   with the ink and URI links
  *                                   stripped out. Keeps the browser from
  *                                   parsing 300 MB files.
  *   GET  /api/commands             → [{ id, label, reload, confirm, detach }]
@@ -64,8 +66,8 @@ import { importPdf, pageGeom, type ImportedDocument } from "../src/pdf/import.ts
 import { displayToPdf, type PageGeom } from "../src/pdf/geom.ts";
 import { defaultCommandsFile, loadCommands, startCommand, type CommandResult, type CommandSpec, type RunningCommand, type SelectionContext } from "./commands.ts";
 import { Bridge, type ExitInfo, type PageSocket } from "./bridge.ts";
-import { exportPdf } from "../src/pdf/export.ts";
-import type { Bookmark, ImageItem, LinkItem, PageModel } from "../src/model.ts";
+import { exportPdf, type ExportOptions } from "../src/pdf/export.ts";
+import type { Bookmark, ImageItem, LinkItem, PageModel, TextItem } from "../src/model.ts";
 
 export type Mode = "server" | "browser";
 
@@ -145,13 +147,15 @@ export async function atomicWrite(file: string, bytes: Uint8Array): Promise<void
   }
 }
 
-/** Compact wire form of a page: points as a flat [x, y, p, ...] array; links as plain JSON. */
+/** Compact wire form of a page: points as a flat [x, y, p, ...] array; links and texts as plain JSON. */
 interface WirePage {
   width: number;
   height: number;
   strokes: { id: string; color: string; width: number; opacity: number; points: number[] }[];
   /** Absent from envelopes sent by older pages. */
   links?: LinkItem[];
+  /** Absent from envelopes sent by older pages. */
+  texts?: TextItem[];
 }
 
 export function toWirePages(pages: PageModel[]): WirePage[] {
@@ -166,12 +170,13 @@ export function toWirePages(pages: PageModel[]): WirePage[] {
       points: s.points.flatMap((q) => [Math.round(q.x * 1000) / 1000, Math.round(q.y * 1000) / 1000, Math.round(q.p * 10000) / 10000]),
     })),
     links: p.links,
+    texts: p.texts,
   }));
 }
 
-/** Envelope: 4-byte big-endian JSON length, JSON { pages, bookmarks }, then the base PDF bytes. */
+/** Envelope: 4-byte big-endian JSON length, JSON { pages, bookmarks, notebook }, then the base PDF bytes. */
 export function encodeOpened(imported: ImportedDocument): Buffer {
-  const json = Buffer.from(JSON.stringify({ pages: toWirePages(imported.pages), bookmarks: imported.bookmarks }), "utf8");
+  const json = Buffer.from(JSON.stringify({ pages: toWirePages(imported.pages), bookmarks: imported.bookmarks, notebook: imported.notebook }), "utf8");
   const head = Buffer.alloc(4);
   head.writeUInt32BE(json.length, 0);
   return Buffer.concat([head, json, Buffer.from(imported.baseBytes)]);
@@ -183,7 +188,7 @@ export function fromWirePages(pages: WirePage[]): PageModel[] {
     height: p.height,
     images: [],
     links: p.links ?? [],
-    texts: [],
+    texts: p.texts ?? [],
     strokes: p.strokes.map((s) => {
       const points = [];
       for (let i = 0; i + 2 < s.points.length; i += 3) points.push({ x: s.points[i], y: s.points[i + 1], p: s.points[i + 2] });
@@ -206,15 +211,19 @@ interface WireImage {
 
 /**
  * Save envelope from the browser: 4-byte JSON length, JSON { pages, images,
- * baseLength, bookmarks? }, then the concatenated image bytes that
- * `images[].offset/length` index into, then `baseLength` bytes of base PDF.
- * `bookmarks` absent (older pages) means leave the file's outline alone; an
- * array, even empty, replaces it.
+ * baseLength, bookmarks?, textLayers?, notebook? }, then the concatenated
+ * image bytes that `images[].offset/length` index into, then `baseLength`
+ * bytes of base PDF. `bookmarks` absent (older pages) means leave the file's
+ * outline alone; an array, even empty, replaces it. `textLayers[i]` writes
+ * page i's texts as an invisible text layer too. `notebook` absent leaves the
+ * file's notebook tag alone, null removes it, a boolean sets it.
  */
-/** Throw unless links and bookmarks have the shapes exportPdf relies on. */
-function checkWireShapes(pages: unknown, bookmarks: unknown): void {
+/** Throw unless links, texts, bookmarks and the options have the shapes exportPdf relies on. */
+function checkWireShapes(pages: unknown, bookmarks: unknown, textLayers?: unknown, notebook?: unknown): void {
   if (!Array.isArray(pages)) throw new Error("pages must be an array");
-  pages.forEach((p: { links?: unknown }, i) => {
+  checkOptions(textLayers, notebook);
+  pages.forEach((p: { links?: unknown; texts?: unknown }, i) => {
+    checkTexts(p.texts, i);
     if (p.links === undefined) return;
     if (!Array.isArray(p.links)) throw new Error(`pages[${i}].links must be an array`);
     p.links.forEach((l: Record<string, unknown> | null, k) => {
@@ -242,16 +251,49 @@ function checkWireShapes(pages: unknown, bookmarks: unknown): void {
   });
 }
 
+function checkOptions(textLayers: unknown, notebook: unknown): void {
+  if (textLayers !== undefined && !(Array.isArray(textLayers) && textLayers.every((b) => typeof b === "boolean"))) throw new Error("textLayers must be an array of booleans");
+  if (notebook !== undefined && notebook !== null && typeof notebook !== "boolean") throw new Error("notebook must be true, false or null");
+}
+
+function checkTexts(texts: unknown, i: number): void {
+  if (texts === undefined) return;
+  if (!Array.isArray(texts)) throw new Error(`pages[${i}].texts must be an array`);
+  texts.forEach((t: Record<string, unknown> | null, k) => {
+    const where = `pages[${i}].texts[${k}]`;
+    if (!t || typeof t !== "object") throw new Error(`${where} must be an object`);
+    for (const f of ["x", "y", "w", "h"]) if (typeof t[f] !== "number" || !Number.isFinite(t[f])) throw new Error(`${where}.${f} must be a finite number`);
+    if (typeof t.text !== "string") throw new Error(`${where}.text must be a string`);
+    if (t.sig !== undefined && typeof t.sig !== "string") throw new Error(`${where}.sig must be a string`);
+    if (t.note !== undefined && !Number.isInteger(t.note)) throw new Error(`${where}.note must be a whole number`);
+  });
+}
+
 function finiteNumbers(o: unknown): boolean {
   return Array.isArray(o) && o.every((n) => typeof n === "number" && Number.isFinite(n));
 }
 
-export function decodeSaveEnvelope(buf: Buffer): { pages: PageModel[]; baseBytes: Uint8Array | null; bookmarks: Bookmark[] | undefined } {
+export interface SaveEnvelope {
+  pages: PageModel[];
+  baseBytes: Uint8Array | null;
+  bookmarks: Bookmark[] | undefined;
+  /** exportPdf options; each field absent when the envelope did not name it. */
+  opts: ExportOptions;
+}
+
+export function decodeSaveEnvelope(buf: Buffer): SaveEnvelope {
   if (buf.length < 4) throw new Error("short envelope");
   const jsonLen = buf.readUInt32BE(0);
   const json = buf.subarray(4, 4 + jsonLen).toString("utf8");
-  const { pages, images, baseLength, bookmarks } = JSON.parse(json) as { pages: WirePage[]; images: WireImage[]; baseLength?: number; bookmarks?: Bookmark[] };
-  checkWireShapes(pages, bookmarks);
+  const { pages, images, baseLength, bookmarks, textLayers, notebook } = JSON.parse(json) as {
+    pages: WirePage[];
+    images: WireImage[];
+    baseLength?: number;
+    bookmarks?: Bookmark[];
+    textLayers?: boolean[];
+    notebook?: boolean | null;
+  };
+  checkWireShapes(pages, bookmarks, textLayers, notebook);
   const blob = buf.subarray(4 + jsonLen);
   // Optional ink-free base PDF at the end of the blob (sent on forced overwrites).
   const baseBytes = baseLength ? new Uint8Array(blob.subarray(blob.length - baseLength)) : null;
@@ -262,7 +304,10 @@ export function decodeSaveEnvelope(buf: Buffer): { pages: PageModel[]; baseBytes
     const item: ImageItem = { id: im.id, x: im.x, y: im.y, w: im.w, h: im.h, mime: im.mime, bytes: new Uint8Array(blob.subarray(im.offset, im.offset + im.length)) };
     page.images.push(item);
   }
-  return { pages: out, baseBytes, bookmarks };
+  const opts: ExportOptions = {};
+  if (textLayers !== undefined) opts.textLayers = textLayers;
+  if (notebook !== undefined) opts.notebook = notebook;
+  return { pages: out, baseBytes, bookmarks, opts };
 }
 
 /** Parsed notebooks, keyed by name; valid while size and mtime match the file. */
@@ -608,8 +653,9 @@ async function handleApi(opts: ServerOptions, bridge: Bridge, req: http.Incoming
     let pages: PageModel[];
     let sentBase: Uint8Array | null;
     let bookmarks: Bookmark[] | undefined;
+    let exportOpts: ExportOptions;
     try {
-      ({ pages, baseBytes: sentBase, bookmarks } = decodeSaveEnvelope(body));
+      ({ pages, baseBytes: sentBase, bookmarks, opts: exportOpts } = decodeSaveEnvelope(body));
     } catch (err) {
       send(res, 400, { error: `bad save envelope: ${(err as Error).message}` });
       return;
@@ -625,7 +671,7 @@ async function handleApi(opts: ServerOptions, bridge: Bridge, req: http.Incoming
     const t0 = Date.now();
     let out: Uint8Array;
     try {
-      out = await exportPdf(baseBytes, pages, bookmarks);
+      out = await exportPdf(baseBytes, pages, bookmarks, exportOpts);
     } catch (err) {
       // e.g. more pages of ink than the base has: the client must send its base.
       send(res, 422, { error: (err as Error).message });

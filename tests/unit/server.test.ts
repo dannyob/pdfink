@@ -6,6 +6,10 @@ import net, { type AddressInfo } from "node:net";
 import { spawn } from "node:child_process";
 import { createServer, optionsFrom, validName } from "../../server/index";
 import { createBlankPdf } from "../../src/pdf/export";
+import { importPdf } from "../../src/pdf/import";
+import { decodeOpened, encodeSaveEnvelope } from "../../src/api";
+import { PDFDict, PDFDocument, PDFName } from "pdf-lib";
+import type { TextItem } from "../../src/model";
 
 let dir: string;
 let base: string;
@@ -407,5 +411,108 @@ describe("page bridge", () => {
     await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
     expect(await refused(`ws://127.0.0.1:${(srv.address() as AddressInfo).port}/api/page?session=x`)).toBe(true);
     await new Promise((r) => srv.close(r));
+  });
+});
+
+describe("texts and the notebook tag over the wire", () => {
+  const HELLO: TextItem = { id: "t1", x: 72, y: 100, w: 120, h: 20, text: "hello there", sig: "a1", note: 0 };
+  const WORLD: TextItem = { id: "t2", x: 72, y: 124, w: 80, h: 20, text: "world" };
+
+  async function openAt(name: string): Promise<{ mtime: number; opened: ReturnType<typeof decodeOpened> }> {
+    const res = await fetch(`${base}/api/notebooks/${name}/open`);
+    expect(res.status).toBe(200);
+    return { mtime: Number(res.headers.get("x-mtime")), opened: decodeOpened(await res.arrayBuffer()) };
+  }
+  const save = (name: string, mtime: number, body: Uint8Array) =>
+    fetch(`${base}/api/notebooks/${name}/save`, { method: "PUT", headers: { "X-If-Mtime": String(mtime) }, body: body as BodyInit });
+  /** Texts without their ids, which import gives out afresh. */
+  const noIds = (ts: TextItem[]) => ts.map(({ id: _id, ...rest }) => rest);
+  const hasLayerFont = (doc: PDFDocument, i = 0) => {
+    const fonts = doc.getPage(i).node.Resources()?.lookup(PDFName.of("Font"));
+    return fonts instanceof PDFDict && fonts.has(PDFName.of("PdfinkF1"));
+  };
+
+  it("/save writes texts, the text layer and the notebook tag; /open gives them back", async () => {
+    fs.writeFileSync(path.join(dir, "tx.pdf"), await createBlankPdf(1));
+    let { mtime, opened } = await openAt("tx.pdf");
+    expect(opened.notebook).toBeNull();
+    expect(opened.pages[0].texts).toEqual([]);
+    opened.pages[0].texts.push(HELLO, WORLD);
+    let res = await save("tx.pdf", mtime, encodeSaveEnvelope(opened.pages, null, undefined, { textLayers: [true], notebook: true }));
+    expect(res.status).toBe(200);
+
+    const bytes = new Uint8Array(fs.readFileSync(path.join(dir, "tx.pdf")));
+    expect(hasLayerFont(await PDFDocument.load(bytes, { updateMetadata: false }))).toBe(true);
+    const imported = await importPdf(bytes);
+    expect(imported.notebook).toBe(true);
+    expect(noIds(imported.pages[0].texts)).toEqual(noIds([HELLO, WORLD]));
+
+    ({ mtime, opened } = await openAt("tx.pdf"));
+    expect(opened.notebook).toBe(true);
+    expect(noIds(opened.pages[0].texts)).toEqual(noIds([HELLO, WORLD]));
+
+    // An envelope without the new fields leaves the tag alone and writes no layer.
+    res = await save("tx.pdf", mtime, encodeSaveEnvelope(opened.pages));
+    expect(res.status).toBe(200);
+    let doc = await PDFDocument.load(fs.readFileSync(path.join(dir, "tx.pdf")), { updateMetadata: false });
+    expect(hasLayerFont(doc)).toBe(false);
+    ({ mtime, opened } = await openAt("tx.pdf"));
+    expect(opened.notebook).toBe(true);
+    expect(noIds(opened.pages[0].texts)).toEqual(noIds([HELLO, WORLD]));
+
+    // notebook: null takes the tag off; false sets it false.
+    res = await save("tx.pdf", mtime, encodeSaveEnvelope(opened.pages, null, undefined, { notebook: null }));
+    expect(res.status).toBe(200);
+    ({ mtime, opened } = await openAt("tx.pdf"));
+    expect(opened.notebook).toBeNull();
+    res = await save("tx.pdf", mtime, encodeSaveEnvelope(opened.pages, null, undefined, { notebook: false }));
+    expect(res.status).toBe(200);
+    ({ opened } = await openAt("tx.pdf"));
+    expect(opened.notebook).toBe(false);
+    doc = await PDFDocument.load(fs.readFileSync(path.join(dir, "tx.pdf")), { updateMetadata: false });
+    expect(hasLayerFont(doc)).toBe(false);
+  });
+
+  it("the save envelope names textLayers and notebook only when given them", () => {
+    const pages = [{ width: 612, height: 792, strokes: [], images: [], links: [], texts: [HELLO] }];
+    const json = (env: Uint8Array) => JSON.parse(new TextDecoder().decode(env.subarray(4, 4 + new DataView(env.buffer).getUint32(0)))) as Record<string, unknown>;
+    const plain = json(encodeSaveEnvelope(pages));
+    expect(plain).not.toHaveProperty("textLayers");
+    expect(plain).not.toHaveProperty("notebook");
+    expect(plain.pages).toEqual([expect.objectContaining({ texts: [HELLO] })]);
+    expect(json(encodeSaveEnvelope(pages, null, undefined, { notebook: null }))).toMatchObject({ notebook: null });
+    expect(json(encodeSaveEnvelope(pages, null, undefined, { textLayers: [false], notebook: true }))).toMatchObject({ textLayers: [false], notebook: true });
+  });
+
+  it("/save answers 400 to texts, textLayers or notebook of the wrong shape", async () => {
+    fs.writeFileSync(path.join(dir, "txshape.pdf"), await createBlankPdf(1));
+    const { mtime } = await openAt("txshape.pdf");
+    const raw = (obj: unknown): Uint8Array => {
+      const j = Buffer.from(JSON.stringify(obj), "utf8");
+      const head = Buffer.alloc(4);
+      head.writeUInt32BE(j.length, 0);
+      return new Uint8Array(Buffer.concat([head, j]));
+    };
+    const wire = (texts: unknown) => ({ pages: [{ width: 612, height: 792, strokes: [], texts }], images: [], baseLength: 0 });
+    const cases: [unknown, string][] = [
+      [wire([{ ...HELLO, x: "72" }]), "pages[0].texts[0].x must be a finite number"],
+      [wire([{ ...HELLO, h: null }]), "pages[0].texts[0].h must be a finite number"],
+      [wire([{ ...HELLO, text: 5 }]), "pages[0].texts[0].text must be a string"],
+      [wire([{ ...HELLO, sig: 1 }]), "pages[0].texts[0].sig must be a string"],
+      [wire([{ ...HELLO, note: 1.5 }]), "pages[0].texts[0].note must be a whole number"],
+      [wire([{ ...HELLO, note: "0" }]), "pages[0].texts[0].note must be a whole number"],
+      [wire([null]), "pages[0].texts[0] must be an object"],
+      [wire("nope"), "pages[0].texts must be an array"],
+      [{ ...wire([HELLO]), textLayers: true }, "textLayers must be an array of booleans"],
+      [{ ...wire([HELLO]), textLayers: [1] }, "textLayers must be an array of booleans"],
+      [{ ...wire([HELLO]), notebook: "yes" }, "notebook must be true, false or null"],
+    ];
+    for (const [body, msg] of cases) {
+      const res = await save("txshape.pdf", mtime, raw(body));
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toContain(msg);
+    }
+    const res = await save("txshape.pdf", mtime, raw({ ...wire([HELLO, WORLD]), textLayers: [true], notebook: true }));
+    expect(res.status).toBe(200);
   });
 });
