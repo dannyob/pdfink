@@ -26,6 +26,12 @@
 command = uv run --script tools/star.py "$PDF" "$PAGE" "$X" "$Y"
 reload = true
 
+[Timestamp]
+# A red chevron and the date and time in ink at the pen tip, plus a bookmark
+# titled with them; journal-page.py dates the entry from that bookmark.
+command = uv run --script tools/timestamp.py "$PDF" "$PAGE" "$X" "$Y" --page-width "$PAGE_WIDTH"
+reload = true
+
 [Describe selection]
 # Sends a PNG of the selection (or the page) to a vision model through llm
 # and offers the answer in a dialog; see tools/describe-selection.py.

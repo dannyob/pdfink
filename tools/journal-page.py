@@ -15,7 +15,9 @@ works from a shell too. Steps:
    for the entry's writing as markdown under a `## YYYY-MM-DD` heading. The
    date is read off the page itself, so this works for any day, not just
    today; `--date` pins it when the page has no legible date (or several
-   entries and you want one). Give it the entry's first page: it keeps
+   entries and you want one). A page stamped by timestamp.py (a red chevron,
+   the date and time, and a bookmark titled with them) is dated by that
+   bookmark, and the model is told to keep the stamp's time in the text. Give it the entry's first page: it keeps
    reading onto following pages until a new dated entry starts, the topic
    plainly changes, the words "Journal ends" appear, or --max-pages is hit.
 2. Save the markdown under ~/.cache/pdfink/journal (or --out DIR). Not under
@@ -56,8 +58,10 @@ import pdfink_page  # noqa: E402
 DEFAULT_MODEL = "openrouter/google/gemini-3.7-flash"
 DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2}|UNDATED)\s*$", re.M)
 PAGES_RE = re.compile(r"<!--\s*pages?\s*:\s*(\d+)\s*(?:[-–]\s*(\d+))?\s*-->")
+TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}$")
+TIMESTAMP_RULES = """A small red chevron followed by a date and time written in neat, even strokes (like `> 2026-10-25 13:46`) is a timestamp stamped by the notebook app. It dates the writing after it: the date belongs in the entry's heading, and the time goes in the transcript as a line `**13:46**` where the stamp is. Leave out the chevron and the date."""
 STOP_RULES = """Stop at the end of this entry, which is the first of:
-- a new entry beginning with its own date,
+- a new entry beginning with its own date, handwritten or as a red chevron timestamp for a different day (a timestamp for the same day continues the entry),
 - the words "Journal ends", "End of journal" or similar (leave them out),
 - the writing plainly turning into something else (a to-do list, meeting notes, a different topic with its own heading),
 - the pages running out."""
@@ -88,12 +92,19 @@ def ask_date(today: str) -> str | None:
     return answer.strip() if isinstance(answer, str) and answer.strip() else None
 
 
+def is_entry_bookmark(title: str, date: str) -> bool:
+    """A bookmark that already marks `date`: the date itself or a timestamp on that day."""
+    m = TS_RE.match(title)
+    return title == date or (m is not None and m.group(1) == date)
+
+
 def bookmark_entry(page_index: int, date: str) -> None:
-    """Bookmark the entry's first page with its date, unless already so; a no-op without a page."""
+    """Bookmark the entry's first page with its date, unless a bookmark there (the
+    date, or a timestamp.py stamp on that day) already marks it; a no-op without a page."""
     if PAGE is None:
         return
     try:
-        if not any(b["title"] == date and b["page"] == page_index for b in PAGE.bookmarks()):
+        if not any(is_entry_bookmark(b["title"], date) and b["page"] == page_index for b in PAGE.bookmarks()):
             PAGE.add_bookmark(page_index, date)
     except (pdfink_page.PageGone, pdfink_page.PageError, TimeoutError, TypeError, KeyError) as e:
         log(f"could not bookmark the page: {e}")
@@ -113,6 +124,35 @@ def life_dir(explicit: str | None) -> Path:
     except (OSError, subprocess.SubprocessError):
         pass
     return Path.home() / "Private/nextcloud/life"
+
+
+def timestamp_dates(pdf: Path, page: int) -> list[str]:
+    """Dates of the timestamp.py stamps bookmarked on `page` (1-based), in outline order."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(pdf))
+    dates: list[str] = []
+
+    def walk(items) -> None:
+        for item in items:
+            if isinstance(item, list):
+                walk(item)
+                continue
+            m = TS_RE.match(str(getattr(item, "title", "") or ""))
+            if not m:
+                continue
+            try:
+                on = reader.get_destination_page_number(item)
+            except Exception:  # noqa: BLE001 - an odd destination is just not a stamp
+                continue
+            if on == page - 1 and m.group(1) not in dates:
+                dates.append(m.group(1))
+
+    try:
+        walk(reader.outline)
+    except Exception as e:  # noqa: BLE001 - a broken outline should not stop transcription
+        log(f"could not read the bookmarks: {e}")
+    return dates
 
 
 def page_count(pdf: Path) -> int:
@@ -204,7 +244,7 @@ def transcribe(pdf: Path, page: int, model_id: str, date: str | None, batch: int
         raise SystemExit(f"page {page} out of range: {pdf.name} has {n} page{'s' if n != 1 else ''}")
     hint = f'the handwritten notebook "{pdf.name}"'
     year = year_hint(pdf)
-    rules = """Output markdown only, nothing before or after it. Transcribe the writing faithfully: keep lists, headings, emphasis, arrows and crossings-out as written; do not summarise, interpret, correct or add commentary. Sketches and diagrams may be rendered as a DOT or Mermaid code block. Mark words you cannot read as [illegible]. Finish with a line `<!-- pages: A-B -->` giving the first and last of the attached pages you transcribed (numbered as in the notebook)."""
+    rules = f"""Output markdown only, nothing before or after it. Transcribe the writing faithfully: keep lists, headings, emphasis, arrows and crossings-out as written; do not summarise, interpret, correct or add commentary. Sketches and diagrams may be rendered as a DOT or Mermaid code block. Mark words you cannot read as [illegible]. {TIMESTAMP_RULES} Finish with a line `<!-- pages: A-B -->` giving the first and last of the attached pages you transcribed (numbered as in the notebook)."""
 
     # First batch: find the entry and its date.
     last_attached = min(n, page + batch - 1)
@@ -299,23 +339,29 @@ def main() -> int:
 
 
 def run(a: argparse.Namespace, pdf: Path) -> int:
+    pinned = a.date
+    if not pinned:
+        stamped = timestamp_dates(pdf, a.page)
+        if len(stamped) == 1:
+            pinned = stamped[0]
+            log(f"page {a.page} is timestamped {pinned}")
     log(f"transcribing from page {a.page} of {pdf.name} with {a.model}…")
-    text, last_page = transcribe(pdf, a.page, a.model, a.date, max(1, a.batch), max(1, a.max_pages))
+    text, last_page = transcribe(pdf, a.page, a.model, pinned, max(1, a.batch), max(1, a.max_pages))
     span = f"page {a.page}" if last_page == a.page else f"pages {a.page}-{last_page}"
     if text == "NO ENTRY" or not text:
         print(f"no journal writing found on page {a.page} of {pdf.name}")
         return 1
     dates = DATE_RE.findall(text)
     if not dates:
-        if a.date:
-            text = f"## {a.date}\n\n{text}"
-            dates = [a.date]
+        if pinned:
+            text = f"## {pinned}\n\n{text}"
+            dates = [pinned]
         else:
             print(f"page {a.page}: could not find a dated entry; pass --date YYYY-MM-DD")
             log(text)
             return 1
     if "UNDATED" in dates:
-        date = a.date or ask_date(dt.date.today().isoformat())
+        date = pinned or ask_date(dt.date.today().isoformat())
         if not date:
             print(f"page {a.page}: the writing has no legible date; pass --date YYYY-MM-DD")
             log(text)

@@ -18,23 +18,13 @@ you can select or erase.
 """
 import math
 import os
-import shutil
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pdfink_page  # noqa: E402
+from pdf_ink import InkStroke, add_ink, write_in_place  # noqa: E402
 
-from pypdf import PdfReader, PdfWriter
-from pypdf.generic import (
-    ArrayObject,
-    DictionaryObject,
-    FloatObject,
-    NameObject,
-    NumberObject,
-    StreamObject,
-    TextStringObject,
-)
+from pypdf import PdfWriter
 
 
 def star_points(cx: float, cy: float, r: float, n: int = 5) -> list[tuple[float, float]]:
@@ -60,47 +50,12 @@ def draw_in_browser(page: pdfink_page.Page, page_no: int, pts: list[tuple[float,
 
 def stamp_file(path: str, page_no: int, pts: list[tuple[float, float]]) -> int:
     """Write the star into the PDF as an /Ink annotation; 0, or 1 on a bad page."""
-    width, colour = 1.5, (0.85, 0.1, 0.1)
     writer = PdfWriter(clone_from=path)
     if not 1 <= page_no <= len(writer.pages):
         print(f"page {page_no} out of range (1..{len(writer.pages)})", file=sys.stderr)
         return 1
-    m = width + 1
-    x0, y0 = min(p[0] for p in pts) - m, min(p[1] for p in pts) - m
-    x1, y1 = max(p[0] for p in pts) + m, max(p[1] for p in pts) + m
-
-    # Appearance stream: what viewers draw.
-    ops = [f"q {colour[0]:g} {colour[1]:g} {colour[2]:g} RG {width:g} w 1 J 1 j"]
-    ops.append(f"{pts[0][0]:.2f} {pts[0][1]:.2f} m")
-    ops += [f"{px:.2f} {py:.2f} l" for px, py in pts[1:]]
-    ops.append("S Q")
-    ap = StreamObject()
-    ap.set_data("\n".join(ops).encode())
-    ap.update({
-        NameObject("/Type"): NameObject("/XObject"),
-        NameObject("/Subtype"): NameObject("/Form"),
-        NameObject("/BBox"): ArrayObject(FloatObject(v) for v in (x0, y0, x1, y1)),
-    })
-    ap_ref = writer._add_object(ap)
-
-    annot = DictionaryObject({
-        NameObject("/Type"): NameObject("/Annot"),
-        NameObject("/Subtype"): NameObject("/Ink"),
-        NameObject("/Rect"): ArrayObject(FloatObject(v) for v in (x0, y0, x1, y1)),
-        NameObject("/InkList"): ArrayObject([ArrayObject(FloatObject(v) for p in pts for v in p)]),
-        NameObject("/C"): ArrayObject(FloatObject(c) for c in colour),
-        NameObject("/BS"): DictionaryObject({NameObject("/W"): FloatObject(width)}),
-        NameObject("/F"): NumberObject(4),
-        NameObject("/T"): TextStringObject("star.py"),
-        NameObject("/AP"): DictionaryObject({NameObject("/N"): ap_ref}),
-    })
-    writer.add_annotation(page_number=page_no - 1, annotation=annot)
-
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), suffix=".pdf")
-    with os.fdopen(fd, "wb") as f:
-        writer.write(f)
-    shutil.copymode(path, tmp)  # mkstemp makes it 0600; keep the notebook's own mode
-    os.replace(tmp, path)
+    add_ink(writer, page_no - 1, InkStroke(pts, (0.85, 0.1, 0.1), 1.5), "star.py")
+    write_in_place(writer, path)
     return 0
 
 
