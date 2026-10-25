@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFString, degrees } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFRawStream, PDFRef, PDFStream, PDFString, decodePDFRawStream, degrees, rgb } from "pdf-lib";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createBlankPdf, exportPdf } from "../../src/pdf/export";
 import { importPdf } from "../../src/pdf/import";
@@ -42,6 +42,14 @@ function contentCount(pdf: PDFDocument, i = 0): number {
   const c = pdf.getPage(i).node.Contents();
   if (!c) return 0;
   return c instanceof PDFArray ? c.size() : 1;
+}
+
+/** The page's content streams, decoded, in order. */
+function contentData(pdf: PDFDocument, i = 0): string[] {
+  const raw = pdf.getPage(i).node.get(PDFName.of("Contents"));
+  const c = raw instanceof PDFRef ? pdf.context.lookup(raw) : raw;
+  const items = c instanceof PDFArray ? Array.from({ length: c.size() }, (_, k) => c.lookup(k)) : [c];
+  return items.map((s) => (s instanceof PDFRawStream ? new TextDecoder("latin1").decode(decodePDFRawStream(s).decode()) : String(s)));
 }
 
 function firstInk(pdf: PDFDocument, i = 0): PDFDict | undefined {
@@ -190,5 +198,46 @@ describe("handwriting text in the PDF", () => {
     expect(contentCount(out)).toBe(before);
     expect(out.getPage(0).node.get(PDFName.of("PdfinkText"))).toBeUndefined();
   });
-});
 
+  it("repeated layered saves of a page with its own content keep /Contents stable and the content untouched", async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([612, 792]).drawRectangle({ x: 50, y: 50, width: 100, height: 40, color: rgb(1, 0, 0) });
+    const base = await doc.save({ useObjectStreams: false });
+    const original = contentData(await PDFDocument.load(base));
+    let bytes = await exportPdf(base, [page([HELLO])], undefined, { textLayers: [true] });
+    const layeredCount = contentCount(await PDFDocument.load(bytes));
+    for (let n = 0; n < 5; n++) {
+      const r = await importPdf(bytes);
+      expect(contentData(await PDFDocument.load(r.baseBytes))).toEqual(original);
+      bytes = await exportPdf(r.baseBytes, r.pages, undefined, { textLayers: [true] });
+      expect(contentCount(await PDFDocument.load(bytes))).toBe(layeredCount);
+    }
+    const [p] = await pdfjsText(bytes);
+    expect(nonBlank(p.items).map((it) => it.str)).toEqual(["hello there"]);
+  });
+
+  it("a page whose /Contents is a single stream gets it back as a single stream", async () => {
+    const doc = await PDFDocument.create();
+    const pg = doc.addPage([612, 792]);
+    const stream = doc.context.register(doc.context.flateStream("0 0 1 rg 10 10 50 50 re f"));
+    pg.node.set(PDFName.of("Contents"), stream);
+    const base = await doc.save({ useObjectStreams: false });
+    const original = contentData(await PDFDocument.load(base));
+    const r = await importPdf(await exportPdf(base, [page([HELLO])], undefined, { textLayers: [true] }));
+    const back = await PDFDocument.load(r.baseBytes);
+    const c = back.getPage(0).node.Contents();
+    expect(c instanceof PDFStream).toBe(true);
+    expect(contentData(back)).toEqual(original);
+  });
+
+  it("the layer is not moved by a base whose content leaves the CTM changed", async () => {
+    const doc = await PDFDocument.create();
+    const pg = doc.addPage([612, 792]);
+    pg.node.set(PDFName.of("Contents"), doc.context.register(doc.context.flateStream("2 0 0 2 0 0 cm 0 0 1 rg 1 1 5 5 re f")));
+    const bytes = await exportPdf(await doc.save({ useObjectStreams: false }), [page([HELLO])], undefined, { textLayers: [true] });
+    const [p] = await pdfjsText(bytes);
+    const item = p.items.find((it) => it.str === "hello there")!;
+    expect(Math.abs(item.transform[4] - 72)).toBeLessThanOrEqual(1);
+    expect(Math.abs(item.width - 120)).toBeLessThanOrEqual(2);
+  });
+});

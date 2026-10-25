@@ -95,7 +95,11 @@ function isLayer(doc: PDFDocument, o: unknown): boolean {
   return head === LAYER_MARKER;
 }
 
-/** Remove the invisible text layer (and its font resource) from the page's /Contents. */
+/**
+ * Remove the invisible text layer (its marked leading `q` stream and the
+ * trailing layer stream) and its font resource from the page. When one
+ * stream is left it goes back to being /Contents on its own, as it was.
+ */
 export function stripLayer(doc: PDFDocument, page: PDFPage): void {
   const key = PDFName.of("Contents");
   const raw = page.node.get(key);
@@ -108,7 +112,11 @@ export function stripLayer(doc: PDFDocument, page: PDFPage): void {
       if (isLayer(doc, e)) stripped = true;
       else kept.push(e);
     }
-    if (stripped) page.node.set(key, doc.context.obj(kept));
+    if (stripped) {
+      if (kept.length === 0) page.node.delete(key);
+      else if (kept.length === 1) page.node.set(key, kept[0]);
+      else page.node.set(key, doc.context.obj(kept));
+    }
   } else if (isLayer(doc, raw)) {
     page.node.delete(key);
     stripped = true;
@@ -133,9 +141,31 @@ export async function layerFont(doc: PDFDocument): Promise<PDFFont> {
 }
 
 /**
- * Append the invisible text layer: one line of render-mode-3 Helvetica per
+ * Give the page its own /Resources and /Font dicts (shallow copies, so
+ * inherited or shared ones are left alone) holding the layer font. Done by
+ * hand: pdf-lib's setFontDictionary would also wrap /Contents in unmarked
+ * q/Q streams that stripLayer could never take out again.
+ */
+function setLayerFont(doc: PDFDocument, page: PDFPage, font: PDFFont): void {
+  const ctx = doc.context;
+  const resKey = PDFName.of("Resources");
+  const fontKey = PDFName.of("Font");
+  const inherited = ctx.lookupMaybe(page.node.getInheritableAttribute(resKey), PDFDict);
+  const res = inherited ? inherited.clone(ctx) : ctx.obj({});
+  const fonts = res.lookupMaybe(fontKey, PDFDict);
+  const ownFonts = fonts ? fonts.clone(ctx) : ctx.obj({});
+  ownFonts.set(FONT_KEY, font.ref);
+  res.set(fontKey, ownFonts);
+  page.node.set(resKey, res);
+}
+
+/**
+ * Add the invisible text layer: one line of render-mode-3 Helvetica per
  * item, sized to the box height and stretched to its width, upright for the
- * viewer whatever the page's /Rotate.
+ * viewer whatever the page's /Rotate. The page's own content is wrapped
+ * between a marked `q` stream and the layer stream, which begins by
+ * restoring that state, so the layer never inherits a changed graphics
+ * state and both streams come out again on import.
  */
 export function addLayer(doc: PDFDocument, page: PDFPage, geom: PageGeom, texts: TextItem[], font: PDFFont): void {
   if (!texts.length) return;
@@ -144,7 +174,7 @@ export function addLayer(doc: PDFDocument, page: PDFPage, geom: PageGeom, texts:
   const up = displayToPdf(geom, 0, -1);
   const [a, b] = [xAxis.x - o.x, xAxis.y - o.y];
   const [c, d] = [up.x - o.x, up.y - o.y];
-  const lines = [LAYER_MARKER, "q"];
+  const lines = [LAYER_MARKER, "Q", "q"];
   for (const t of texts) {
     if (!(t.h > 0)) continue;
     const text = encodable(font, t.text);
@@ -156,14 +186,15 @@ export function addLayer(doc: PDFDocument, page: PDFPage, geom: PageGeom, texts:
     lines.push(`BT 3 Tr /PdfinkF1 ${fmt(t.h)} Tf ${fmt(tz)} Tz ${[a, b, c, d, e, f].map(fmt).join(" ")} Tm ${font.encodeText(text).toString()} Tj ET`);
   }
   lines.push("Q");
-  const ref = doc.context.register(doc.context.flateStream(lines.join("\n")));
-  page.node.setFontDictionary(FONT_KEY, font.ref);
+  const ctx = doc.context;
+  const lead = ctx.register(ctx.flateStream(`${LAYER_MARKER}\nq`));
+  const layer = ctx.register(ctx.flateStream(lines.join("\n")));
+  setLayerFont(doc, page, font);
   const key = PDFName.of("Contents");
   const raw = page.node.get(key);
-  const contents = raw instanceof PDFRef ? doc.context.lookup(raw) : raw;
-  if (contents instanceof PDFArray) contents.push(ref);
-  else if (raw) page.node.set(key, doc.context.obj([raw, ref]));
-  else page.node.set(key, ref);
+  const contents = raw instanceof PDFRef ? ctx.lookup(raw) : raw;
+  const own = contents instanceof PDFArray ? Array.from({ length: contents.size() }, (_, i) => contents.get(i)) : raw ? [raw] : [];
+  page.node.set(key, ctx.obj([lead, ...own, layer]));
 }
 
 /**
