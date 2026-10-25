@@ -1,7 +1,7 @@
 import * as pdfjs from "pdfjs-dist";
 import { pdfjsAssetOptions } from "./pdf/pdfjs-assets.ts";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import type { Bookmark, ClipContent, ImageItem, LinkItem, PageModel, Point, Rect, Stroke } from "./model";
+import type { Bookmark, ClipContent, ImageItem, LinkItem, PageModel, Point, Rect, Stroke, TextItem } from "./model";
 import { DEFAULT_PRESSURE, newId } from "./model";
 import { barrelBit, barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
 import { ContextMenu, type MenuItem } from "./menu";
@@ -35,13 +35,13 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.m
 export type Tool = "pen" | "eraser" | "select";
 
 /** Events a page-side API can listen to with `App.on`. */
-export type AppEvent = "selection" | "save" | "page" | "notebook" | "stroke" | "button" | "bookmarks";
+export type AppEvent = "selection" | "save" | "page" | "notebook" | "stroke" | "button" | "bookmarks" | "ink";
 
 export interface SelectionInfo {
   page: number;
   /** The rectangle the user (or `selectRect`) drew, if any. */
   marquee: Rect | null;
-  /** Bounds of the selected strokes, images and links, if any. */
+  /** Bounds of the selected strokes, images, links and texts, if any. */
   bounds: Rect | null;
   /** Union of marquee and bounds, in page space. */
   rect: Rect;
@@ -50,16 +50,28 @@ export interface SelectionInfo {
   strokeIds: string[];
   imageIds: string[];
   linkIds: string[];
+  textIds: string[];
 }
 
 interface Selection extends SelectionView {
   page: number;
+  textIds: Set<string>;
 }
 
 interface PageSnapshot {
   strokes: Stroke[];
   images: ImageItem[];
   links: LinkItem[];
+  texts: TextItem[];
+}
+
+/** A run of the document's own text, from pdf.js, in page space. */
+export interface OwnText {
+  text: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 interface UndoEntry {
@@ -129,6 +141,18 @@ function checkStroke(s: unknown, i: number): void {
   if (id !== undefined && (typeof id !== "string" || !id)) throw new TypeError(`${at}.id must be a non-empty string`);
 }
 
+/** Throw a TypeError naming the bad field unless `t` is a line of handwriting text. */
+function checkTextLine(t: unknown, i: number): void {
+  const at = `lines[${i}]`;
+  if (!t || typeof t !== "object") throw new TypeError(`${at} must be an object`);
+  const { x, y, w, h, text, sig, note } = t as Record<string, unknown>;
+  if (![x, y, w, h].every((v) => typeof v === "number" && Number.isFinite(v))) throw new TypeError(`${at} must have finite x, y, w and h`);
+  if ((w as number) < 0 || (h as number) < 0) throw new TypeError(`${at}.w and .h must not be negative`);
+  if (typeof text !== "string") throw new TypeError(`${at}.text must be a string`);
+  if (sig !== undefined && typeof sig !== "string") throw new TypeError(`${at}.sig must be a string`);
+  if (note !== undefined && (typeof note !== "number" || !Number.isFinite(note))) throw new TypeError(`${at}.note must be a finite number`);
+}
+
 export class App {
   pages: PageModel[] = [];
   views: PageView[] = [];
@@ -186,6 +210,16 @@ export class App {
    * everything an outline can (closed items, positions, zoom, actions).
    */
   private bookmarksChanged = false;
+  /** The file's /PdfinkNotebook tag: true or false for the whole file, null to decide per page. */
+  notebookTag: boolean | null = null;
+  /** Set once the tag is changed here, cleared on open; until then saves leave it alone. */
+  private notebookTagChanged = false;
+  /** pdf.js text of the base document, per page; cleared whenever the base changes. */
+  private ownTextCache = new Map<number, Promise<OwnText[]>>();
+  /** How many own-text runs each page has, once known (the menu needs it synchronously). */
+  private ownTextCount = new Map<number, number>();
+  /** Where the pen menu was last shown, so it can be redrawn when a page's own text arrives. */
+  private menuAnchor: { x: number; y: number; pointerId: number | null } | null = null;
   /** Id of this tab's page-bridge session (set by main.ts). */
   session: string | null = null;
   private pointers = new Map<number, Pointer>();
@@ -234,7 +268,7 @@ export class App {
     this.cancelAutosave();
     try {
       const imported = await importPdf(bytes);
-      return await this.loadParsed(imported.baseBytes, imported.pages, name, handle, imported.bookmarks);
+      return await this.loadParsed(imported.baseBytes, imported.pages, name, handle, imported.bookmarks, imported.notebook);
     } catch (err) {
       console.error(err);
       this.setStatus(`Could not open ${name}: ${(err as Error).message}`);
@@ -244,12 +278,14 @@ export class App {
   }
 
   /** Install an already-separated document (base PDF without ink + stroke pages). */
-  async loadParsed(baseBytes: Uint8Array, pages: PageModel[], name: string, handle: FileHandle | null = null, bookmarks: Bookmark[] = []): Promise<boolean> {
+  async loadParsed(baseBytes: Uint8Array, pages: PageModel[], name: string, handle: FileHandle | null = null, bookmarks: Bookmark[] = [], notebook: boolean | null = null): Promise<boolean> {
     this.cancelAutosave();
     try {
       await this.setDocument(baseBytes, pages);
       this.bookmarks = bookmarks;
       this.bookmarksChanged = false;
+      this.notebookTag = notebook;
+      this.notebookTagChanged = false;
       this.fileName = name;
       this.fileHandle = handle;
       this.source = { kind: "local", name };
@@ -259,6 +295,8 @@ export class App {
       this.lastSaved = null;
       this.setStatus();
       this.emit("bookmarks", this.bookmarks);
+      for (let i = 0; i < this.pages.length; i++) this.emit("ink", { page: i });
+      void this.ownText(this.currentPage).catch(() => {}); // for the pen menu's Notebook row
       return true;
     } catch (err) {
       console.error(err);
@@ -270,7 +308,7 @@ export class App {
 
   /** A blank document that lives only in this tab until exported or saved as a notebook. */
   async newDocument(): Promise<void> {
-    const bytes = await createBlankPdf(1);
+    const bytes = await createBlankPdf(1, { notebook: true });
     await this.loadBytes(bytes, "untitled.pdf", null);
   }
 
@@ -324,7 +362,7 @@ export class App {
   async openNotebook(name: string): Promise<boolean> {
     if (!(await this.readyToLeave())) return false;
     this.setStatus(`Loading ${name}…`);
-    let loaded: { baseBytes: Uint8Array; pages: PageModel[]; bookmarks: Bookmark[]; mtime: number };
+    let loaded: { baseBytes: Uint8Array; pages: PageModel[]; bookmarks: Bookmark[]; notebook: boolean | null; mtime: number };
     try {
       // The server separates ink from the PDF, so even very large notebooks
       // arrive here as a small base PDF plus stroke data.
@@ -333,7 +371,7 @@ export class App {
       this.setStatus((err as Error).message);
       return false;
     }
-    if (!(await this.loadParsed(loaded.baseBytes, loaded.pages, name, null, loaded.bookmarks))) return false;
+    if (!(await this.loadParsed(loaded.baseBytes, loaded.pages, name, null, loaded.bookmarks, loaded.notebook))) return false;
     this.source = { kind: "server", name, mtime: loaded.mtime };
     this.baseSaved = this.baseRevision;
     this.setStatus();
@@ -360,7 +398,7 @@ export class App {
       return false;
     }
     try {
-      const bytes = await createBlankPdf(1);
+      const bytes = await createBlankPdf(1, { notebook: true });
       await saveNotebook(name, bytes, "new");
     } catch (err) {
       this.setStatus(err instanceof ConflictError ? `${name} already exists.` : (err as Error).message);
@@ -429,7 +467,7 @@ export class App {
       // this tab's version.
       const baseRev = this.baseRevision;
       const sendBase = force || baseRev !== this.baseSaved;
-      const info = await saveNotebookParsed(name, this.pages, force ? null : this.source.mtime, sendBase ? this.baseBytes : null, this.outlineToSave());
+      const info = await saveNotebookParsed(name, this.pages, force ? null : this.source.mtime, sendBase ? this.baseBytes : null, this.outlineToSave(), await this.textOptions());
       this.source = { kind: "server", name, mtime: info.mtime };
       if (sendBase) this.baseSaved = baseRev;
       this.lastSaved = new Date();
@@ -533,6 +571,8 @@ export class App {
     this.pointers.clear();
     if (this.pdfDoc) void this.pdfDoc.loadingTask.destroy();
     this.pdfDoc = pdfDoc;
+    this.ownTextCache = new Map();
+    this.ownTextCount = new Map();
     this.geoms = geoms;
     this.baseBytes = baseBytes;
     this.pages = pages;
@@ -611,6 +651,7 @@ export class App {
     if (best !== this.currentPage) {
       this.currentPage = best;
       this.setStatus();
+      void this.ownText(best).catch(() => {}); // for the pen menu's Notebook row
       this.emit("page", { page: best });
     }
   }
@@ -626,7 +667,7 @@ export class App {
       return;
     }
     const n = this.pages.length;
-    const sel = this.selection ? ` · ${this.selection.strokeIds.size + this.selection.imageIds.size + this.selection.linkIds.size} selected` : "";
+    const sel = this.selection ? ` · ${this.selection.strokeIds.size + this.selection.imageIds.size + this.selection.linkIds.size + this.selection.textIds.size} selected` : "";
     let state = "";
     if (this.saving) state = " · saving…";
     else if (this.dirty) state = this.source.kind === "server" || this.storage === "local" ? " · unsaved" : " (not in notebooks)";
@@ -701,7 +742,7 @@ export class App {
     const running = `Running ${cmd.label}…`;
     this.setStatus(running);
     const sel = this.selectionInfo();
-    const selection = sel ? { page: sel.page, rect: sel.rect, count: sel.strokeIds.length + sel.imageIds.length + sel.linkIds.length } : null;
+    const selection = sel ? { page: sel.page, rect: sel.rect, count: sel.strokeIds.length + sel.imageIds.length + sel.linkIds.length + sel.textIds.length } : null;
     let run;
     try {
       run = await runCommand(cmd.id, { name, page: at.page, x: at.x, y: at.y, session: this.session ?? undefined, selection });
@@ -813,6 +854,7 @@ export class App {
       { separator: true },
       { label: "Add link…", disabled: !(marquee && marquee.w > 0 && marquee.h > 0), action: () => void this.addLinkOnSelection() },
       { label: "Bookmark this page…", action: () => void this.bookmarkMenuPage(at?.page ?? this.currentPage) },
+      this.notebookMenuItem(at?.page ?? this.currentPage),
       { label: "Add page", action: () => void this.addPage() },
       { label: "Save", action: () => void this.save() },
       ...commands,
@@ -852,8 +894,31 @@ export class App {
     this.addBookmark(page, title);
   }
 
+  /**
+   * "Notebook", ticked when `page` counts as a notebook page; choosing it sets
+   * the file's tag to the opposite. While the page's own text is still being
+   * read, the tick follows the tag alone (or no tick), and the menu is redrawn
+   * once it is known.
+   */
+  private notebookMenuItem(page: number): MenuItem {
+    const known = this.ownTextCount.get(page);
+    const checked = this.notebookTag ?? (known === undefined ? false : known === 0);
+    if (this.notebookTag === null && known === undefined && this.pages[page]) {
+      const doc = this.pdfDoc;
+      void this.ownText(page).then(
+        () => {
+          const a = this.menuAnchor;
+          if (a && doc === this.pdfDoc && this.menu.open && this.menu.depth === 0) this.menu.show(a.x, a.y, this.penMenuItems(), a.pointerId);
+        },
+        () => {},
+      );
+    }
+    return { label: "Notebook", checked, action: () => this.setNotebookTag(!checked) };
+  }
+
   openPenMenu(x: number, y: number, pointerId: number | null = null): void {
     this.menuPoint = this.pagePointAt(x, y);
+    this.menuAnchor = { x, y, pointerId };
     this.menu.show(x, y, this.penMenuItems(), pointerId);
     void this.refreshCommands(); // for next time; the file may have been edited
   }
@@ -922,16 +987,23 @@ export class App {
 
   private snapshot(page: number): PageSnapshot {
     const m = this.pages[page];
-    return { strokes: m.strokes, images: m.images, links: m.links };
+    return { strokes: m.strokes, images: m.images, links: m.links, texts: m.texts };
   }
 
-  private apply(page: number, snap: PageSnapshot): void {
+  /**
+   * Put `snap` on the page. `from` is what the page held before the change
+   * (by default what it holds now; an eraser has already changed it), so an
+   * `ink` event goes out when the strokes differ.
+   */
+  private apply(page: number, snap: PageSnapshot, from: PageSnapshot = this.snapshot(page)): void {
     const m = this.pages[page];
     m.strokes = snap.strokes;
     m.images = snap.images;
     m.links = snap.links;
+    m.texts = snap.texts;
     this.markDirty();
     this.redraw(page);
+    if (from.strokes !== snap.strokes) this.emit("ink", { page });
   }
 
   private markDirty(): void {
@@ -942,12 +1014,21 @@ export class App {
 
   /** Replace a page's content, recording an undo step. */
   private commit(page: number, before: PageSnapshot, after: PageSnapshot): void {
-    if (before.strokes === after.strokes && before.images === after.images && before.links === after.links) return;
+    if (before.strokes === after.strokes && before.images === after.images && before.links === after.links && before.texts === after.texts) return;
     this.undoStack.push({ page, before, after });
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack = [];
-    this.apply(page, after);
+    this.apply(page, after, before);
     this.setStatus();
+  }
+
+  /**
+   * `snap` to restore for an undo or redo of `e`. An entry that never touched
+   * the texts leaves the page's current ones, so text set quietly since (the
+   * automatic OCR) survives undoing the stroke it was read from.
+   */
+  private restoring(e: UndoEntry, snap: PageSnapshot): PageSnapshot {
+    return e.before.texts === e.after.texts ? { ...snap, texts: this.pages[e.page].texts } : snap;
   }
 
   undo(): void {
@@ -955,7 +1036,7 @@ export class App {
     if (!e) return;
     this.redoStack.push(e);
     this.clearSelection();
-    this.apply(e.page, e.before);
+    this.apply(e.page, this.restoring(e, e.before), e.after);
     this.setStatus();
   }
 
@@ -964,7 +1045,7 @@ export class App {
     if (!e) return;
     this.undoStack.push(e);
     this.clearSelection();
-    this.apply(e.page, e.after);
+    this.apply(e.page, this.restoring(e, e.after), e.before);
     this.setStatus();
   }
 
@@ -1114,7 +1195,7 @@ export class App {
     } else {
       ptr.start = { x: p.x, y: p.y, p: 0 };
       if (this.selection && this.selection.page !== page) this.clearSelection();
-      this.setSelection({ page, rect: null, strokeIds: new Set(), imageIds: new Set(), linkIds: new Set() });
+      this.setSelection({ page, rect: null, strokeIds: new Set(), imageIds: new Set(), linkIds: new Set(), textIds: new Set() });
       this.redraw(page);
     }
     this.pointers.set(e.pointerId, ptr);
@@ -1339,19 +1420,21 @@ export class App {
     sel.strokeIds = new Set(m.strokes.filter((s) => strokeInRect(s, sel.rect!)).map((s) => s.id));
     sel.imageIds = new Set(m.images.filter((im) => imageInRect(im, sel.rect!)).map((im) => im.id));
     sel.linkIds = new Set(m.links.filter((ln) => rectInRect(ln, sel.rect!)).map((ln) => ln.id));
+    sel.textIds = new Set(m.texts.filter((t) => rectInRect(t, sel.rect!)).map((t) => t.id));
   }
 
   // ---------------------------------------------------------------- clipboard
 
-  private selectedContent(): { page: number; strokes: Stroke[]; images: ImageItem[]; links: LinkItem[] } | null {
+  private selectedContent(): { page: number; strokes: Stroke[]; images: ImageItem[]; links: LinkItem[]; texts: TextItem[] } | null {
     const sel = this.selection;
     if (!sel) return null;
     const m = this.pages[sel.page];
     const strokes = m.strokes.filter((s) => sel.strokeIds.has(s.id));
     const images = m.images.filter((im) => sel.imageIds.has(im.id));
     const links = m.links.filter((ln) => sel.linkIds.has(ln.id));
-    if (!strokes.length && !images.length && !links.length) return null;
-    return { page: sel.page, strokes, images, links };
+    const texts = m.texts.filter((t) => sel.textIds.has(t.id));
+    if (!strokes.length && !images.length && !links.length && !texts.length) return null;
+    return { page: sel.page, strokes, images, links, texts };
   }
 
   copy(): boolean {
@@ -1361,12 +1444,13 @@ export class App {
     for (const s of c.strokes) bounds = unionRect(bounds, strokeBounds(s));
     for (const im of c.images) bounds = unionRect(bounds, imageBounds(im));
     for (const ln of c.links) bounds = unionRect(bounds, linkBounds(ln));
+    for (const t of c.texts) bounds = unionRect(bounds, { x: t.x, y: t.y, w: t.w, h: t.h });
     const b = bounds!;
     this.clip = {
       strokes: c.strokes.map((s) => translateStroke(s, -b.x, -b.y)),
       images: c.images.map((im) => translateImage(im, -b.x, -b.y)),
       links: c.links.map((ln) => translateRect(ln, -b.x, -b.y)),
-      texts: [],
+      texts: c.texts.map((t) => translateRect(t, -b.x, -b.y)),
       width: b.w,
       height: b.h,
     };
@@ -1449,11 +1533,13 @@ export class App {
     const sIds = new Set(c.strokes.map((s) => s.id));
     const iIds = new Set(c.images.map((i) => i.id));
     const lIds = new Set(c.links.map((ln) => ln.id));
+    const tIds = new Set(c.texts.map((t) => t.id));
     this.setSelection(null);
     this.commit(c.page, before, {
       strokes: before.strokes.filter((s) => !sIds.has(s.id)),
       images: before.images.filter((im) => !iIds.has(im.id)),
       links: before.links.filter((ln) => !lIds.has(ln.id)),
+      texts: tIds.size ? before.texts.filter((t) => !tIds.has(t.id)) : before.texts,
     });
   }
 
@@ -1478,14 +1564,21 @@ export class App {
     const strokes = clip.strokes.map((s) => ({ ...translateStroke(s, dx, dy), id: newId() }));
     const images = clip.images.map((im) => ({ ...translateImage(im, dx, dy), id: newId("im") }));
     const links = clip.links.map((ln) => ({ ...translateRect(ln, dx, dy), id: newId("ln") }));
+    const texts = clip.texts.map((tx) => ({ ...translateRect(tx, dx, dy), id: newId("tx") }));
     const before = this.snapshot(t.page);
-    this.commit(t.page, before, { strokes: [...before.strokes, ...strokes], images: [...before.images, ...images], links: [...before.links, ...links] });
+    this.commit(t.page, before, {
+      strokes: [...before.strokes, ...strokes],
+      images: [...before.images, ...images],
+      links: [...before.links, ...links],
+      texts: texts.length ? [...before.texts, ...texts] : before.texts,
+    });
     this.setSelection({
       page: t.page,
       rect: { x: dx, y: dy, w: clip.width, h: clip.height },
       strokeIds: new Set(strokes.map((s) => s.id)),
       imageIds: new Set(images.map((im) => im.id)),
       linkIds: new Set(links.map((ln) => ln.id)),
+      textIds: new Set(texts.map((tx) => tx.id)),
     });
     this.redraw(t.page);
     this.setStatus();
@@ -1523,7 +1616,7 @@ export class App {
     const im: ImageItem = { id: newId("im"), x, y, w, h, mime: type, bytes: data };
     const before = this.snapshot(t.page);
     this.commit(t.page, before, { ...before, images: [...before.images, im] });
-    this.setSelection({ page: t.page, rect: { x, y, w, h }, strokeIds: new Set(), imageIds: new Set([im.id]), linkIds: new Set() });
+    this.setSelection({ page: t.page, rect: { x, y, w, h }, strokeIds: new Set(), imageIds: new Set([im.id]), linkIds: new Set(), textIds: new Set() });
     this.redraw(t.page);
     this.setStatus();
     return true;
@@ -1580,7 +1673,17 @@ export class App {
 
   async exportBytes(): Promise<Uint8Array> {
     if (!this.baseBytes) throw new Error("No document");
-    return exportPdf(this.baseBytes, this.pages, this.outlineToSave());
+    return exportPdf(this.baseBytes, this.pages, this.outlineToSave(), await this.textOptions());
+  }
+
+  /**
+   * What a save says about texts: which pages get the invisible text layer
+   * (pages with texts that count as notebook pages), and the notebook tag,
+   * only when it was changed here.
+   */
+  private async textOptions(): Promise<{ textLayers: boolean[]; notebook?: boolean | null }> {
+    const textLayers = await Promise.all(this.pages.map((p, i) => (p.texts.length ? this.isNotebookPage(i) : false)));
+    return this.notebookTagChanged ? { textLayers, notebook: this.notebookTag } : { textLayers };
   }
 
   /** The bookmarks to write, or undefined to keep the base's outline as it is. */
@@ -1880,6 +1983,7 @@ export class App {
     for (const s of c?.strokes ?? []) bounds = unionRect(bounds, strokeBounds(s));
     for (const im of c?.images ?? []) bounds = unionRect(bounds, imageBounds(im));
     for (const ln of c?.links ?? []) bounds = unionRect(bounds, linkBounds(ln));
+    for (const t of c?.texts ?? []) bounds = unionRect(bounds, { x: t.x, y: t.y, w: t.w, h: t.h });
     const marquee = sel.rect ? { ...sel.rect } : null;
     const rect = marquee ? (bounds ? unionRect(marquee, bounds) : { ...marquee }) : bounds;
     if (!rect) return null;
@@ -1895,6 +1999,7 @@ export class App {
       strokeIds: c?.strokes.map((s) => s.id) ?? [],
       imageIds: c?.images.map((im) => im.id) ?? [],
       linkIds: c?.links.map((ln) => ln.id) ?? [],
+      textIds: c?.texts.map((t) => t.id) ?? [],
     };
   }
 
@@ -1953,6 +2058,7 @@ export class App {
       strokeIds: new Set(m.strokes.filter((s) => strokeInRect(s, r)).map((s) => s.id)),
       imageIds: new Set(m.images.filter((im) => imageInRect(im, r)).map((im) => im.id)),
       linkIds: new Set(m.links.filter((ln) => rectInRect(ln, r)).map((ln) => ln.id)),
+      textIds: new Set(m.texts.filter((t) => rectInRect(t, r)).map((t) => t.id)),
     });
     if (old !== undefined && old !== page) this.redraw(old);
     this.redraw(page);
@@ -2042,6 +2148,101 @@ export class App {
     return out;
   }
 
+  /** The page's handwriting text, copied. */
+  inkText(page: number): TextItem[] {
+    return this.checkPage(page).texts.map((t) => ({ ...t }));
+  }
+
+  /**
+   * Replace the page's handwriting text with `lines` (with `within`, only the
+   * texts whose centre is inside it) and return the new items' ids. One undo
+   * step; with `quiet`, no undo entry (the redo stack is left alone), only
+   * marked for saving.
+   */
+  setInkText(page: number, lines: Array<Omit<TextItem, "id">>, opts: { quiet?: boolean; within?: Rect } = {}): string[] {
+    const m = this.checkPage(page);
+    if (!Array.isArray(lines)) throw new TypeError("lines must be an array");
+    lines.forEach(checkTextLine);
+    const within = opts.within;
+    if (within !== undefined && (!within || ![within.x, within.y, within.w, within.h].every(Number.isFinite))) {
+      throw new TypeError("within must have finite x, y, w and h");
+    }
+    const added: TextItem[] = lines.map((l) => {
+      const t: TextItem = { id: newId("tx"), x: l.x, y: l.y, w: l.w, h: l.h, text: l.text };
+      if (l.sig !== undefined) t.sig = l.sig;
+      if (l.note !== undefined) t.note = l.note;
+      return t;
+    });
+    const r = within && normalizeRect(within.x, within.y, within.x + within.w, within.y + within.h);
+    const kept = r ? m.texts.filter((t) => !rectInRect(t, r)) : [];
+    const texts = [...kept, ...added];
+    const before = this.snapshot(page);
+    if (opts.quiet) {
+      m.texts = texts;
+      if (this.selection?.page === page) this.updateSelectionMembers();
+      this.markDirty();
+      this.setStatus();
+    } else {
+      this.commit(page, before, { ...before, texts });
+    }
+    return added.map((t) => t.id);
+  }
+
+  /**
+   * The base document's own text on `page` from pdf.js, in page space, blank
+   * runs left out. The base never holds pdfink's text layer, so this is only
+   * the document's text. Read once per document.
+   */
+  ownText(page: number): Promise<OwnText[]> {
+    this.checkPage(page);
+    const doc = this.pdfDoc;
+    if (!doc || page >= doc.numPages) return Promise.resolve([]);
+    let p = this.ownTextCache.get(page);
+    if (!p) {
+      p = (async () => {
+        const pg = await doc.getPage(page + 1);
+        const vp = pg.getViewport({ scale: 1 });
+        const content = await pg.getTextContent();
+        const out: OwnText[] = [];
+        for (const it of content.items) {
+          if (!("str" in it) || !it.str.trim()) continue;
+          const [, , , , e, f] = it.transform as number[];
+          const [ax, ay] = vp.convertToViewportPoint(e, f);
+          const [bx, by] = vp.convertToViewportPoint(e + it.width, f + it.height);
+          out.push({ text: it.str, ...normalizeRect(ax, ay, bx, by) });
+        }
+        return out;
+      })();
+      this.ownTextCache.set(page, p);
+      const cache = this.ownTextCache;
+      p.then(
+        (r) => {
+          if (cache === this.ownTextCache) this.ownTextCount.set(page, r.length);
+        },
+        () => {
+          if (cache.get(page) === p) cache.delete(page);
+        },
+      );
+    }
+    return p.then((r) => r.map((t) => ({ ...t })));
+  }
+
+  /** Whether `page` is saved as a notebook page (with an invisible text layer): the tag, else "no text of its own". */
+  async isNotebookPage(page: number): Promise<boolean> {
+    this.checkPage(page);
+    if (this.notebookTag !== null) return this.notebookTag;
+    return (await this.ownText(page)).length === 0;
+  }
+
+  /** Set the file's notebook tag (null: decide per page). Not an undo step. */
+  setNotebookTag(v: boolean | null): void {
+    if (v !== null && typeof v !== "boolean") throw new TypeError("the notebook tag must be true, false or null");
+    this.notebookTag = v;
+    this.notebookTagChanged = true;
+    this.markDirty();
+    this.setStatus();
+  }
+
   /**
    * Add an outline entry for `page`, after the last bookmark on that page or
    * an earlier one, so the list stays in page order, and after any entries
@@ -2089,7 +2290,7 @@ export class App {
     window.open(link.url, "_blank", "noopener,noreferrer");
   }
 
-  /** Remove strokes, images and links by id from any page; one undo step per page touched. */
+  /** Remove strokes, images, links and texts by id from any page; one undo step per page touched. */
   removeItems(ids: string[]): number {
     const gone = new Set(ids);
     let removed = 0;
@@ -2098,10 +2299,11 @@ export class App {
       const strokes = before.strokes.filter((s) => !gone.has(s.id));
       const images = before.images.filter((im) => !gone.has(im.id));
       const links = before.links.filter((ln) => !gone.has(ln.id));
-      const n = before.strokes.length - strokes.length + before.images.length - images.length + before.links.length - links.length;
+      const texts = before.texts.filter((t) => !gone.has(t.id));
+      const n = before.strokes.length - strokes.length + before.images.length - images.length + before.links.length - links.length + before.texts.length - texts.length;
       if (!n) return;
       removed += n;
-      this.commit(page, before, { strokes, images, links });
+      this.commit(page, before, { strokes, images, links, texts: texts.length === before.texts.length ? before.texts : texts });
     });
     return removed;
   }
@@ -2173,11 +2375,12 @@ export class App {
         strokes: p.strokes.map((s) => ({ id: s.id, n: s.points.length, color: s.color, width: s.width, bounds: strokeBounds(s) })),
         images: p.images.map((im) => ({ id: im.id, x: im.x, y: im.y, w: im.w, h: im.h, mime: im.mime })),
         links: p.links.map((ln) => ({ id: ln.id, x: ln.x, y: ln.y, w: ln.w, h: ln.h, url: ln.url, label: ln.label })),
+        texts: p.texts.map((t) => ({ ...t })),
       })),
       selection: this.selection
-        ? { page: this.selection.page, rect: this.selection.rect, strokes: [...this.selection.strokeIds], images: [...this.selection.imageIds], links: [...this.selection.linkIds] }
+        ? { page: this.selection.page, rect: this.selection.rect, strokes: [...this.selection.strokeIds], images: [...this.selection.imageIds], links: [...this.selection.linkIds], texts: [...this.selection.textIds] }
         : null,
-      clip: this.clip ? { strokes: this.clip.strokes.length, images: this.clip.images.length, links: this.clip.links.length, width: this.clip.width, height: this.clip.height } : null,
+      clip: this.clip ? { strokes: this.clip.strokes.length, images: this.clip.images.length, links: this.clip.links.length, texts: this.clip.texts.length, width: this.clip.width, height: this.clip.height } : null,
       undo: this.undoStack.length,
       redo: this.redoStack.length,
       buttons: [...this.buttons.keys()],

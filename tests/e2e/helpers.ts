@@ -40,9 +40,9 @@ export interface State {
   dirty: boolean;
   currentPage: number;
   bookmarks: { title: string; page: number | null; level: number }[];
-  pages: { width: number; height: number; strokes: { id: string; n: number; color: string; width: number; bounds: { x: number; y: number; w: number; h: number } }[]; images: { id: string; x: number; y: number; w: number; h: number }[]; links: { id: string; x: number; y: number; w: number; h: number; url: string; label: string | undefined }[] }[];
-  selection: { page: number; rect: { x: number; y: number; w: number; h: number } | null; strokes: string[]; images: string[]; links: string[] } | null;
-  clip: { strokes: number; images: number; links: number; width: number; height: number } | null;
+  pages: { width: number; height: number; strokes: { id: string; n: number; color: string; width: number; bounds: { x: number; y: number; w: number; h: number } }[]; images: { id: string; x: number; y: number; w: number; h: number }[]; links: { id: string; x: number; y: number; w: number; h: number; url: string; label: string | undefined }[]; texts: { id: string; x: number; y: number; w: number; h: number; text: string; sig?: string; note?: number }[] }[];
+  selection: { page: number; rect: { x: number; y: number; w: number; h: number } | null; strokes: string[]; images: string[]; links: string[]; texts: string[] } | null;
+  clip: { strokes: number; images: number; links: number; texts: number; width: number; height: number } | null;
   undo: number;
   redo: number;
   buttons: string[];

@@ -416,7 +416,7 @@ test.describe("pen menu shape", () => {
     expect(await rows.nth(0).locator(".tile").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).toEqual(["Pen", "Eraser", "Select"]);
     expect(await rows.nth(1).locator(".tile").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).toEqual(["Copy", "Cut", "Paste", "Delete"]);
     expect(await rows.nth(2).locator(".tile").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).toEqual(["Undo", "Redo"]);
-    expect(await page.locator("#ctx-menu .menuitem:not(.submenu)").allTextContents()).toEqual(["Add link…", "Bookmark this page…", "Add page", "Save"]);
+    expect(await page.locator("#ctx-menu .menuitem:not(.submenu)").allTextContents()).toEqual(["Add link…", "Bookmark this page…", "Notebook", "Add page", "Save"]);
     // Server mode with the fixture commands: a Commands level.
     await expect(page.locator("#ctx-menu .submenu", { hasText: "Commands" })).toBeVisible();
     expect(await menuHas(page, "Where am I")).toBe(true);
