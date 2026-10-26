@@ -72,6 +72,16 @@ export class ContextMenu {
       },
       { capture: true },
     );
+    // The opening press stops being exempt once that pointer is released:
+    // pens keep one pointerId across lifts, so a fresh tap right after must
+    // close the menu (and be swallowed), not slip through and ink. A barrel
+    // held while hovering ends with a buttonless move rather than a pointerup.
+    const release = (e: PointerEvent) => {
+      if (e.pointerId !== this.triggerPointer) return;
+      if (e.type === "pointermove" && e.buttons !== 0) return;
+      this.triggerPointer = null;
+    };
+    for (const t of ["pointerup", "pointercancel", "pointermove"] as const) document.addEventListener(t, release, { capture: true });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !this.el.hidden) {
         // Other document-level handlers (the app clears the selection on Escape) must not see it.

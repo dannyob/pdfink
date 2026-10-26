@@ -216,9 +216,11 @@ export async function menuAction(page: Page, label: string): Promise<void> {
   await menu.locator(".menuitem:not(.submenu)", { hasText: label }).first().click();
 }
 
-/** Text rows of the current menu level, in order (tiles are not included). */
+/** Text rows of the current menu level, in order: labels only, no detail (tiles are not included). */
 export async function menuLabels(page: Page): Promise<string[]> {
-  const texts = await page.locator("#ctx-menu .menuitem:not(.submenu)").allTextContents();
+  const texts = await page
+    .locator("#ctx-menu .menuitem:not(.submenu)")
+    .evaluateAll((els) => els.map((e) => (e.querySelector(".text") ?? e).textContent ?? ""));
   return texts.map((t) => t.trim());
 }
 

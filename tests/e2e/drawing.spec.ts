@@ -371,6 +371,33 @@ test.describe("barrel-button menu", () => {
     expect((await state(page)).tool).toBe("eraser");
   });
 
+  test("barrel press opens the menu; a fresh pen tap right after release closes it without ink", async ({ page }) => {
+    await openApp(page);
+    await penStroke(page, 0, line(100, 200, 300, 200));
+    await page.locator("#barrel-erase").uncheck();
+    await penEvent(page, "pointerdown", 200, 200, { button: 0, buttons: 1, pressure: 1 });
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    await penEvent(page, "pointerup", 200, 200, { button: 0, buttons: 0, pressure: 0 });
+    // Same pen (same pointerId), well inside the old 1.5 s window.
+    await penEvent(page, "pointerdown", 150, 500, { button: 0, buttons: 1, pressure: 0.6 });
+    await penEvent(page, "pointerup", 150, 500, { button: 0, buttons: 0, pressure: 0 });
+    await expect(page.locator("#ctx-menu")).toBeHidden();
+    expect((await state(page)).pages[0].strokes).toHaveLength(1);
+  });
+
+  test("barrel held while hovering opens the menu; after release a pen tap closes it without ink", async ({ page }) => {
+    await openApp(page);
+    await page.locator("#barrel-erase").uncheck();
+    await penEvent(page, "pointermove", 200, 200, { buttons: 1, pressure: 0, button: -1 });
+    await penEvent(page, "pointermove", 210, 200, { buttons: 1, pressure: 0, button: -1 });
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    await penEvent(page, "pointermove", 210, 200, { buttons: 0, pressure: 0, button: -1 });
+    await penEvent(page, "pointerdown", 150, 500, { button: 0, buttons: 1, pressure: 0.6 });
+    await penEvent(page, "pointerup", 150, 500, { button: 0, buttons: 0, pressure: 0 });
+    await expect(page.locator("#ctx-menu")).toBeHidden();
+    expect((await state(page)).pages[0].strokes).toHaveLength(0);
+  });
+
   test("King Write: barrel held while hovering opens the menu once; Escape closes it", async ({ page }) => {
     await openApp(page);
     await page.locator("#barrel-erase").uncheck();

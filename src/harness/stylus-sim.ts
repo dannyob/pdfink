@@ -104,9 +104,11 @@ export function erase(path: SimPoint[], opts: SimOptions = {}): void {
   stroke(path, { ...opts, buttons: 32 });
 }
 
-/** A single tap (down + up at one point). */
+/** A single tap (down + up at one point), then the click a browser sends for it. */
 export function tap(x: number, y: number, opts: SimOptions = {}): void {
+  const target = elementAt(x, y);
   stroke([[x, y]], opts);
+  if (target.isConnected) target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, detail: 1 }));
 }
 
 /** Generate a wiggly "handwriting-like" path between two points. */

@@ -1,5 +1,5 @@
 import { test } from "@playwright/test";
-import { expect, line, openApp, penStroke, state, toClient } from "./helpers";
+import { expect, line, menuLabels, openApp, penStroke, state, toClient } from "./helpers";
 
 /**
  * The context menu component on its own: icon rows, a submenu level that
@@ -268,6 +268,38 @@ test.describe("menu pieces for the bar", () => {
     // And it opens again on the next tap.
     await btn.click();
     await expect(menu).toBeVisible();
+  });
+
+  test("a pen tap on the owner button toggles its menu closed", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => {
+      const b = document.createElement("button");
+      b.id = "test-owner";
+      b.textContent = "Owner";
+      Object.assign(b.style, { position: "fixed", left: "120px", top: "60px", zIndex: "40" });
+      document.body.appendChild(b);
+      b.addEventListener("click", () => window.__pdfink.menu.showFor(b, [{ label: "Alpha" }]));
+    });
+    const tapOwner = () =>
+      page.evaluate(() => {
+        const r = document.getElementById("test-owner")!.getBoundingClientRect();
+        window.__stylusSim.tap(r.left + r.width / 2, r.top + r.height / 2);
+      });
+    const menu = page.locator("#ctx-menu");
+    await tapOwner();
+    await expect(menu).toBeVisible();
+    await tapOwner();
+    await expect(menu).toBeHidden();
+    await page.waitForTimeout(300);
+    await expect(menu).toBeHidden();
+    await tapOwner();
+    await expect(menu).toBeVisible();
+  });
+
+  test("menuLabels reads row labels, not their detail", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate((icon) => window.__pdfink.menu.show(100, 100, [{ label: "Save", icon, detail: "Ctrl+S" }, { label: "Plain" }]), ICON);
+    expect(await menuLabels(page)).toEqual(["Save", "Plain"]);
   });
 
   test("a pen tap that closes the pen menu leaves no ink", async ({ page }) => {
