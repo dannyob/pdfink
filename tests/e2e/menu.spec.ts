@@ -221,7 +221,8 @@ test.describe("menu pieces for the bar", () => {
       const d = el.querySelector(".detail")!.getBoundingClientRect();
       const t = el.querySelector(".text")!.getBoundingClientRect();
       const i = el.querySelector(".ico")!.getBoundingClientRect();
-      return { right: b.right, pad: parseFloat(getComputedStyle(el).paddingRight), dRight: d.right, dLeft: d.left, tLeft: t.left, tRight: t.right, iRight: i.right };
+      const cs = getComputedStyle(el);
+      return { right: b.right, pad: parseFloat(cs.paddingRight) + parseFloat(cs.borderRightWidth), dRight: d.right, dLeft: d.left, tLeft: t.left, tRight: t.right, iRight: i.right };
     });
     expect(g.dRight).toBeCloseTo(g.right - g.pad, 0);
     expect(g.dLeft).toBeGreaterThan(g.tRight);
@@ -324,6 +325,43 @@ test.describe("menu pieces for the bar", () => {
     await page.evaluate(([x, y]) => window.__stylusSim.stroke([[x, y], [x + 30, y + 5]], { pointerType: "touch" }), [tx, ty] as const);
     await expect(page.locator("#ctx-menu")).toBeHidden();
     expect((await state(page)).pages[0].strokes).toHaveLength(0);
+  });
+
+  test("text rows: white with a grey edge; a toggle shows a box, empty when off and filled with a tick when on; a plain row has none", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => {
+      window.__pdfink.menu.show(100, 100, [{ label: "Plain" }, { label: "Off", checked: false }, { label: "On", checked: true }]);
+    });
+    const look = (label: string) =>
+      page.locator("#ctx-menu .menuitem", { hasText: label }).evaluate((el) => {
+        const s = getComputedStyle(el);
+        const b = getComputedStyle(el, "::before");
+        return {
+          bg: s.backgroundColor,
+          border: `${s.borderTopWidth} ${s.borderTopStyle} ${s.borderTopColor}`,
+          before: b.content,
+          boxBorder: b.borderTopWidth,
+          boxW: b.width,
+          boxH: b.height,
+          boxBg: b.backgroundColor,
+          tick: b.color,
+          toggle: el.classList.contains("toggle"),
+        };
+      });
+    const plain = await look("Plain");
+    expect(plain).toMatchObject({ bg: "rgb(255, 255, 255)", border: "1px solid rgb(138, 144, 153)", before: "none", toggle: false });
+    const off = await look("Off");
+    expect(off).toMatchObject({ bg: "rgb(255, 255, 255)", border: "1px solid rgb(138, 144, 153)", toggle: true, boxW: "18px", boxH: "18px" });
+    expect(off.before).not.toContain("✓");
+    expect(off.before).not.toBe("none");
+    expect(parseFloat(off.boxBorder)).toBeGreaterThan(0);
+    expect(off.boxBg).toBe("rgba(0, 0, 0, 0)");
+    const on = await look("On");
+    expect(on).toMatchObject({ toggle: true, boxW: "18px", boxH: "18px", tick: "rgb(255, 255, 255)" });
+    expect(on.before).toContain("✓");
+    expect(parseFloat(on.boxBorder)).toBeGreaterThan(0);
+    expect(on.boxBg).not.toBe("rgba(0, 0, 0, 0)");
+    expect(on.boxBg).not.toBe("rgb(255, 255, 255)");
   });
 
   test("tiles: white with a grey edge at rest, no fill or edge when disabled, solid accent when checked", async ({ page }) => {

@@ -226,6 +226,20 @@ test.describe("Pen style", () => {
     expect(s.width).toBe(2);
   });
 
+  test("a pen colour that is not a hex colour is drawn as currentColor and injects nothing", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => {
+      const app = window.__pdfink;
+      app.penColor = '"/><g id="injected"></g><path d="';
+      app.penWidth = 2;
+      app.onState?.();
+    });
+    await expect(page.locator("#bar-style .tl")).toHaveText("Thick");
+    await expect(page.locator("#injected")).toHaveCount(0);
+    await expect(page.locator("#bar-style svg path")).toHaveCount(1);
+    await expect(page.locator("#bar-style svg path")).toHaveAttribute("stroke", "currentColor");
+  });
+
   test("Custom colour… opens the colour input, whose choice becomes the pen colour", async ({ page }) => {
     await openApp(page);
     await page.evaluate(() => {
@@ -456,6 +470,20 @@ test.describe("fitting the width", () => {
       await expect(page.locator("#ctx-menu")).toBeVisible();
       await expect.poll(async () => (await menuOutline(page))[0]).toContain("Add page");
       await expect(page.locator("#bar-more")).toHaveAttribute("aria-expanded", "true");
+    });
+
+    test("Add page alone in More is a tile, not a full-width bar", async ({ page }) => {
+      await openLongNotebook(page);
+      // A little narrower than the Daylight, so that Add page is the only group to move.
+      await page.setViewportSize({ width: 1230, height: 783 });
+      await expect.poll(() => moved(page)).toEqual(["page"]);
+      await barMenu(page, "more");
+      const w = await page.locator('#ctx-menu .tile[aria-label="Add page"]').evaluate((el) => el.getBoundingClientRect().width);
+      expect(w).toBeLessThanOrEqual(120);
+      // It sits at the start of its row, like the first tile of any other row.
+      const add = await page.locator('#ctx-menu .tile[aria-label="Add page"]').evaluate((el) => el.getBoundingClientRect().left);
+      const smaller = await page.locator("#ctx-menu .row .tile").nth(1).evaluate((el) => el.getBoundingClientRect().left);
+      expect(add).toBeCloseTo(smaller, 0);
     });
 
     test("short names: nothing moves", async ({ page }) => {

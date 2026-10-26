@@ -62,8 +62,11 @@ function store(key: string, value: string): void {
   }
 }
 
+const HEX = /^#[0-9a-f]{6}$/i;
+
+/** `color` goes into markup, so anything but a #rrggbb colour is drawn as currentColor. */
 const strokeIcon = (color: string, width: number, d = "M4 15c4-6 8 4 16-4"): string =>
-  `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="${d}" stroke="${color}" stroke-width="${width}"/></svg>`;
+  `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="${d}" stroke="${HEX.test(color) ? color : "currentColor"}" stroke-width="${width}"/></svg>`;
 
 const swatchIcon = (color: string): string =>
   `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="4" fill="${color}" stroke="#8a9099" stroke-width="1"/></svg>`;
@@ -241,7 +244,7 @@ export class Toolbar {
       this.styleBtn.querySelector(".tl")!.textContent = label;
       this.styleBtn.setAttribute("aria-label", `Pen style: ${label}`);
     }
-    if (this.colorInput.value !== app.penColor && /^#[0-9a-f]{6}$/i.test(app.penColor)) this.colorInput.value = app.penColor;
+    if (this.colorInput.value !== app.penColor && HEX.test(app.penColor)) this.colorInput.value = app.penColor;
 
     const sel = app.hasSelection;
     for (const id of ["btn-copy", "btn-cut", "btn-delete"]) this.tiles.get(id)!.disabled = !sel;

@@ -11,7 +11,11 @@ export interface MenuAction {
   label: string;
   action?: () => void;
   disabled?: boolean;
-  /** Shown as the current choice (filled tile or ticked row). */
+  /**
+   * Tiles: shown as the current choice (filled). Text rows: a boolean makes
+   * the row a toggle with a box, empty when false and ticked when true;
+   * leave it undefined on plain actions.
+   */
   checked?: boolean;
   /** Background tint: rows about the thing under the pen, or user commands. */
   tint?: "context" | "command";
@@ -244,6 +248,8 @@ export class ContextMenu {
   private decorate(b: HTMLButtonElement, it: MenuAction): void {
     b.disabled = !!it.disabled;
     if (it.checked) b.classList.add("checked");
+    // Text rows whose `checked` is a boolean are toggles and draw a box; plain actions leave it undefined.
+    if (it.checked !== undefined && !b.classList.contains("tile")) b.classList.add("toggle");
     if (it.tint) b.classList.add(it.tint);
   }
 
