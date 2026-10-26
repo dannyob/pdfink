@@ -1,7 +1,7 @@
 import { test } from "@playwright/test";
 import fs from "node:fs";
 import { PDFDocument } from "pdf-lib";
-import { SAMPLES, expect, exportedPdf, fakeClipboard, inkAnnots, inkPathCount, inkPixel, line, notebookFixture, openApp, openLocalApp, penStroke, state, waitReady } from "./helpers";
+import { SAMPLES, barMenu, expect, exportedPdf, fakeClipboard, inkAnnots, inkPathCount, inkPixel, line, notebookFixture, openApp, openLocalApp, penStroke, state, waitReady } from "./helpers";
 
 test.describe("files and pages", () => {
   test("opens a notebook-style PDF, imports its ink, and round-trips it", async ({ page }) => {
@@ -53,7 +53,7 @@ test.describe("files and pages", () => {
   test("local mode: Save downloads a PDF containing the ink", async ({ page }) => {
     await openLocalApp(page);
     await penStroke(page, 0, line(100, 100, 200, 100));
-    const [download] = await Promise.all([page.waitForEvent("download"), page.click("#btn-save")]);
+    const [download] = await Promise.all([page.waitForEvent("download"), barMenu(page, "file", "Save")]);
     expect(download.suggestedFilename()).toBe("untitled.pdf");
     const p = await download.path();
     const doc = await PDFDocument.load(fs.readFileSync(p!), { updateMetadata: false });
@@ -69,7 +69,7 @@ test.describe("files and pages", () => {
       window.__pdfink.confirmFn = async () => true; // discard unsaved tab-only doc
       window.__pdfink.promptFn = async () => "fresh.pdf";
     });
-    await page.click("#btn-new");
+    await barMenu(page, "file", "New notebook");
     await page.waitForFunction(() => window.__pdfink.pages[0].strokes.length === 0 && window.__pdfink.source.kind === "server");
     await waitReady(page);
     expect((await state(page)).undo).toBe(0);
@@ -79,13 +79,13 @@ test.describe("files and pages", () => {
     await openApp(page);
     const before = (await state(page)).scale;
     await penStroke(page, 0, line(100, 100, 200, 100));
-    await page.click("#btn-zoom-in");
+    await barMenu(page, "more", "Larger");
     await page.waitForTimeout(200);
     const s = await state(page);
     expect(s.scale).toBeCloseTo(before * 1.25, 3);
     expect(s.pages[0].strokes[0].bounds.x).toBeCloseTo(99.5, 1);
     expect((await inkPixel(page, 0, 150, 100))[3]).toBeGreaterThan(0);
-    await page.click("#btn-zoom-fit");
+    await barMenu(page, "more", "Fit width");
     await page.waitForTimeout(100);
     expect((await state(page)).scale).toBeCloseTo(before, 3);
   });
@@ -104,8 +104,8 @@ test("screenshot of a real notebook page with fresh ink", async ({ page }) => {
   await page.waitForTimeout(500);
   const s = await state(page);
   expect(s.pages[0].strokes.length).toBeGreaterThan(100);
-  await page.locator("#pen-color").fill("#2f4a7a");
-  await page.locator("#pen-width").selectOption("2");
+  await barMenu(page, "style", "Blue");
+  await barMenu(page, "style", "Thick");
   await page.evaluate(() => {
     const v = window.__pdfink.views[0];
     const toC = (x: number, y: number) => {

@@ -260,7 +260,7 @@ export class App {
   private showEmpty(error?: string): void {
     const div = document.createElement("div");
     div.className = "empty";
-    div.innerHTML = `<p><b>pdfink</b></p><p>Open a PDF, start a new one, or drop a PDF here.</p><p>Pen writes. Pen eraser (or barrel button) erases. Fingers scroll, or draw when <i>finger draws</i> is on.</p>`;
+    div.innerHTML = `<p><b>pdfink</b></p><p>Open a PDF, start a new one, or drop a PDF here.</p><p>Pen writes. Pen eraser (or barrel button) erases. Fingers scroll, or draw when <i>More ⋯ › Finger draws</i> is on.</p>`;
     if (error) {
       const p = document.createElement("p");
       p.className = "error";
@@ -672,19 +672,40 @@ export class App {
     if (v) v.el.scrollIntoView({ block: "start" });
   }
 
+  /**
+   * `setStatus(msg)` shows a message on the left of the status line;
+   * `setStatus()` clears it. Either way the right-hand side (save state,
+   * selection, page count) is brought up to date.
+   */
   setStatus(msg?: string): void {
-    if (msg !== undefined) {
-      this.status.textContent = msg;
-      return;
-    }
+    this.status.textContent = msg ?? "";
+    this.showState();
+  }
+
+  /** Called whenever the state the bar shows may have changed (the toolbar refreshes). */
+  onState: () => void = () => {};
+
+  /** The status line's right side: save state, selection count, "page N of M" and "writing on K". */
+  private showState(): void {
+    const right = document.getElementById("status-right");
     const n = this.pages.length;
-    const sel = this.selection ? ` · ${this.selection.strokeIds.size + this.selection.imageIds.size + this.selection.linkIds.size + this.selection.textIds.size} selected` : "";
-    let state = "";
-    if (this.saving) state = " · saving…";
-    else if (this.dirty) state = this.source.kind === "server" || this.storage === "local" ? " · unsaved" : " (not in notebooks)";
-    else if (this.lastSaved) state = ` · saved ${this.lastSaved.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-    else if (this.source.kind === "local" && this.storage === "server") state = " (not in notebooks)";
-    this.status.textContent = n ? `${this.fileName}${state} · page ${this.currentPage + 1}/${n}${sel}` : "";
+    if (right) {
+      let state = "";
+      if (this.saving) state = "Saving…";
+      else if (this.dirty) state = this.source.kind === "server" || this.storage === "local" ? "Unsaved" : "Not in notebooks";
+      else if (this.lastSaved) state = `Saved ${this.lastSaved.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+      else if (this.source.kind === "local" && this.storage === "server") state = "Not in notebooks";
+      const rest: string[] = [];
+      if (this.selection) rest.push(`${this.selection.strokeIds.size + this.selection.imageIds.size + this.selection.linkIds.size + this.selection.textIds.size} selected`);
+      if (n) rest.push(`page ${this.currentPage + 1} of ${n}`);
+      if (n && this.inkPage !== null && this.inkPage !== this.currentPage) rest.push(`writing on ${this.inkPage + 1}`);
+      const parts: Node[] = [];
+      if (n && state) parts.push(Object.assign(document.createElement("b"), { textContent: state }));
+      const tail = rest.join(" · ");
+      if (tail) parts.push(document.createTextNode(parts.length ? ` · ${tail}` : tail));
+      right.replaceChildren(...parts);
+    }
+    this.onState();
   }
 
   // ---------------------------------------------------------------- tools
@@ -831,10 +852,7 @@ export class App {
         ]
       : [];
     const marquee = this.selectionInfo()?.marquee;
-    const commandItems: MenuItem[] = [
-      ...this.commands.map((c): MenuItem => ({ label: c.label, tint: "command", disabled: this.source.kind !== "server", action: () => void this.runMenuCommand(c) })),
-      ...this.menuButtonItems(),
-    ];
+    const commandItems = this.commandMenuItems();
     const commands: MenuItem[] = commandItems.length ? [{ separator: true }, { kind: "submenu", label: "Commands", heading: "Commands", items: commandItems }] : [];
     return [
       ...linkItems,
@@ -872,6 +890,25 @@ export class App {
     ];
   }
 
+  /** The Commands level: configured commands, then buttons added by attached commands. */
+  commandMenuItems(): MenuItem[] {
+    return [
+      ...this.commands.map((c): MenuItem => ({ label: c.label, tint: "command", disabled: this.source.kind !== "server", action: () => void this.runMenuCommand(c) })),
+      ...this.menuButtonItems(),
+    ];
+  }
+
+  /** The Commands level for the bar's Commands tile: commands run where the pen last was, not where a pen menu last opened. */
+  barCommandItems(): MenuItem[] {
+    this.menuPoint = null;
+    return this.commandMenuItems();
+  }
+
+  /** Whether there is selected content (Copy, Cut and Delete can act). */
+  get hasSelection(): boolean {
+    return !!this.selectedContent();
+  }
+
   /** Ask for a new url for `link`; blank or cancelled leaves it. */
   private async editLinkUrl(link: LinkItem): Promise<void> {
     const answer = await this.promptFn("Link URL", link.url);
@@ -899,7 +936,7 @@ export class App {
   }
 
   /** Ask for a title (today's date by default) and bookmark `page`. */
-  private async bookmarkMenuPage(page: number): Promise<void> {
+  async bookmarkMenuPage(page: number): Promise<void> {
     const title = (await this.promptFn("Bookmark title", todayIso()))?.trim();
     if (!title || !this.pages[page]) return;
     this.addBookmark(page, title);
@@ -911,20 +948,25 @@ export class App {
    * read, the tick follows the tag alone (or no tick), and the menu is redrawn
    * once it is known.
    */
-  private notebookMenuItem(page: number): MenuItem {
+  notebookMenuItem(page: number, label = "Notebook", redraw: () => void = () => this.redrawPenMenu()): MenuItem {
     const known = this.ownTextCount.get(page);
     const checked = this.notebookTag ?? (known === undefined ? false : known === 0);
     if (this.notebookTag === null && known === undefined && this.pages[page]) {
       const doc = this.pdfDoc;
       void this.ownText(page).then(
         () => {
-          const a = this.menuAnchor;
-          if (a && doc === this.pdfDoc && this.menu.open && this.menu.depth === 0) this.menu.show(a.x, a.y, this.penMenuItems(), a.pointerId);
+          if (doc === this.pdfDoc) redraw();
         },
         () => {},
       );
     }
-    return { label: "Notebook", checked, action: () => this.setNotebookTag(!checked) };
+    return { label, checked, action: () => this.setNotebookTag(!checked) };
+  }
+
+  /** Redraw the pen menu if it is still open at its top level (not a bar menu). */
+  private redrawPenMenu(): void {
+    const a = this.menuAnchor;
+    if (a && this.menu.open && !this.menu.owner && this.menu.depth === 0) this.menu.show(a.x, a.y, this.penMenuItems(), a.pointerId);
   }
 
   openPenMenu(x: number, y: number, pointerId: number | null = null): void {
@@ -2333,6 +2375,7 @@ export class App {
     if (page !== null) this.scrollToPage(page);
     this.pickedBookmark = i;
     this.inkPage = null;
+    this.showState();
     this.announceCurrentBookmark(true);
   }
 
@@ -2340,6 +2383,7 @@ export class App {
   private touchInkPage(page: number): void {
     if (this.inkPage === page) return;
     this.inkPage = page;
+    this.showState();
     this.announceCurrentBookmark();
   }
 

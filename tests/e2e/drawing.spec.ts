@@ -1,6 +1,6 @@
 import { test } from "@playwright/test";
 import { PDFArray, PDFName, PDFNumber } from "pdf-lib";
-import { expect, exportedPdf, inkAnnots, inkPathCount, inkPixel, line, menuAction, menuHas, openApp, openLocalApp, penStroke, state, toClient } from "./helpers";
+import { barMenu, expect, exportedPdf, inkAnnots, inkPathCount, inkPixel, line, menuAction, menuHas, moreChecked, openApp, openLocalApp, penStroke, setMoreToggle, state, toClient } from "./helpers";
 
 test.describe("pen drawing", () => {
   test("new document shows one Letter page", async ({ page }) => {
@@ -36,11 +36,11 @@ test.describe("pen drawing", () => {
 
   test("pen colour and width come from the toolbar", async ({ page }) => {
     await openApp(page);
-    await page.locator("#pen-color").fill("#ff0000");
-    await page.locator("#pen-width").selectOption("2");
+    await barMenu(page, "style", "Red");
+    await barMenu(page, "style", "Thick");
     await penStroke(page, 0, line(100, 100, 300, 120));
     const s = await state(page);
-    expect(s.pages[0].strokes[0]).toMatchObject({ color: "#ff0000", width: 2 });
+    expect(s.pages[0].strokes[0]).toMatchObject({ color: "#b3261e", width: 2 });
   });
 
   test("pen eraser end removes strokes it crosses", async ({ page }) => {
@@ -208,7 +208,7 @@ test.describe("barrel-button heuristic", () => {
 
   test("switched off, full pressure no longer erases, and the choice is remembered", async ({ page }) => {
     await openApp(page);
-    await page.locator("#barrel-erase").uncheck();
+    await setMoreToggle(page, "Barrel button erases", false);
     expect((await state(page)).barrelHeuristic).toBe(false);
     await penStroke(page, 0, line(100, 200, 300, 200));
     await penStroke(page, 0, line(200, 170, 200, 230), { pressure: 1 });
@@ -218,7 +218,7 @@ test.describe("barrel-button heuristic", () => {
     // The choice survives a reload.
     await page.reload();
     await page.waitForFunction(() => window.__pdfink && window.__pdfink.views.length > 0);
-    await expect(page.locator("#barrel-erase")).not.toBeChecked();
+    expect(await moreChecked(page, "Barrel button erases")).toBe(false);
   });
 });
 
@@ -290,7 +290,7 @@ test.describe("finger drawing", () => {
   test("off by default where a fine pointer exists; on, a finger draws", async ({ page }) => {
     await openApp(page);
     expect((await state(page)).fingerDraws).toBe(false);
-    await page.locator("#finger-draws").check();
+    await setMoreToggle(page, "Finger draws", true);
     await expect(page.locator("#pages")).toHaveClass(/finger-draws/);
     await penStroke(page, 0, line(100, 100, 300, 120), { pointerType: "touch" });
     const s = await state(page);
@@ -302,7 +302,7 @@ test.describe("finger drawing", () => {
     await openApp(page);
     await page.click("#btn-addpage");
     await page.waitForFunction(() => window.__pdfink.pages.length === 2);
-    await page.locator("#finger-draws").check();
+    await setMoreToggle(page, "Finger draws", true);
     const before = await page.evaluate(() => document.getElementById("pages")!.scrollTop);
     const moved = await page.evaluate(() => {
       const v = window.__pdfink.views[0];
@@ -326,7 +326,7 @@ test.describe("finger drawing", () => {
 
   test("a pen appearing hands scrolling back to fingers", async ({ page }) => {
     await openApp(page);
-    await page.locator("#finger-draws").check();
+    await setMoreToggle(page, "Finger draws", true);
     await page.evaluate(() => {
       const c = window.__pdfink.views[0].toClient(200, 200);
       window.__stylusSim.hover(c.clientX, c.clientY);
@@ -339,7 +339,7 @@ test.describe("finger drawing", () => {
       window.__stylusSim.hover(c.clientX, c.clientY);
     });
     expect((await state(page)).fingerDraws).toBe(false);
-    await expect(page.locator("#finger-draws")).not.toBeChecked();
+    expect(await moreChecked(page, "Finger draws")).toBe(false);
     await penStroke(page, 0, line(100, 100, 300, 120), { pointerType: "touch" });
     expect((await state(page)).pages[0].strokes).toHaveLength(0);
   });
@@ -359,7 +359,7 @@ test.describe("barrel-button menu", () => {
   test("with barrel erase off, a barrel press opens the menu instead of erasing", async ({ page }) => {
     await openApp(page);
     await penStroke(page, 0, line(100, 200, 300, 200));
-    await page.locator("#barrel-erase").uncheck();
+    await setMoreToggle(page, "Barrel button erases", false);
     // No-brand pen: barrel while touching pins pressure to 1.
     await penEvent(page, "pointerdown", 200, 200, { button: 0, buttons: 1, pressure: 1 });
     await expect(page.locator("#ctx-menu")).toBeVisible();
@@ -374,7 +374,7 @@ test.describe("barrel-button menu", () => {
   test("barrel press opens the menu; a fresh pen tap right after release closes it without ink", async ({ page }) => {
     await openApp(page);
     await penStroke(page, 0, line(100, 200, 300, 200));
-    await page.locator("#barrel-erase").uncheck();
+    await setMoreToggle(page, "Barrel button erases", false);
     await penEvent(page, "pointerdown", 200, 200, { button: 0, buttons: 1, pressure: 1 });
     await expect(page.locator("#ctx-menu")).toBeVisible();
     await penEvent(page, "pointerup", 200, 200, { button: 0, buttons: 0, pressure: 0 });
@@ -387,7 +387,7 @@ test.describe("barrel-button menu", () => {
 
   test("barrel held while hovering opens the menu; after release a pen tap closes it without ink", async ({ page }) => {
     await openApp(page);
-    await page.locator("#barrel-erase").uncheck();
+    await setMoreToggle(page, "Barrel button erases", false);
     await penEvent(page, "pointermove", 200, 200, { buttons: 1, pressure: 0, button: -1 });
     await penEvent(page, "pointermove", 210, 200, { buttons: 1, pressure: 0, button: -1 });
     await expect(page.locator("#ctx-menu")).toBeVisible();
@@ -400,7 +400,7 @@ test.describe("barrel-button menu", () => {
 
   test("King Write: barrel held while hovering opens the menu once; Escape closes it", async ({ page }) => {
     await openApp(page);
-    await page.locator("#barrel-erase").uncheck();
+    await setMoreToggle(page, "Barrel button erases", false);
     await penEvent(page, "pointermove", 200, 200, { buttons: 1, pressure: 0, button: -1 });
     await penEvent(page, "pointermove", 210, 200, { buttons: 1, pressure: 0, button: -1 });
     await expect(page.locator("#ctx-menu")).toBeVisible();

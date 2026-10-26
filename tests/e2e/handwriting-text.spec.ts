@@ -4,7 +4,7 @@ import { PDFDict, PDFDocument, PDFName, PDFString, PDFHexString, StandardFonts }
 import { createBlankPdf } from "../../src/pdf/export";
 import { importPdf } from "../../src/pdf/import";
 import { readNotebookTag } from "../../src/pdf/text";
-import { expect, fakeClipboard, inkAnnots, line, menuAction, menuLabels, openApp, penStroke, state, toClient, waitReady } from "./helpers";
+import { barMenu, expect, fakeClipboard, inkAnnots, line, menuAction, menuLabels, openApp, penStroke, state, toClient, waitReady } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -254,7 +254,7 @@ test.describe("handwriting text", () => {
     await page.waitForFunction(() => document.body.dataset.storage === "server");
     const name = unique("tx-new");
     await page.evaluate((n) => (window.__pdfink.promptFn = async () => n), name);
-    await page.click("#btn-new");
+    await barMenu(page, "file", "New notebook");
     await page.waitForFunction((n) => window.__pdfink.source.kind === "server" && window.__pdfink.source.name === n, name);
     await waitReady(page);
     expect(readNotebookTag(await PDFDocument.load(fs.readFileSync(`${DIR}/${name}`), { updateMetadata: false }))).toBe(true);

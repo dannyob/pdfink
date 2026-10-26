@@ -5,7 +5,7 @@ import { PDFArray, PDFDict, PDFDocument, PDFName, type PDFObject, PDFRef, PDFStr
 import { createBlankPdf, exportPdf } from "../../src/pdf/export";
 import { readOutline } from "../../src/pdf/outline";
 import type { Bookmark, PageModel } from "../../src/model";
-import { FIXTURES, expect, fakeClipboard, line, menuAction, menuLabels, openApp, penStroke, state, toClient, waitReady } from "./helpers";
+import { FIXTURES, barMenu, expect, fakeClipboard, line, menuAction, menuLabels, openApp, penStroke, state, toClient, waitReady } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -27,9 +27,19 @@ function blankPages(n: number): PageModel[] {
   return Array.from({ length: n }, () => ({ width: 612, height: 792, strokes: [], images: [], links: [], texts: [] }));
 }
 
-/** The option texts of the bookmark select. */
+/**
+ * The bar's Bookmarks menu as text: each bookmark indented two spaces per
+ * level, then Remove "…" when the page in view has one ("Bookmark this
+ * page…", always there, is left out). Closes the menu again.
+ */
 async function bookmarkOptions(page: import("@playwright/test").Page): Promise<string[]> {
-  return page.locator("#bookmark-select option").allTextContents();
+  await barMenu(page, "bookmarks");
+  const rows = await page.locator("#ctx-menu > .menuitem").evaluateAll((els) =>
+    els.map((e) => "  ".repeat(Number((e as HTMLElement).style.getPropertyValue("--indent") || 0)) + ((e.querySelector(".text") ?? e).textContent?.trim() ?? "")),
+  );
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#ctx-menu")).toBeHidden();
+  return rows.filter((r) => r !== "Bookmark this page…");
 }
 
 async function openNotebookPage(page: import("@playwright/test").Page, name: string): Promise<void> {
@@ -151,7 +161,7 @@ test.describe("bookmarks", () => {
     const name = unique("bm-jump");
     await putNotebook(name, await createBlankPdf(3));
     await openNotebookPage(page, name);
-    expect(await bookmarkOptions(page)).toEqual(["Bookmarks…"]);
+    expect(await bookmarkOptions(page)).toEqual([]);
 
     const index = await page.evaluate(() => window.__pdfink.addBookmark(2, "Third"));
     expect(index).toBe(0);
@@ -159,9 +169,9 @@ test.describe("bookmarks", () => {
     expect((await state(page)).bookmarks).toEqual([{ title: "Third", page: 2, level: 0 }]);
     expect((await state(page)).dirty).toBe(true);
 
-    await page.selectOption("#bookmark-select", { label: "Third" });
+    await barMenu(page, "bookmarks", "Third");
     await page.waitForFunction(() => window.__pdfink.currentPage === 2);
-    expect(await page.locator("#bookmark-select").inputValue()).toBe("");
+    await expect(page.locator("#ctx-menu")).toBeHidden();
   });
 
   test("bookmarks are saved into the outline and come back on reopen", async ({ page }) => {
@@ -192,7 +202,7 @@ test.describe("bookmarks", () => {
     await page.reload();
     await waitReady(page);
     await page.waitForFunction((n) => window.__pdfink.source.kind === "server" && window.__pdfink.source.name === n, name);
-    expect(await bookmarkOptions(page)).toEqual(["Bookmarks…", "Café first", "Third", "\u00a0\u00a0Third, inside", 'Remove "Café first"']);
+    expect(await bookmarkOptions(page)).toEqual(["Café first", "Third", "  Third, inside", 'Remove "Café first"']);
   });
 
   test("remove option removes the bookmark on the current page", async ({ page }) => {
@@ -203,17 +213,16 @@ test.describe("bookmarks", () => {
       window.__pdfink.addBookmark(0, "First");
       window.__pdfink.addBookmark(2, "Third");
     });
-    expect(await bookmarkOptions(page)).toEqual(["Bookmarks…", "First", "Third", 'Remove "First"']);
-    await page.selectOption("#bookmark-select", { label: 'Remove "First"' });
+    expect(await bookmarkOptions(page)).toEqual(["First", "Third", 'Remove "First"']);
+    await barMenu(page, "bookmarks", 'Remove "First"');
     expect((await state(page)).bookmarks).toEqual([{ title: "Third", page: 2, level: 0 }]);
-    expect(await bookmarkOptions(page)).toEqual(["Bookmarks…", "Third"]);
-    expect(await page.locator("#bookmark-select").inputValue()).toBe("");
+    expect(await bookmarkOptions(page)).toEqual(["Third"]);
 
     // The Remove entry follows the current page.
-    await page.selectOption("#bookmark-select", { label: "Third" });
+    await barMenu(page, "bookmarks", "Third");
     await page.waitForFunction(() => window.__pdfink.currentPage === 2);
-    await expect(page.locator("#bookmark-select option")).toHaveText(["Bookmarks…", "Third", 'Remove "Third"']);
-    await page.selectOption("#bookmark-select", { label: 'Remove "Third"' });
+    await expect.poll(() => bookmarkOptions(page)).toEqual(["Third", 'Remove "Third"']);
+    await barMenu(page, "bookmarks", 'Remove "Third"');
     expect((await state(page)).bookmarks).toEqual([]);
     await page.keyboard.press("Control+s");
     await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
@@ -237,17 +246,19 @@ test.describe("bookmarks", () => {
     await page.setInputFiles("#file-input", file);
     await waitReady(page);
     expect((await state(page)).bookmarks).toEqual(outline);
-    await expect(page.locator("#bookmark-select")).toBeVisible();
-    expect(await bookmarkOptions(page)).toEqual(["Bookmarks…", "Part one", "\u00a0\u00a0Chapter", "\u00a0\u00a0\u00a0\u00a0Section", "Nowhere", 'Remove "Part one"']);
-    expect(await page.locator("#bookmark-select option", { hasText: "Nowhere" }).isDisabled()).toBe(true);
+    await expect(page.locator("#bar-bookmark")).toBeVisible();
+    expect(await bookmarkOptions(page)).toEqual(["Part one", "  Chapter", "    Section", "Nowhere", 'Remove "Part one"']);
+    await barMenu(page, "bookmarks");
+    await expect(page.locator("#ctx-menu .menuitem", { hasText: "Nowhere" })).toBeDisabled();
+    await page.keyboard.press("Escape");
 
-    const [download] = await Promise.all([page.waitForEvent("download"), page.click("#btn-saveas")]);
+    const [download] = await Promise.all([page.waitForEvent("download"), barMenu(page, "file", "Save as…")]);
     const doc = await PDFDocument.load(fs.readFileSync((await download.path())!), { updateMetadata: false });
     expect(readOutline(doc)).toEqual(outline);
 
     // An added bookmark goes into the downloaded file too.
     await page.evaluate(() => window.__pdfink.addBookmark(1, "Added"));
-    const [again] = await Promise.all([page.waitForEvent("download"), page.click("#btn-save")]);
+    const [again] = await Promise.all([page.waitForEvent("download"), barMenu(page, "file", "Save")]);
     const doc2 = await PDFDocument.load(fs.readFileSync((await again.path())!), { updateMetadata: false });
     expect(readOutline(doc2)).toEqual([...outline.slice(0, 3), { title: "Added", page: 1, level: 0 }, outline[3]]);
   });

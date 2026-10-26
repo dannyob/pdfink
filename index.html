@@ -7,56 +7,7 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <header id="toolbar">
-      <div class="group">
-        <select id="notebook-select" class="server-only" title="Open a notebook from the notebooks folder">
-          <option value="" disabled selected>Open notebook…</option>
-        </select>
-        <button id="btn-open" class="local-only" title="Open a PDF from this device (Ctrl+O)">Open…</button>
-        <button id="btn-new" title="New blank PDF">New</button>
-        <button id="btn-save" title="Save (Ctrl+S)">Save</button>
-        <button id="btn-saveas" class="local-only" title="Save as a new file on this device">Save as…</button>
-        <button id="btn-addpage" title="Add a blank page at the end">+ Page</button>
-        <select id="bookmark-select" title="Bookmarks"><option value="">Bookmarks…</option></select>
-      </div>
-      <div class="group server-only">
-        <button id="btn-import" title="Import a PDF from this device into the notebooks folder (Ctrl+O)">Import…</button>
-        <button id="btn-export" title="Export the current notebook as a PDF file on this device">Export…</button>
-      </div>
-      <div class="group tools">
-        <button id="tool-pen" class="tool active" title="Pen (P)">Pen</button>
-        <button id="tool-eraser" class="tool" title="Eraser (E)">Eraser</button>
-        <button id="tool-select" class="tool" title="Select rectangle (S)">Select</button>
-        <label class="opt" title="Many pens don't report their barrel button. With this on, a pen whose pressure is pinned to 0 (hovering) or 1 (touching) counts as a barrel press and erases. Off, the barrel button opens a menu of the toolbar actions instead. The eraser end always erases."><input type="checkbox" id="barrel-erase" checked /> barrel button erase</label>
-        <label class="opt" title="Draw with a finger (one finger draws, two fingers scroll). On by default on devices without a pen or mouse; switches itself off when a pen appears."><input type="checkbox" id="finger-draws" /> finger draws</label>
-      </div>
-      <div class="group">
-        <input id="pen-color" type="color" value="#000000" title="Pen colour" />
-        <select id="pen-width" title="Pen width (pt)">
-          <option value="0.7">thin</option>
-          <option value="1" selected>normal</option>
-          <option value="2">thick</option>
-          <option value="4">marker</option>
-        </select>
-      </div>
-      <div class="group">
-        <button id="btn-copy" title="Copy selection (Ctrl+C)">Copy</button>
-        <button id="btn-cut" title="Cut selection (Ctrl+X)">Cut</button>
-        <button id="btn-paste" title="Paste (Ctrl+V)">Paste</button>
-        <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
-        <button id="btn-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
-      </div>
-      <div id="cmd-buttons" class="group server-only"></div>
-      <div id="runs" class="group server-only"></div>
-      <div class="group">
-        <button id="btn-zoom-out" title="Zoom out">−</button>
-        <button id="btn-zoom-in" title="Zoom in">+</button>
-        <button id="btn-zoom-fit" title="Fit width">Fit</button>
-      </div>
-      <div id="status"></div>
-      <div id="progress"></div>
-      <a id="src-link" href="https://github.com/dannyob/pdfink" target="_blank" rel="noopener" title="Source code on GitHub">src</a>
-    </header>
+    <header id="toolbar"><div id="bar"></div><div id="status-line"><span id="status"></span><div id="progress"></div><span id="status-right"></span></div></header>
     <main id="pages" tabindex="0"></main>
     <div id="dialog" role="dialog" hidden></div>
     <input id="file-input" type="file" accept="application/pdf,.pdf" hidden />

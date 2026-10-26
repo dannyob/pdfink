@@ -2,7 +2,7 @@ import { test } from "@playwright/test";
 import fs from "node:fs";
 import { PDFDocument } from "pdf-lib";
 import { createBlankPdf, exportPdf } from "../../src/pdf/export";
-import { expect, fakeClipboard, inkAnnots, inkPathCount, line, menuAction, menuHas, notebookFixture, openApp, penStroke, state, toClient, waitReady } from "./helpers";
+import { barMenu, expect, fakeClipboard, inkAnnots, inkPathCount, line, menuAction, menuHas, notebookFixture, openApp, penStroke, state, toClient, waitReady } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -19,6 +19,22 @@ async function readNotebook(name: string): Promise<PDFDocument> {
   return PDFDocument.load(fs.readFileSync(`${DIR}/${name}`), { updateMetadata: false });
 }
 
+/** The notebooks the File menu's Open notebook… level lists; closes the menu again. */
+async function notebookList(page: import("@playwright/test").Page): Promise<string[]> {
+  await barMenu(page, "file", "Open notebook…");
+  const names = await page.locator("#ctx-menu .menuitem:not(.back)").evaluateAll((els) => els.map((e) => (e.querySelector(".text") ?? e).textContent?.trim() ?? ""));
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#ctx-menu")).toBeHidden();
+  return names;
+}
+
+/** Open notebook `name` from File › Open notebook…. */
+async function openFromMenu(page: import("@playwright/test").Page, name: string): Promise<void> {
+  await barMenu(page, "file", "Open notebook…");
+  await menuAction(page, name);
+}
+
 function unique(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}.pdf`;
 }
@@ -29,24 +45,24 @@ test.describe("notebooks folder", () => {
     await putNotebook(name, await createBlankPdf(2));
     await fakeClipboard(page);
     await page.goto("/");
-    await expect(page.locator("#notebook-select option")).toContainText([name]);
-    await page.selectOption("#notebook-select", name);
+    await expect.poll(() => notebookList(page)).toContain(name);
+    await openFromMenu(page, name);
     await page.waitForFunction((n) => window.__pdfink.source.kind === "server" && window.__pdfink.source.name === n, name);
     await waitReady(page);
     expect((await state(page)).pages).toHaveLength(2);
 
     await penStroke(page, 0, line(100, 100, 300, 100));
     await penStroke(page, 1, line(100, 100, 300, 100));
-    await expect(page.locator("#status")).toContainText("unsaved");
-    await page.click("#btn-save");
+    await expect(page.locator("#status-right")).toContainText("Unsaved");
+    await barMenu(page, "file", "Save");
     await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
-    await expect(page.locator("#status")).toContainText("saved");
+    await expect(page.locator("#status-right")).toContainText("Saved");
 
     const doc = await readNotebook(name);
     expect(doc.getPageCount()).toBe(2);
     expect(inkPathCount(inkAnnots(doc, 0)[0])).toBe(1);
     expect(inkPathCount(inkAnnots(doc, 1)[0])).toBe(1);
-    expect(await page.evaluate(() => (document.getElementById("notebook-select") as HTMLSelectElement).value)).toBe(name);
+    await expect(page.locator("#bar-file")).toContainText(name);
   });
 
   test("?open= loads a notebook and the ink round-trips through the server", async ({ page }) => {
@@ -78,12 +94,12 @@ test.describe("notebooks folder", () => {
     await page.waitForFunction(() => document.body.dataset.storage === "server");
     const name = unique("new");
     await page.evaluate((n) => (window.__pdfink.promptFn = async () => n.replace(/\.pdf$/, "")), name);
-    await page.click("#btn-new");
+    await barMenu(page, "file", "New notebook");
     await page.waitForFunction((n) => window.__pdfink.source.kind === "server" && window.__pdfink.source.name === n, name);
     await waitReady(page);
     expect(fs.existsSync(`${DIR}/${name}`)).toBe(true);
     expect((await readNotebook(name)).getPage(0).getSize()).toEqual({ width: 612, height: 792 });
-    await expect(page.locator("#notebook-select option")).toContainText([name]);
+    await expect.poll(() => notebookList(page)).toContain(name);
   });
 
   test("refuses to overwrite a notebook that changed on disk unless confirmed", async ({ page }) => {
@@ -97,13 +113,13 @@ test.describe("notebooks folder", () => {
     await putNotebook(name, await createBlankPdf(3));
 
     await page.evaluate(() => (window.__pdfink.confirmFn = async () => false));
-    await page.click("#btn-save");
+    await barMenu(page, "file", "Save");
     await expect(page.locator("#status")).toContainText("changed on disk");
     expect((await readNotebook(name)).getPageCount()).toBe(3); // untouched
     expect((await state(page)).dirty).toBe(true);
 
     await page.evaluate(() => (window.__pdfink.confirmFn = async () => true));
-    await page.click("#btn-save");
+    await barMenu(page, "file", "Save");
     await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
     const doc = await readNotebook(name);
     expect(doc.getPageCount()).toBe(1);
@@ -118,7 +134,7 @@ test.describe("notebooks folder", () => {
     await page.setInputFiles("#file-input", fixture);
     await page.waitForFunction((n) => window.__pdfink.source.kind === "server" && window.__pdfink.source.name === n, name);
     expect(inkPathCount(inkAnnots(await readNotebook(name), 0)[0])).toBe(5);
-    expect(await page.evaluate(() => (document.getElementById("notebook-select") as HTMLSelectElement).value)).toBe(name);
+    await expect(page.locator("#bar-file")).toContainText(name);
 
     await page.evaluate(() => (window.__pdfink.promptFn = async () => null));
     await page.setInputFiles("#file-input", fixture);
@@ -143,7 +159,7 @@ test.describe("notebooks folder", () => {
     await putNotebook(b, await exportPdf(await createBlankPdf(1), [{ width: 612, height: 792, images: [], strokes: [], links: [], texts: [] }]));
     await openApp(page, `?nofs=1&open=${encodeURIComponent(a)}`);
     await penStroke(page, 0, line(100, 100, 300, 100));
-    await page.selectOption("#notebook-select", b);
+    await openFromMenu(page, b);
     await page.waitForFunction((n) => window.__pdfink.source.kind === "server" && window.__pdfink.source.name === n, b);
     expect(inkAnnots(await readNotebook(a), 0)).toHaveLength(1);
   });
@@ -159,9 +175,9 @@ test.describe("pages added in the browser", () => {
     await page.click("#btn-addpage");
     await page.waitForFunction(() => window.__pdfink.pages.length === 2 && window.__pdfink.views.length === 2);
     await penStroke(page, 1, line(100, 100, 300, 100));
-    await page.click("#btn-save");
+    await barMenu(page, "file", "Save");
     await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
-    await expect(page.locator("#status")).toContainText("saved");
+    await expect(page.locator("#status-right")).toContainText("Saved");
 
     let doc = await readNotebook(name);
     expect(doc.getPageCount()).toBe(2);
@@ -169,7 +185,7 @@ test.describe("pages added in the browser", () => {
 
     // A later save without further page changes rebuilds from the server's copy and keeps both pages.
     await penStroke(page, 0, line(100, 200, 300, 200));
-    await page.click("#btn-save");
+    await barMenu(page, "file", "Save");
     await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
     doc = await readNotebook(name);
     expect(doc.getPageCount()).toBe(2);
@@ -270,7 +286,7 @@ test.describe("pen-menu commands", () => {
     await page.waitForFunction(() => window.__pdfink.pages.length === 2 && window.__pdfink.views.length === 2);
     expect(((await (await ran).json()) as { changed: boolean }).changed).toBe(true);
     // The new page's base has not been sent yet: the save must carry it.
-    await page.click("#btn-save");
+    await barMenu(page, "file", "Save");
     await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving, null, { timeout: 10_000 });
     expect((await readNotebook(name)).getPageCount()).toBe(2);
   });
@@ -281,7 +297,7 @@ test.describe("pen-menu commands", () => {
     fs.writeFileSync(`${DIR}/two-pages.pdf`, await createBlankPdf(2));
     await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
     await page.waitForFunction(() => window.__pdfink.commands.some((c) => c.label === "Replace with two pages"));
-    await page.click("#btn-zoom-out");
+    await barMenu(page, "more", "Smaller");
     const scale = (await state(page)).scale;
     await page.evaluate(() => (document.getElementById("pages")!.scrollTop = 120));
 
@@ -295,7 +311,7 @@ test.describe("pen-menu commands", () => {
     expect(await page.evaluate(() => document.getElementById("pages")!.scrollTop)).toBe(120);
     // The reopened file's mtime is now ours: a further save goes through without a conflict.
     await penStroke(page, 1, line(100, 100, 300, 100));
-    await page.click("#btn-save");
+    await barMenu(page, "file", "Save");
     await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
     expect((await readNotebook(name)).getPageCount()).toBe(2);
   });

@@ -122,7 +122,7 @@ export class ContextMenu {
   }
 
   private setOwner(button: HTMLElement | null): void {
-    this.owner?.removeAttribute("aria-expanded");
+    this.owner?.setAttribute("aria-expanded", "false");
     this.owner = button;
     button?.setAttribute("aria-expanded", "true");
   }

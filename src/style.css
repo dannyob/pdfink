@@ -13,31 +13,59 @@ html, body {
 }
 body { display: flex; flex-direction: column; }
 #toolbar {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
-  padding: 6px 10px; background: var(--bar); border-bottom: 1px solid #bbb;
+  display: flex; flex-direction: column; background: var(--bar); border-bottom: 1px solid #9aa0a8;
   user-select: none; -webkit-user-select: none; touch-action: manipulation;
 }
-.group { display: flex; gap: 4px; align-items: center; }
+/* One row of labelled tiles, never wrapped. Until groups move into More when
+   it is too narrow, the row scrolls sideways rather than wrapping. */
+#bar {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; padding: 6px 8px;
+  overflow-x: auto; scrollbar-width: none;
+}
+#bar::-webkit-scrollbar { display: none; }
+#bar > .group { display: flex; gap: 6px; align-items: center; flex: none; }
+/* Separators between groups: a 1 px rule, 28 px tall, 13 px of gap in all. */
+#bar > .group + .group:not([data-group="more"])::before {
+  content: ""; width: 1px; height: 28px; background: #9aa0a8; margin: 0 1px 0 0; flex: none;
+}
+#bar > .group + .group:not([data-group="more"]) { margin-left: 0; }
+#bar .grow { flex: 1 0 12px; }
+#bar .tile.labelled { min-width: 52px; flex: none; }
+#bar .tile.name {
+  flex-direction: row; gap: 6px; height: 52px; padding: 0 12px; font-size: 14px; font-weight: 600;
+  max-width: 190px; min-width: 0; flex: none;
+}
+#bar .tile.name.bm { font-weight: 500; max-width: 210px; }
+#bar .tile.name svg { width: 18px; height: 18px; }
+#bar .tile.name .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#bar .tile.name .chev { font-size: 12px; flex: none; color: var(--ink); }
+#bar .tile.name.none .txt, #bar .tile.name.none svg { opacity: .5; }
+#bar .tile.tool.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; overflow: hidden; pointer-events: none; }
 /* Toolbar items for one storage mode only; <body data-storage> picks. */
-body:not([data-storage="server"]) .server-only { display: none; }
-body:not([data-storage="local"]) .local-only { display: none; }
+body:not([data-storage="server"]) .server-only { display: none !important; }
+body:not([data-storage="local"]) .local-only { display: none !important; }
 button {
   font: inherit; padding: 6px 10px; border: 1px solid #aaa; border-radius: 6px;
   background: #fff; color: var(--ink); cursor: pointer; min-width: 36px;
 }
 button:hover { background: #eee; }
-select { font: inherit; padding: 5px 6px; border: 1px solid #aaa; border-radius: 6px; background: #fff; max-width: 260px; }
-#bookmark-select { max-width: 200px; }
 button:disabled { opacity: 0.4; cursor: default; }
-.opt { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #333; margin-left: 6px; }
-.opt input { margin: 0; }
-button.tool.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-#status { margin-left: auto; font-size: 12px; color: #555; white-space: nowrap; }
-#progress { font-size: 12px; color: var(--accent); white-space: nowrap; }
+/* Status line: messages and progress on the left, save state and page count on the right. */
+#status-line {
+  display: flex; align-items: center; gap: 16px; height: 26px; padding: 0 12px;
+  border-top: 1px solid #9aa0a8; font-size: 13px; white-space: nowrap;
+}
+#status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#progress { color: var(--accent); overflow: hidden; text-overflow: ellipsis; }
+#status-right { color: #555b66; font-variant-numeric: tabular-nums; }
+#status-right b { color: var(--ink); font-weight: 600; }
 #progress:empty, #cmd-buttons:empty, #runs:empty { display: none; }
+#cmd-buttons, #runs { display: flex; gap: 6px; align-items: center; }
+#cmd-buttons .cmd { height: 52px; border: 1px solid #8a9099; border-radius: 8px; padding: 0 12px; font-size: 13px; white-space: nowrap; }
 /* A detached command that is still running, with a button to stop it. */
 #runs .run {
-  display: inline-flex; align-items: center; gap: 2px; padding: 2px 2px 2px 10px;
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px 2px 2px 10px; white-space: nowrap;
   font-size: 12px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); background: #fff;
 }
 #runs .dismiss { border: 0; background: none; min-width: 28px; padding: 2px 6px; color: inherit; }
@@ -81,7 +109,7 @@ button.tool.active { background: var(--accent); color: #fff; border-color: var(-
 #ctx-menu .context { background: #e8effc; color: #1d3f7a; }
 #ctx-menu .command { background: #f7f2e8; }
 #ctx-menu .row { display: flex; gap: 8px; }
-#ctx-menu .row .tile { flex: 1; }
+#ctx-menu .row .tile { flex: 1; min-width: 0; }
 #ctx-menu .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #7a8290; padding: 0 6px; }
 #ctx-menu .sep { border: 0; border-top: 1px solid #e3e6eb; margin: 0 4px; }
 #dialog {
@@ -104,8 +132,6 @@ button.tool.active { background: var(--accent); color: #fff; border-color: var(-
 #dialog button[hidden] { display: none; }
 #dialog .dialog-option { text-align: left; }
 #dialog .dialog-ok { background: var(--accent); color: #fff; border-color: var(--accent); }
-#src-link { font-size: 12px; color: #555; text-decoration: none; border-bottom: 1px dotted #999; }
-#src-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
 #pages {
   flex: 1; overflow: auto; padding: 16px 0 60vh; outline: none;
   touch-action: pan-x pan-y pinch-zoom;

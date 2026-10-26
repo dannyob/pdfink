@@ -236,3 +236,68 @@ export async function menuHas(page: Page, label: string): Promise<boolean> {
   await menu.locator(".back").click();
   return found;
 }
+
+const BAR_BUTTONS = { file: "#bar-file", bookmarks: "#bar-bookmark", style: "#bar-style", commands: "#bar-commands", more: "#bar-more" } as const;
+
+/**
+ * Open one of the bar's menus (unless it is already open) and, given a
+ * label, activate that entry: a tile by its label, or a text row or submenu
+ * whose label is exactly `label`.
+ */
+export async function barMenu(page: Page, which: keyof typeof BAR_BUTTONS, label?: string): Promise<void> {
+  const menu = page.locator("#ctx-menu");
+  const button = page.locator(BAR_BUTTONS[which]);
+  if (!(await menu.isVisible()) || (await button.getAttribute("aria-expanded")) !== "true") await button.click();
+  await expect(menu).toBeVisible();
+  await expect(button).toHaveAttribute("aria-expanded", "true");
+  if (label === undefined) return;
+  const tile = menu.locator(`.tile[aria-label=${JSON.stringify(label)}]`);
+  if ((await tile.count()) > 0) return tile.first().click();
+  const index = await menu.locator(".menuitem").evaluateAll(
+    (els, want) =>
+      els.findIndex((e) => {
+        const text = e.querySelector(".text");
+        if (text) return text.textContent?.trim() === want;
+        const copy = e.cloneNode(true) as HTMLElement;
+        copy.querySelector(".chev")?.remove();
+        return copy.textContent?.trim() === want;
+      }),
+    label,
+  );
+  if (index < 0) throw new Error(`No "${label}" in the ${which} menu`);
+  await menu.locator(".menuitem").nth(index).click();
+}
+
+/** The open menu's level as text: rows and submenus by label, "—" for a separator, "[label]" for a caption. */
+export async function menuOutline(page: Page): Promise<string[]> {
+  return page.locator("#ctx-menu > *").evaluateAll((els) =>
+    els.flatMap((e) => {
+      if (e.classList.contains("sep")) return ["—"];
+      if (e.classList.contains("lbl")) return [`[${e.textContent?.trim()}]`];
+      if (e.classList.contains("row")) return [`(${[...e.querySelectorAll(".tile")].map((t) => t.getAttribute("aria-label")).join(" ")})`];
+      if (e.classList.contains("back")) return [];
+      const text = e.querySelector(".text");
+      if (text) return [text.textContent?.trim() ?? ""];
+      const copy = e.cloneNode(true) as HTMLElement;
+      copy.querySelector(".chev")?.remove();
+      return [copy.textContent?.trim() ?? ""];
+    }),
+  );
+}
+
+/** Whether More's toggle row `label` ("Barrel button erases", "Finger draws") is ticked; leaves the menu closed. */
+export async function moreChecked(page: Page, label: string): Promise<boolean> {
+  await barMenu(page, "more");
+  const row = page.locator("#ctx-menu .menuitem", { hasText: label });
+  const on = await row.evaluate((e) => e.classList.contains("checked"));
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#ctx-menu")).toBeHidden();
+  return on;
+}
+
+/** Turn More's toggle row `label` on or off (a no-op when it already is). */
+export async function setMoreToggle(page: Page, label: string, on: boolean): Promise<void> {
+  if ((await moreChecked(page, label)) === on) return;
+  await barMenu(page, "more", label);
+  await expect(page.locator("#ctx-menu")).toBeHidden();
+}
