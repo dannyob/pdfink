@@ -78,6 +78,34 @@ test.describe("handwriting text", () => {
     expect(hasLayerFont(await PDFDocument.load(new Uint8Array(out), { updateMetadata: false }))).toBe(true);
   });
 
+  test("a page whose own text cannot be read still saves: no layer, but /PdfinkText and /Contents", async ({ page }) => {
+    const name = unique("tx-notext");
+    await putNotebook(name, await createBlankPdf(1));
+    await openNotebookPage(page, name);
+    await penStroke(page, 0, line(80, 100, 260, 100));
+    await page.evaluate((a) => window.__pdfink.setInkText(0, [a]), LINE1);
+    await page.evaluate(() => {
+      // pdf.js text extraction fails for this page.
+      const app = window.__pdfink as unknown as { pdfDoc: { getPage(n: number): Promise<object> }; ownTextCache: Map<number, unknown>; ownTextCount: Map<number, number> };
+      const doc = app.pdfDoc;
+      const getPage = doc.getPage.bind(doc);
+      doc.getPage = async (n) => {
+        const pg = await getPage(n);
+        return Object.assign(Object.create(pg), { getTextContent: () => Promise.reject(new Error("no text for you")) });
+      };
+      app.ownTextCache.clear();
+      app.ownTextCount.clear();
+    });
+    expect(await page.evaluate(() => window.__pdfink.saveToServer())).toBe(true);
+    const bytes = new Uint8Array(fs.readFileSync(`${DIR}/${name}`));
+    const doc = await PDFDocument.load(bytes, { updateMetadata: false });
+    expect(hasLayerFont(doc)).toBe(false);
+    expect(contentsOf(inkAnnots(doc, 0)[0])).toBe("hello world");
+    expect((await importPdf(bytes)).pages[0].texts.map((t) => t.text)).toEqual(["hello world"]);
+    const out = await page.evaluate(async () => Array.from(await window.__pdfink.exportBytes()));
+    expect((await importPdf(new Uint8Array(out))).pages[0].texts.map((t) => t.text)).toEqual(["hello world"]);
+  });
+
   test("moving a selection moves its text; cut/paste and delete carry it; undo restores it", async ({ page }) => {
     await openApp(page);
     await penStroke(page, 0, line(80, 100, 260, 100));

@@ -2236,11 +2236,20 @@ export class App {
     return p.then((r) => r.map((t) => ({ ...t })));
   }
 
-  /** Whether `page` is saved as a notebook page (with an invisible text layer): the tag, else "no text of its own". */
+  /**
+   * Whether `page` is saved as a notebook page (with an invisible text
+   * layer): the tag, else "no text of its own". When the page's own text
+   * cannot be read it is not one: no layer, but /PdfinkText and /Contents
+   * still carry the text, and the save goes ahead.
+   */
   async isNotebookPage(page: number): Promise<boolean> {
     this.checkPage(page);
     if (this.notebookTag !== null) return this.notebookTag;
-    return (await this.ownText(page)).length === 0;
+    try {
+      return (await this.ownText(page)).length === 0;
+    } catch {
+      return false;
+    }
   }
 
   /** Set the file's notebook tag (null: decide per page). Not an undo step. */
