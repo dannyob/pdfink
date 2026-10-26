@@ -281,10 +281,39 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(s.due(120), [0])
         self.assertEqual(s.due(200), [])
 
-    def test_arrival_with_untexted_lines_is_due_at_once(self):
+    def test_arrival_with_untexted_lines_is_due_after_the_dwell(self):
         s = ocr.Scheduler(20)
         s.arrived(2, now=100, has_untexted=True)
-        self.assertEqual(s.due(100), [2])
+        self.assertEqual(s.due(100), [])
+        self.assertEqual(s.due(100 + ocr.ARRIVAL_DWELL - 0.1), [])
+        self.assertEqual(s.due(100 + ocr.ARRIVAL_DWELL), [2])
+
+    def test_scrolling_past_pages_queues_none_of_them(self):
+        s = ocr.Scheduler(20)
+        t = 100.0
+        for p in range(1, 11):  # pages 1..10, 0.2 s each, all untexted
+            s.arrived(p, now=t, has_untexted=True)
+            self.assertEqual(s.due(t), [])
+            t += 0.2
+        last = t - 0.2  # arrived on page 10 then
+        self.assertEqual(s.due(last + 2.9), [])
+        self.assertEqual(s.due(last + 3.0), [10])
+        self.assertEqual(s.due(last + 100), [])
+
+    def test_leaving_before_the_dwell_cancels_the_arrival(self):
+        s = ocr.Scheduler(20)
+        s.arrived(1, now=100, has_untexted=True)
+        s.arrived(2, now=102, has_untexted=False)  # scrolled on to a page with nothing to read
+        self.assertEqual(s.due(200), [])
+
+    def test_ink_scheduled_pages_fire_even_after_scrolling_away(self):
+        s = ocr.Scheduler(20)
+        s.ink(5, now=100)
+        s.arrived(1, now=100, has_untexted=True)
+        self.assertEqual(s.due(103), [1])
+        s.arrived(2, now=104, has_untexted=False)
+        self.assertEqual(s.due(119), [])
+        self.assertEqual(s.due(120), [5])
 
     def test_arrival_without_untexted_lines_is_not_due(self):
         s = ocr.Scheduler(20)
@@ -294,7 +323,7 @@ class SchedulerTests(unittest.TestCase):
     def test_arrival_and_ink_mix_oldest_first(self):
         s = ocr.Scheduler(20)
         s.ink(0, now=100)  # due at 120
-        s.arrived(4, now=110, has_untexted=True)  # due at 110
+        s.arrived(4, now=110, has_untexted=True)  # due at 113
         self.assertEqual(s.due(130), [4, 0])
 
     def test_a_page_is_not_due_again_until_new_ink(self):
@@ -429,6 +458,41 @@ class Watch(unittest.TestCase):
         self.assertEqual(calls, [0, 1])
         self.assertIn("model said no", err)
         self.assertEqual(page.progress_calls, ["Reading page 1…", None, "Reading page 2…", None])
+
+
+class WatchUnexpected(unittest.TestCase):
+    def test_an_unexpected_exception_is_logged_and_the_next_page_read(self):
+        page = WatchPage(
+            {}, [],
+            [(0, "ink", {"page": 0}), (0, "ink", {"page": 1}),
+             (1, "_strokes", {0: [zig(100, 100, "s1")], 1: [zig(100, 100, "s1")]}),
+             (1, "ink", {"page": 0}), (1, "ink", {"page": 1}), (30, None, None), (60, None, None), (61, "exit", None)],
+            current=None,
+        )
+        calls = []
+
+        def rec(p, i, quiet, model=None, report=True):
+            calls.append(i)
+            if i == 0:
+                raise ValueError("bad number in a stroke")
+            return 1
+
+        with redirect_stderr(io.StringIO()) as err, redirect_stdout(io.StringIO()):
+            code = ocr.watch(page, quiet_s=20, model=object(), clock=page.clock, recognise_fn=rec)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [0, 1])  # page 0 not retried
+        self.assertIn("bad number in a stroke", err.getvalue())
+        self.assertEqual(page.progress_calls, ["Reading page 1…", None, "Reading page 2…", None])
+
+    def test_page_gone_from_recognise_still_exits_0(self):
+        page = WatchPage({0: [zig(100, 100, "s1")]}, [], [(10, None, None), (20, None, None)], current=0)
+
+        def rec(p, i, quiet, model=None, report=True):
+            raise ocr.pdfink_page.PageGone("page connection closed")
+
+        with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            self.assertEqual(ocr.watch(page, quiet_s=20, model=object(), clock=page.clock, recognise_fn=rec), 0)
+        self.assertEqual(len(page.script), 2)  # it stopped at once, not at the script's end
 
 
 class WatchInkBaseline(unittest.TestCase):

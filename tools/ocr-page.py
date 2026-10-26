@@ -28,13 +28,14 @@ lines newly given text), or "up to date" when there was nothing to send.
 
 --watch is automatic mode, for a `detach = true` menu entry: it stays with
 the tab and recognises a page once its ink has been quiet for --quiet seconds
-(default 20) after its lines change, or when you arrive on a page (the
-visible one at the start too) that has lines without text. Opening or
-reloading a document reads nothing by itself: existing ink is read a page
-at a time, as you turn to it. One page at a time, as quiet
-updates (no undo step), showing "Reading page N…" while busy and printing
-nothing per page. A failed page is logged and tried again only after new
-ink. It exits 0 when the page goes away or the run is stopped.
+(default 20) after its lines change, or once you have stayed on a page (the
+visible one at the start too) for 3 s and it has lines without text, so
+scrolling past pages reads none of them. Opening or reloading a document
+reads nothing by itself: existing ink is read a page at a time, as you stop
+on it. One page at a time, as quiet updates (no undo step), showing
+"Reading page N…" while busy and printing nothing per page. A page that
+fails, for whatever reason, is logged and tried again only after new ink.
+It exits 0 when the page goes away or the run is stopped.
 
 Keys come from `llm keys set ...` as usual (the shared llm user directory).
 Model: --model, else $PDFINK_OCR_MODEL, else openrouter/google/gemini-3.7-flash.
@@ -60,6 +61,7 @@ from ink_lines import Line, group  # noqa: E402
 
 DEFAULT_MODEL = "openrouter/google/gemini-3.7-flash"
 DEFAULT_QUIET = 20.0  # s of no ink on a page before --watch reads it
+ARRIVAL_DWELL = 3.0  # s you must stay on a page before --watch reads its existing ink
 LLM_TIMEOUT = int(os.environ.get("PDFINK_OCR_LLM_TIMEOUT", "120"))
 SCALE = 2  # page render scale, pixels per point
 LEFT_EDGE = 20  # pt: a line starting this close to the left edge is labelled on its right
@@ -260,15 +262,18 @@ def recognise(
 class Scheduler:
     """Which pages --watch should read, and when. Pure: callers pass `now`.
 
-    A page is due `quiet_s` seconds after its last ink, or at once when you
-    arrive on it and it has lines without text. due() hands each page out
+    A page is due `quiet_s` seconds after its last ink, wherever you are by
+    then. A page you arrive on that has lines without text is due once you
+    have stayed on it for `dwell` seconds: arriving on another page cancels
+    it, so scrolling past pages reads none of them. due() hands each page out
     once, oldest first; after that, only new ink makes it due again (so a
     page whose recognition failed is not retried in a loop)."""
 
-    def __init__(self, quiet_s: float) -> None:
+    def __init__(self, quiet_s: float, dwell: float = ARRIVAL_DWELL) -> None:
         self.quiet_s = quiet_s
+        self.dwell = dwell
         self._ink: dict[int, float] = {}  # page -> time of its last ink
-        self._arrived: dict[int, float] = {}  # page -> when it was arrived on
+        self._arrived: dict[int, float] = {}  # the current page -> when you arrived, if it is to be read
         self._done: set[int] = set()  # handed out, no ink since
 
     def ink(self, page: int, now: float) -> None:
@@ -277,12 +282,16 @@ class Scheduler:
         self._done.discard(page)
 
     def arrived(self, page: int, now: float, has_untexted: bool) -> None:
+        """`page` is now the current page; any page you left is no longer
+        waiting on its dwell."""
+        since = self._arrived.get(page)
+        self._arrived.clear()
         if has_untexted and page not in self._done and page not in self._ink:
-            self._arrived.setdefault(page, now)
+            self._arrived[page] = now if since is None else since
 
     def due(self, now: float) -> list[int]:
         ready = [(t + self.quiet_s, p) for p, t in self._ink.items() if now - t >= self.quiet_s]
-        ready += [(t, p) for p, t in self._arrived.items()]
+        ready += [(t + self.dwell, p) for p, t in self._arrived.items() if now - t >= self.dwell]
         ready.sort()
         out = [p for _, p in ready]
         for p in out:
@@ -378,7 +387,9 @@ def watch(
                 page_api.progress(f"Reading page {p + 1}…")
                 try:
                     recognise_fn(page_api, p, quiet=True, model=model, report=False)
-                except (RecogniseError, pdfink_page.PageError, TimeoutError) as e:
+                except pdfink_page.PageGone:
+                    raise
+                except Exception as e:  # anything else: this page waits for new ink, the watch goes on
                     log(f"ocr-page: page {p + 1}: {e}")
                 finally:
                     page_api.progress(None)
