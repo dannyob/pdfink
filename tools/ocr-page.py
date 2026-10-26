@@ -240,7 +240,10 @@ def _model(model):
         return model
     import llm
 
-    return llm.get_model(model)
+    try:
+        return llm.get_model(model)
+    except llm.UnknownModelError as e:
+        raise RecogniseError(f"unknown model {model!r} (see `llm models`)") from e
 
 
 def recognise(

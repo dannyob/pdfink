@@ -181,7 +181,7 @@ Handwriting text, strokes and the notebook tag have calls too. A handwriting tex
 | --- | --- |
 | `pageText(page)` | `{ own, ink, notebook }`: the document's own text as `{ text, x, y, w, h }` runs, the handwriting text, and whether the page saves as a notebook page (with an invisible text layer). |
 | `inkText(page)` | The page's handwriting text. |
-| `setInkText(page, lines, { space?, quiet?, within? })` | Replaces the page's handwriting text with `lines` (each without `id`) and returns the new ids. With `within`, only texts whose centre is inside that rect are replaced. `space: "pdf"` takes the lines and `within` in PDF points, origin bottom-left. One undo step, or none with `quiet`. A line with a non-finite number or non-string text fails. |
+| `setInkText(page, lines, { space?, quiet?, within? })` | Replaces the page's handwriting text with `lines` (each without `id`) and returns the new ids. With `within`, only texts whose centre is inside that rect are replaced. `space: "pdf"` takes the lines and `within` in PDF points, origin bottom-left. One undo step, or none with `quiet`. A line with a non-finite number, non-string text or a `note` that is not a whole number ≥ 0 fails. |
 | `strokes(page, { space? })` | The page's strokes: `{ id, points: [{ x, y, p }], color, width, opacity }`, in page space or, with `space: "pdf"`, PDF points. |
 | `notebookTag()` | The file's notebook tag: `true`, `false`, or `null` when each page decides (a page with no text of its own is a notebook page). |
 | `setNotebookTag(v)` | Sets the tag (`true`, `false` or `null`); not an undo step. |

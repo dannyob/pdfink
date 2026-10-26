@@ -293,6 +293,45 @@ class Recognise(unittest.TestCase):
         self.assertEqual(self.page.set_calls, [])
 
 
+class UnknownModel(unittest.TestCase):
+    def test_main_says_ocr_page_and_exits_1(self):
+        import types
+
+        class UnknownModelError(KeyError):
+            pass
+
+        def get_model(name):
+            raise UnknownModelError("Unknown model: " + name)
+
+        fake = types.ModuleType("llm")
+        fake.UnknownModelError = UnknownModelError
+        fake.get_model = get_model
+        page = FakePage([zig(100, 100, "s1")], [])
+        saved = {k: v for k, v in [("llm", sys.modules.get("llm"))]}
+        connect, argv, env = ocr.pdfink_page.connect, sys.argv, os.environ.get("PDFINK_SOCKET")
+        sys.modules["llm"] = fake
+        ocr.pdfink_page.connect = lambda *a, **k: page
+        sys.argv = ["ocr-page.py", "1", "--model", "no-such-model"]
+        os.environ["PDFINK_SOCKET"] = "/nonexistent"
+        try:
+            with redirect_stderr(io.StringIO()) as err, redirect_stdout(io.StringIO()):
+                code = ocr.main()
+        finally:
+            ocr.pdfink_page.connect, sys.argv = connect, argv
+            if saved["llm"] is None:
+                sys.modules.pop("llm", None)
+            else:
+                sys.modules["llm"] = saved["llm"]
+            if env is None:
+                os.environ.pop("PDFINK_SOCKET", None)
+            else:
+                os.environ["PDFINK_SOCKET"] = env
+        self.assertEqual(code, 1)
+        self.assertIn("ocr-page: ", err.getvalue())
+        self.assertIn("no-such-model", err.getvalue())
+        self.assertEqual(page.set_calls, [])
+
+
 class SchedulerTests(unittest.TestCase):
     def test_ink_is_due_after_the_quiet_time(self):
         s = ocr.Scheduler(20)
