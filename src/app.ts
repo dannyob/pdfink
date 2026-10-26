@@ -2,6 +2,7 @@ import * as pdfjs from "pdfjs-dist";
 import { pdfjsAssetOptions } from "./pdf/pdfjs-assets.ts";
 import { thinPoints } from "./pdf/thin.ts";
 import type { PDFDocumentProxy } from "pdfjs-dist";
+import { currentBookmark } from "./current-bookmark";
 import type { Bookmark, ClipContent, ImageItem, LinkItem, PageModel, Point, Rect, Stroke, TextItem } from "./model";
 import { DEFAULT_PRESSURE, newId, strokesSig } from "./model";
 import { barrelBit, barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
@@ -36,7 +37,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.m
 export type Tool = "pen" | "eraser" | "select";
 
 /** Events a page-side API can listen to with `App.on`. */
-export type AppEvent = "selection" | "save" | "page" | "notebook" | "stroke" | "button" | "bookmarks" | "ink";
+export type AppEvent = "selection" | "save" | "page" | "notebook" | "stroke" | "button" | "bookmarks" | "ink" | "currentBookmark";
 
 export interface SelectionInfo {
   page: number;
@@ -211,6 +212,12 @@ export class App {
    * everything an outline can (closed items, positions, zoom, actions).
    */
   private bookmarksChanged = false;
+  /** The page the pen (or a finger drawing, or a command adding ink) last touched; null since the last open or pick. */
+  inkPage: number | null = null;
+  /** The bookmark last picked from the menu; shows as current until the pen next touches a page. */
+  private pickedBookmark: number | null = null;
+  /** The current bookmark as last announced, so `currentBookmark` fires only on a change. */
+  private announcedBookmark: number | null = null;
   /** The file's /PdfinkNotebook tag: true or false for the whole file, null to decide per page. */
   notebookTag: boolean | null = null;
   /** Set once the tag is changed here, cleared on open; until then saves leave it alone. */
@@ -285,6 +292,8 @@ export class App {
       await this.setDocument(baseBytes, pages);
       this.bookmarks = bookmarks;
       this.bookmarksChanged = false;
+      this.inkPage = null;
+      this.pickedBookmark = null;
       this.notebookTag = notebook;
       this.notebookTagChanged = false;
       this.fileName = name;
@@ -296,6 +305,7 @@ export class App {
       this.lastSaved = null;
       this.setStatus();
       this.emit("bookmarks", this.bookmarks);
+      this.announceCurrentBookmark(true);
       for (let i = 0; i < this.pages.length; i++) this.emit("ink", { page: i, sig: strokesSig(this.pages[i].strokes) });
       void this.ownText(this.currentPage).catch(() => {}); // for the pen menu's Notebook row
       return true;
@@ -1176,6 +1186,7 @@ export class App {
     const p = view.toPage(e.clientX, e.clientY);
     const page = view.index;
     this.lastPointer = { page, x: p.x, y: p.y };
+    this.touchInkPage(page);
     const ptr: Pointer = { pointerId: e.pointerId, page, mode, touch: e.pointerType === "touch" };
     try {
       view.ink.setPointerCapture(e.pointerId);
@@ -2092,6 +2103,7 @@ export class App {
     const added: Stroke[] = strokes.map((s) => ({ ...s, points: thinPoints(s.points, s.width), id: s.id ?? newId() }));
     const before = this.snapshot(page);
     this.commit(page, before, { ...before, strokes: [...before.strokes, ...added] });
+    this.touchInkPage(page);
     return added.map((s) => s.id);
   }
 
@@ -2280,10 +2292,12 @@ export class App {
     });
     while (at < this.bookmarks.length && this.bookmarks[at].level > level) at++;
     this.bookmarks = [...this.bookmarks.slice(0, at), { title, page, level }, ...this.bookmarks.slice(at)];
+    if (this.pickedBookmark !== null && this.pickedBookmark >= at) this.pickedBookmark++;
     this.bookmarksChanged = true;
     this.markDirty();
     this.setStatus();
     this.emit("bookmarks", this.bookmarks);
+    this.announceCurrentBookmark(true);
     return at;
   }
 
@@ -2293,10 +2307,51 @@ export class App {
     let end = index + 1;
     while (end < this.bookmarks.length && this.bookmarks[end].level > this.bookmarks[index].level) end++;
     this.bookmarks = [...this.bookmarks.slice(0, index), ...this.bookmarks.slice(end)];
+    if (this.pickedBookmark !== null) {
+      if (this.pickedBookmark >= end) this.pickedBookmark -= end - index;
+      else if (this.pickedBookmark >= index) this.pickedBookmark = null;
+    }
     this.bookmarksChanged = true;
     this.markDirty();
     this.setStatus();
     this.emit("bookmarks", this.bookmarks);
+    this.announceCurrentBookmark(true);
+  }
+
+  /**
+   * The bookmark the bar shows: where the pen last wrote, else the one last
+   * picked, else the one covering the first page. Scrolling never changes it.
+   */
+  get currentBookmarkIndex(): number | null {
+    return currentBookmark(this.bookmarks, this.inkPage, this.pickedBookmark);
+  }
+
+  /** Go to bookmark `i` from the menu; it stays current until the pen next touches a page. */
+  pickBookmark(i: number): void {
+    if (!Number.isInteger(i) || i < 0 || i >= this.bookmarks.length) throw new RangeError(`No bookmark ${i}`);
+    const page = this.bookmarks[i].page;
+    if (page !== null) this.scrollToPage(page);
+    this.pickedBookmark = i;
+    this.inkPage = null;
+    this.announceCurrentBookmark(true);
+  }
+
+  /** The pen touched `page`. */
+  private touchInkPage(page: number): void {
+    if (this.inkPage === page) return;
+    this.inkPage = page;
+    this.announceCurrentBookmark();
+  }
+
+  /**
+   * Fire `currentBookmark` if the index moved. `always` for a new or edited
+   * outline or a pick, where the same index may now be a different entry.
+   */
+  private announceCurrentBookmark(always = false): void {
+    const i = this.currentBookmarkIndex;
+    if (i === this.announcedBookmark && !always) return;
+    this.announcedBookmark = i;
+    this.emit("currentBookmark", i);
   }
 
   /** Index of the first top-level bookmark that opens `page`, or null. */

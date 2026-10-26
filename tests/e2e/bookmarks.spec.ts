@@ -280,4 +280,111 @@ test.describe("bookmarks", () => {
     await expect(input).toHaveCount(0);
     expect((await state(page)).bookmarks).toHaveLength(1);
   });
+  test("the current bookmark follows where the pen last wrote, or the last pick; scrolling leaves it", async ({ page }) => {
+    const name = unique("bm-current");
+    await putNotebook(name, await createBlankPdf(4));
+    await openNotebookPage(page, name);
+    await page.evaluate(() => {
+      const w = window as unknown as { __cb: unknown[] };
+      w.__cb = [];
+      window.__pdfink.on("currentBookmark", (i) => w.__cb.push(i));
+    });
+    const events = (): Promise<unknown[]> => page.evaluate(() => (window as unknown as { __cb: unknown[] }).__cb);
+    const current = (): Promise<number | null> => page.evaluate(() => window.__pdfink.currentBookmarkIndex);
+
+    // A notebook with no bookmarks has none; drawing doesn't change that.
+    expect(await current()).toBeNull();
+    await penStroke(page, 1, line(100, 100, 300, 200));
+    expect(await page.evaluate(() => window.__pdfink.inkPage)).toBe(1);
+    expect(await current()).toBeNull();
+    expect(await events()).toEqual([]);
+
+    // Bookmarks on pages 0 and 2: the ink on page 1 is under the page-0 one.
+    // Every outline edit announces the current one, changed or not.
+    await page.evaluate(() => {
+      window.__pdfink.addBookmark(0, "A");
+      window.__pdfink.addBookmark(2, "C");
+    });
+    expect(await current()).toBe(0);
+    expect(await events()).toEqual([0, 0]);
+
+    // Drawing on page 2 makes "C" current.
+    await penStroke(page, 2, line(100, 100, 300, 200));
+    expect(await page.evaluate(() => window.__pdfink.inkPage)).toBe(2);
+    expect(await current()).toBe(1);
+    expect(await events()).toEqual([0, 0, 1]);
+
+    // Scrolling alone never changes it.
+    await page.evaluate(() => window.__pdfink.views[0].el.scrollIntoView({ block: "start" }));
+    await page.waitForFunction(() => window.__pdfink.currentPage === 0);
+    expect(await current()).toBe(1);
+    expect(await events()).toEqual([0, 0, 1]);
+
+    // A pick scrolls to its page and shows until the next pen touch.
+    await page.evaluate(() => window.__pdfink.pickBookmark(1));
+    await page.waitForFunction(() => window.__pdfink.currentPage === 2);
+    await page.evaluate(() => window.__pdfink.pickBookmark(0));
+    await page.waitForFunction(() => window.__pdfink.currentPage === 0);
+    expect(await page.evaluate(() => window.__pdfink.inkPage)).toBeNull();
+    expect(await current()).toBe(0);
+    expect(await events()).toEqual([0, 0, 1, 1, 0]);
+    await expect(page.evaluate(() => window.__pdfink.pickBookmark(7))).rejects.toThrow(/No bookmark 7/);
+
+    // Ink added by a command counts as the pen too.
+    await page.evaluate(() => window.__pdfink.addStrokes(3, [{ points: [{ x: 10, y: 10, p: 0.5 }, { x: 50, y: 50, p: 0.5 }], color: "#000000", width: 1, opacity: 1 }]));
+    expect(await page.evaluate(() => window.__pdfink.inkPage)).toBe(3);
+    expect(await current()).toBe(1);
+
+    // Adding a bookmark on the ink page updates it; removing it goes back.
+    await page.evaluate(() => window.__pdfink.addBookmark(3, "D"));
+    expect(await current()).toBe(2);
+    await page.evaluate(() => window.__pdfink.removeBookmark(2));
+    expect(await current()).toBe(1);
+    // Removing the page-0 bookmark shifts the indices: "C" is now 0.
+    await page.evaluate(() => window.__pdfink.removeBookmark(0));
+    expect(await current()).toBe(0);
+    expect(await events()).toEqual([0, 0, 1, 1, 0, 1, 2, 1, 0]);
+
+    // A pick follows its entry as bookmarks are added or removed around it, and goes with it.
+    await page.evaluate(() => {
+      window.__pdfink.addBookmark(3, "D");
+      window.__pdfink.pickBookmark(1);
+      window.__pdfink.addBookmark(0, "Before");
+    });
+    expect(await current()).toBe(2);
+    await page.evaluate(() => window.__pdfink.removeBookmark(0));
+    expect(await current()).toBe(1);
+    // Removing the picked one falls back to the page-1 rule: nothing covers page 1 now.
+    await page.evaluate(() => window.__pdfink.removeBookmark(1));
+    expect(await current()).toBeNull();
+
+    // After a reload, before any pen touch: the one covering page 1, if any.
+    await page.evaluate(() => window.__pdfink.addBookmark(0, "A again"));
+    await page.keyboard.press("Control+s");
+    await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
+    await page.reload();
+    await waitReady(page);
+    await page.waitForFunction((n) => window.__pdfink.source.kind === "server" && window.__pdfink.source.name === n, name);
+    expect(await page.evaluate(() => window.__pdfink.inkPage)).toBeNull();
+    expect(await current()).toBe(0);
+  });
+
+  test("the current bookmark is null before ink when nothing covers page 1, and resets on reopen", async ({ page }) => {
+    const name = unique("bm-current-none");
+    const base = await createBlankPdf(3);
+    await putNotebook(name, await exportPdf(base, blankPages(3), [{ title: "Second", page: 1, level: 0 }]));
+    await openNotebookPage(page, name);
+    expect(await page.evaluate(() => window.__pdfink.currentBookmarkIndex)).toBeNull();
+    await penStroke(page, 2, line(100, 100, 300, 200));
+    expect(await page.evaluate(() => window.__pdfink.currentBookmarkIndex)).toBe(0);
+    await page.evaluate(() => window.__pdfink.pickBookmark(0));
+    // Reopening forgets the ink and the pick.
+    await page.keyboard.press("Control+s");
+    await page.waitForFunction(() => !window.__pdfink.dirty && !window.__pdfink.saving);
+    await page.reload();
+    await waitReady(page);
+    await page.waitForFunction((n) => window.__pdfink.source.kind === "server" && window.__pdfink.source.name === n, name);
+    expect(await page.evaluate(() => window.__pdfink.inkPage)).toBeNull();
+    expect(await page.evaluate(() => window.__pdfink.currentBookmarkIndex)).toBeNull();
+  });
 });
