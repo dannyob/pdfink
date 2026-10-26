@@ -2,7 +2,7 @@ import { test } from "@playwright/test";
 import fs from "node:fs";
 import { PDFDocument } from "pdf-lib";
 import { createBlankPdf, exportPdf } from "../../src/pdf/export";
-import { barMenu, expect, fakeClipboard, inkAnnots, inkPathCount, line, menuAction, menuHas, notebookFixture, openApp, penStroke, state, toClient, waitReady } from "./helpers";
+import { barMenu, barTile, expect, fakeClipboard, inkAnnots, inkPathCount, line, menuAction, menuHas, notebookFixture, openApp, penStroke, state, toClient, waitReady } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -45,6 +45,8 @@ test.describe("notebooks folder", () => {
     await putNotebook(name, await createBlankPdf(2));
     await fakeClipboard(page);
     await page.goto("/");
+    // The File menu lists notebooks once the app knows it has a server.
+    await page.waitForFunction(() => document.body.dataset.storage === "server");
     await expect.poll(() => notebookList(page)).toContain(name);
     await openFromMenu(page, name);
     await page.waitForFunction((n) => window.__pdfink.source.kind === "server" && window.__pdfink.source.name === n, name);
@@ -172,7 +174,7 @@ test.describe("pages added in the browser", () => {
     await openApp(page, `?nofs=1&open=${encodeURIComponent(name)}`);
     expect((await state(page)).pages).toHaveLength(1);
 
-    await page.click("#btn-addpage");
+    await barTile(page, "btn-addpage");
     await page.waitForFunction(() => window.__pdfink.pages.length === 2 && window.__pdfink.views.length === 2);
     await penStroke(page, 1, line(100, 100, 300, 100));
     await barMenu(page, "file", "Save");
@@ -282,7 +284,7 @@ test.describe("pen-menu commands", () => {
     await menuAction(page, "Touch the file");
     await expect(page.locator("#status")).toContainText("Running Touch the file");
     // The command is still running (it sleeps first): add a page meanwhile.
-    await page.click("#btn-addpage");
+    await barTile(page, "btn-addpage");
     await page.waitForFunction(() => window.__pdfink.pages.length === 2 && window.__pdfink.views.length === 2);
     expect(((await (await ran).json()) as { changed: boolean }).changed).toBe(true);
     // The new page's base has not been sent yet: the save must carry it.

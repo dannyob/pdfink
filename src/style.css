@@ -16,25 +16,26 @@ body { display: flex; flex-direction: column; }
   display: flex; flex-direction: column; background: var(--bar); border-bottom: 1px solid #9aa0a8;
   user-select: none; -webkit-user-select: none; touch-action: manipulation;
 }
-/* One row of labelled tiles, never wrapped. Until groups move into More when
-   it is too narrow, the row scrolls sideways rather than wrapping. */
+/* One row of labelled tiles, never wrapped and never scrolled: when it is too
+   narrow, whole groups move into More (toolbar.ts, fit). */
 #bar {
   display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; padding: 6px 8px;
-  overflow-x: auto; scrollbar-width: none;
+  overflow: hidden;
 }
-#bar::-webkit-scrollbar { display: none; }
+#bar .moved { display: none !important; }
 #bar > .group { display: flex; gap: 6px; align-items: center; flex: none; }
 /* Separators between groups: a 1 px rule, 28 px tall, 13 px of gap in all. */
 #bar > .group + .group:not([data-group="more"])::before {
   content: ""; width: 1px; height: 28px; background: #9aa0a8; margin: 0 1px 0 0; flex: none;
 }
-#bar > .group + .group:not([data-group="more"]) { margin-left: 0; }
 #bar .grow { flex: 1 0 12px; }
 #bar .tile.labelled { min-width: 52px; flex: none; }
 #bar .tile.name {
   flex-direction: row; gap: 6px; height: 52px; padding: 0 12px; font-size: 14px; font-weight: 600;
-  max-width: 190px; min-width: 0; flex: none;
+  max-width: 190px; min-width: 0; flex: 0 1 auto;
 }
+/* Measured at full width; should moving every group still not be enough, the names shrink (ellipsis) rather than spill. */
+#bar.measuring .tile.name { flex: none; }
 #bar .tile.name.bm { font-weight: 500; max-width: 210px; }
 #bar .tile.name svg { width: 18px; height: 18px; }
 #bar .tile.name .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

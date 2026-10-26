@@ -252,7 +252,9 @@ test.describe("More menu", () => {
   test("view tiles zoom; pen toggles persist across a reload", async ({ page }) => {
     await openApp(page);
     await barMenu(page, "more");
-    expect(await menuOutline(page)).toEqual(["[View]", "(Smaller Fit width Larger)", "[Pen]", "Barrel button erases", "Finger draws", "—", "Source code on GitHub"]);
+    // Groups too wide for the bar at this size lead the menu; its own entries follow.
+    const outline = await menuOutline(page);
+    expect(outline.slice(outline.indexOf("[View]"))).toEqual(["[View]", "(Smaller Fit width Larger)", "[Pen]", "Barrel button erases", "Finger draws", "—", "Source code on GitHub"]);
     const s0 = (await state(page)).scale;
     await menuAction(page, "Larger");
     expect((await state(page)).scale).toBeCloseTo(s0 * 1.25, 5);
@@ -358,5 +360,153 @@ test.describe("bar menus open and close", () => {
     await penStroke(page, 0, line(100, 300, 300, 300));
     await expect(page.locator("#ctx-menu")).toBeHidden();
     expect((await state(page)).pages[0].strokes).toHaveLength(0);
+  });
+});
+
+const LONG_NAME = "a-very-long-notebook-name-for-testing-2026.pdf";
+const LONG_BOOKMARK = "A long bookmark title for the chapter on 2026-10-26";
+/** Tiles that never leave the bar. */
+const STAYS = ["bar-file", "bar-bookmark", "tool-pen", "tool-eraser", "tool-select", "btn-undo", "btn-redo", "bar-commands", "bar-more"];
+
+/** Groups moved into More, as the bar records them. */
+async function moved(page: Page): Promise<string[]> {
+  const v = await page.locator("#bar").getAttribute("data-moved");
+  return v ? v.split(" ") : [];
+}
+
+async function openLongNotebook(page: Page): Promise<void> {
+  if (!fs.existsSync(`${DIR}/${LONG_NAME}`)) await putNotebook(LONG_NAME, await createBlankPdf(2));
+  await openNotebookPage(page, LONG_NAME);
+  await page.evaluate((t) => window.__pdfink.addBookmark(0, t), LONG_BOOKMARK);
+  await expect(page.locator("#bar-bookmark")).toContainText(LONG_BOOKMARK);
+}
+
+/** One row, nothing cut off or scrolled, no group without a tile (so no dangling separator). */
+async function expectOneRow(page: Page, stays = STAYS): Promise<void> {
+  const box = (await page.locator("#bar").boundingBox())!;
+  expect(box.height).toBeLessThanOrEqual(66);
+  const tops = await page.locator("#bar .tile").evaluateAll((els) => [...new Set(els.filter((e) => (e as HTMLElement).offsetParent !== null).map((e) => Math.round(e.getBoundingClientRect().top)))]);
+  expect(tops).toHaveLength(1);
+  expect(await page.locator("#bar").evaluate((b) => b.scrollWidth <= b.clientWidth && getComputedStyle(b).overflowX !== "auto" && getComputedStyle(b).overflowX !== "scroll")).toBe(true);
+  // Every visible tile ends inside the bar.
+  const right = await page.locator("#bar").evaluate((b) => {
+    const edge = b.getBoundingClientRect().right;
+    return [...b.querySelectorAll(".tile")].filter((t) => (t as HTMLElement).offsetParent !== null).every((t) => t.getBoundingClientRect().right <= edge + 0.5);
+  });
+  expect(right).toBe(true);
+  const empty = await page.locator("#bar > .group").evaluateAll((els) =>
+    els.filter((g) => (g as HTMLElement).offsetParent !== null && ![...g.querySelectorAll(".tile")].some((t) => (t as HTMLElement).offsetParent !== null)).map((g) => (g as HTMLElement).dataset.group),
+  );
+  expect(empty).toEqual([]);
+  for (const id of stays) await expect(page.locator(`#${id}`)).toBeVisible();
+}
+
+/** The bar's tiles for each movable group. */
+const MOVED_TILES: Record<string, string[]> = { page: ["btn-addpage"], clipboard: ["btn-copy", "btn-cut", "btn-paste", "btn-delete"], style: ["bar-style"] };
+
+/** Moved groups' tiles are hidden on the bar and lead the More menu as labelled rows. */
+async function expectMovedInMore(page: Page): Promise<string[]> {
+  const gone = await moved(page);
+  for (const [group, ids] of Object.entries(MOVED_TILES)) {
+    for (const id of ids) {
+      if (gone.includes(group)) await expect(page.locator(`#${id}`)).toBeHidden();
+      else await expect(page.locator(`#${id}`)).toBeVisible();
+    }
+  }
+  await barMenu(page, "more");
+  // Pen style and Add page share a row (style first), the clipboard has its own.
+  const first = [...(gone.includes("style") ? ["Normal"] : []), ...(gone.includes("page") ? ["Add page"] : [])];
+  const rows = [first, gone.includes("clipboard") ? ["Copy", "Cut", "Paste", "Delete"] : []].filter((r) => r.length);
+  const outline = await menuOutline(page);
+  expect(outline.slice(0, rows.length + 1)).toEqual([...rows.map((r) => `(${r.join(" ")})`), "[View]"]);
+  // Moved tiles keep their labels under the icon.
+  const labels = await page.locator("#ctx-menu > .row").evaluateAll((rs, n) => rs.slice(0, n).map((r) => [...r.querySelectorAll(".tile.labelled .tl")].map((t) => t.textContent ?? "")), rows.length);
+  expect(labels).toEqual(rows);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#ctx-menu")).toBeHidden();
+  return gone;
+}
+
+test.describe("fitting the width", () => {
+  test.describe("Daylight landscape, 1267×783", () => {
+    test.use({ viewport: { width: 1267, height: 783 } });
+
+    test("long names: one row, nothing scrolls, any moved groups are in More", async ({ page }) => {
+      await openLongNotebook(page);
+      await expectOneRow(page);
+      await expectMovedInMore(page);
+    });
+
+    test("short names: nothing moves", async ({ page }) => {
+      await openApp(page);
+      expect(await moved(page)).toEqual([]);
+      await expectOneRow(page);
+    });
+  });
+
+  test.describe("Daylight portrait, 947×1103", () => {
+    test.use({ viewport: { width: 947, height: 1103 } });
+
+    test("long names: one row; Add page and the clipboard move into More, and work there", async ({ page }) => {
+      await openLongNotebook(page);
+      await expectOneRow(page);
+      const gone = await expectMovedInMore(page);
+      expect(gone).toEqual(["page", "clipboard", "style"]);
+
+      // Copy and Paste through More.
+      await penStroke(page, 0, line(100, 100, 300, 100));
+      await page.click("#tool-select");
+      await penStroke(page, 0, line(50, 50, 350, 150));
+      await barMenu(page, "more", "Copy");
+      expect((await state(page)).clip).toMatchObject({ strokes: 1 });
+      await penStroke(page, 0, [[300, 600]]);
+      await barMenu(page, "more", "Paste");
+      await page.waitForFunction(() => window.__pdfink.pages[0].strokes.length === 2);
+
+      // Add page through More.
+      const pages = (await state(page)).pages.length;
+      await barMenu(page, "more", "Add page");
+      await page.waitForFunction((n) => window.__pdfink.pages.length === n + 1, pages);
+    });
+
+    test("the pen style tile in More opens the pen style menu", async ({ page }) => {
+      await openLongNotebook(page);
+      expect(await moved(page)).toEqual(["page", "clipboard", "style"]);
+      await barMenu(page, "more", "Normal");
+      await expect(page.locator("#ctx-menu")).toBeVisible();
+      await page.locator('#ctx-menu .tile[aria-label="Red"]').click();
+      await page.waitForFunction(() => window.__pdfink.penColor === "#b3261e");
+    });
+
+    test("browser-only: no empty group when Add page moves", async ({ page }) => {
+      await openLocalApp(page);
+      await page.evaluate(
+        ([n, t]) => {
+          const app = window.__pdfink;
+          app.fileName = n;
+          app.addBookmark(0, t);
+          app.onState?.();
+        },
+        [LONG_NAME, LONG_BOOKMARK],
+      );
+      await expect(page.locator("#bar-file")).toContainText(LONG_NAME);
+      expect(await moved(page)).toContain("page");
+      await expectOneRow(
+        page,
+        STAYS.filter((id) => id !== "bar-commands"),
+      );
+      await expect(page.locator('#bar > .group[data-group="page"]')).toBeHidden();
+    });
+
+    test("widening the window brings the groups back", async ({ page }) => {
+      await openLongNotebook(page);
+      expect((await moved(page)).length).toBeGreaterThan(0);
+      await page.setViewportSize({ width: 1800, height: 1103 });
+      await expect.poll(() => moved(page)).toEqual([]);
+      await expectOneRow(page);
+      await page.setViewportSize({ width: 947, height: 1103 });
+      await expect.poll(async () => (await moved(page)).length).toBeGreaterThan(0);
+      await expectOneRow(page);
+    });
   });
 });

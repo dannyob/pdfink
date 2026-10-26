@@ -1,6 +1,6 @@
 import { test } from "@playwright/test";
 import { PDFArray, PDFName, PDFNumber } from "pdf-lib";
-import { barMenu, expect, exportedPdf, inkAnnots, inkPathCount, inkPixel, line, menuAction, menuHas, moreChecked, openApp, openLocalApp, penStroke, setMoreToggle, state, toClient } from "./helpers";
+import { barMenu, barTile, expect, exportedPdf, inkAnnots, inkPathCount, inkPixel, line, menuAction, menuHas, moreChecked, openApp, openLocalApp, penStroke, setMoreToggle, state, toClient } from "./helpers";
 
 test.describe("pen drawing", () => {
   test("new document shows one Letter page", async ({ page }) => {
@@ -85,7 +85,7 @@ test.describe("pen drawing", () => {
 
   test("a finger scrolls by hand when the pen had switched panning off", async ({ page }) => {
     await openApp(page);
-    await page.click("#btn-addpage");
+    await barTile(page, "btn-addpage");
     await page.waitForFunction(() => window.__pdfink.pages.length === 2);
     await penStroke(page, 0, line(100, 100, 300, 100)); // pen seen → pen-active
     await expect(page.locator("#pages")).toHaveClass(/pen-active/);
@@ -300,7 +300,7 @@ test.describe("finger drawing", () => {
 
   test("a second finger cancels the stroke and pans", async ({ page }) => {
     await openApp(page);
-    await page.click("#btn-addpage");
+    await barTile(page, "btn-addpage");
     await page.waitForFunction(() => window.__pdfink.pages.length === 2);
     await setMoreToggle(page, "Finger draws", true);
     const before = await page.evaluate(() => document.getElementById("pages")!.scrollTop);

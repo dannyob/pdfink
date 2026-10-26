@@ -1,7 +1,7 @@
 import { test } from "@playwright/test";
 import fs from "node:fs";
 import { PDFDocument } from "pdf-lib";
-import { SAMPLES, barMenu, expect, exportedPdf, fakeClipboard, inkAnnots, inkPathCount, inkPixel, line, notebookFixture, openApp, openLocalApp, penStroke, state, waitReady } from "./helpers";
+import { SAMPLES, barMenu, barTile, expect, exportedPdf, fakeClipboard, inkAnnots, inkPathCount, inkPixel, line, notebookFixture, openApp, openLocalApp, penStroke, state, waitReady } from "./helpers";
 
 test.describe("files and pages", () => {
   test("opens a notebook-style PDF, imports its ink, and round-trips it", async ({ page }) => {
@@ -35,10 +35,10 @@ test.describe("files and pages", () => {
   test("add page appends a Letter page and keeps ink on earlier pages", async ({ page }) => {
     await openApp(page);
     await penStroke(page, 0, line(100, 100, 200, 100));
-    await page.click("#btn-addpage");
+    await barTile(page, "btn-addpage");
     await page.waitForFunction(() => window.__pdfink.pages.length === 2);
     await waitReady(page);
-    await page.click("#btn-addpage");
+    await barTile(page, "btn-addpage");
     await page.waitForFunction(() => window.__pdfink.pages.length === 3);
     await waitReady(page);
     await expect(page.locator(".page")).toHaveCount(3);

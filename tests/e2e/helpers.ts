@@ -240,16 +240,25 @@ export async function menuHas(page: Page, label: string): Promise<boolean> {
 const BAR_BUTTONS = { file: "#bar-file", bookmarks: "#bar-bookmark", style: "#bar-style", commands: "#bar-commands", more: "#bar-more" } as const;
 
 /**
- * Open one of the bar's menus (unless it is already open) and, given a
+ * Open one of the bar's menus (unless it is already open; Pen style through
+ * More when it has moved there) and, given a
  * label, activate that entry: a tile by its label, or a text row or submenu
  * whose label is exactly `label`.
  */
 export async function barMenu(page: Page, which: keyof typeof BAR_BUTTONS, label?: string): Promise<void> {
   const menu = page.locator("#ctx-menu");
   const button = page.locator(BAR_BUTTONS[which]);
-  if (!(await menu.isVisible()) || (await button.getAttribute("aria-expanded")) !== "true") await button.click();
-  await expect(menu).toBeVisible();
-  await expect(button).toHaveAttribute("aria-expanded", "true");
+  if (which === "style" && !(await button.isVisible())) {
+    // Pen style has moved into More (the bar is too narrow): its tile there, labelled with the width, opens the same menu.
+    const width = (await button.locator(".tl").textContent()) ?? "";
+    const open = (await menu.isVisible()) && (await menu.locator('.tile[aria-label="Black"]').count()) > 0;
+    if (!open) await barMenu(page, "more", width);
+    await expect(menu.locator('.tile[aria-label="Black"]')).toBeVisible();
+  } else {
+    if (!(await menu.isVisible()) || (await button.getAttribute("aria-expanded")) !== "true") await button.click();
+    await expect(menu).toBeVisible();
+    await expect(button).toHaveAttribute("aria-expanded", "true");
+  }
   if (label === undefined) return;
   const tile = menu.locator(`.tile[aria-label=${JSON.stringify(label)}]`);
   if ((await tile.count()) > 0) return tile.first().click();
@@ -300,4 +309,16 @@ export async function setMoreToggle(page: Page, label: string, on: boolean): Pro
   if ((await moreChecked(page, label)) === on) return;
   await barMenu(page, "more", label);
   await expect(page.locator("#ctx-menu")).toBeHidden();
+}
+
+const MOVABLE_TILES = { "btn-addpage": "Add page", "btn-copy": "Copy", "btn-cut": "Cut", "btn-paste": "Paste", "btn-delete": "Delete" } as const;
+
+/**
+ * Press a bar tile that may have moved into More (the bar too narrow for it):
+ * on the bar when it is there, otherwise its labelled tile in More.
+ */
+export async function barTile(page: Page, id: keyof typeof MOVABLE_TILES): Promise<void> {
+  const tile = page.locator(`#${id}`);
+  if (await tile.isVisible()) return tile.click();
+  await barMenu(page, "more", MOVABLE_TILES[id]);
 }

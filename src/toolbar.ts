@@ -7,9 +7,13 @@
  * Buttons are made once and updated in place: the menu's toggle works by the
  * identity of the button that opened it, so a button must not be replaced
  * while its menu is open.
+ *
+ * The bar never wraps or scrolls. When it is too narrow, whole groups move to
+ * the top of the More menu (see `fit`), in MOVABLE order; labels never drop.
  */
 import type { App } from "./app";
 import type { NotebookInfo } from "./api";
+import { fitGroups } from "./fit";
 import { icons } from "./icons";
 import type { IconAction, MenuItem } from "./menu";
 
@@ -29,6 +33,13 @@ export const WIDTHS: readonly [string, number, number, number][] = [
   ["Thick", 2, 3.5, 4],
   ["Marker", 4, 7, 6],
 ];
+
+/**
+ * Groups that may leave the bar for More, first to leave first. "page" is the
+ * Add page tile alone: Commands, command buttons and run chips share its
+ * group but never leave.
+ */
+export const MOVABLE = ["page", "clipboard", "style"];
 
 const SOURCE_URL = "https://github.com/dannyob/pdfink";
 
@@ -71,6 +82,9 @@ export class Toolbar {
   private readonly moreBtn: HTMLButtonElement;
   private readonly tiles = new Map<string, HTMLButtonElement>();
   private readonly colorInput: HTMLInputElement;
+  private readonly groups = new Map<string, HTMLDivElement>();
+  /** Groups now in More rather than on the bar, in MOVABLE order. */
+  private moved: string[] = [];
 
   constructor(
     private readonly app: App,
@@ -81,6 +95,7 @@ export class Toolbar {
       g.className = "group";
       g.dataset.group = name;
       g.append(...children);
+      this.groups.set(name, g);
       return g;
     };
 
@@ -148,6 +163,57 @@ export class Toolbar {
     for (const ev of ["selection", "bookmarks", "notebook", "currentBookmark", "page", "save"] as const) app.on(ev, () => this.refresh());
     app.setTool(app.tool); // paint the tool tiles
     this.refresh();
+
+    // Refit when the bar's width changes, and when its contents do: the name
+    // and bookmark text, the pen style label, command buttons and run chips.
+    // `fit` changes only classes and attributes, which these do not watch.
+    new ResizeObserver(() => this.fit()).observe(root);
+    new MutationObserver(() => this.fit()).observe(root, { childList: true, subtree: true, characterData: true });
+    window.addEventListener("resize", () => this.fit());
+    void document.fonts?.ready.then(() => this.fit());
+    this.fit();
+  }
+
+  /**
+   * Measure every group with all of them shown, then hide the movable ones
+   * that must go for the rest to fit on one row. A hidden group takes its
+   * separator with it (the separator is the group's own ::before).
+   */
+  fit(): void {
+    const bar = this.root;
+    const addPage = this.tiles.get("btn-addpage")!;
+    bar.classList.add("measuring");
+    for (const el of bar.querySelectorAll(".moved")) el.classList.remove("moved");
+
+    const css = getComputedStyle(bar);
+    const gap = parseFloat(css.columnGap) || 0;
+    const width = (el: Element): number => (el instanceof HTMLElement && el.offsetParent === null ? 0 : el.getBoundingClientRect().width + gap);
+    const widths: Record<string, number> = {};
+    for (const child of bar.children) {
+      const name = child instanceof HTMLElement ? (child.dataset.group ?? "grow") : "other";
+      // The spacer stretches; it needs only its minimum.
+      widths[name] = (widths[name] ?? 0) + (name === "grow" ? (parseFloat(getComputedStyle(child).flexBasis) || 0) + gap : width(child));
+    }
+    // Add page leaves on its own; when it is all its group shows (browser-only storage), the whole group goes.
+    const pageGroup = this.groups.get("page")!;
+    const pageAlone = ![...pageGroup.children].some((c) => c !== addPage && c instanceof HTMLElement && c.offsetParent !== null);
+    const pageAll = widths.page ?? 0;
+    widths.page = pageAlone ? pageAll : width(addPage);
+    widths["page-rest"] = pageAll - widths.page;
+    // n groups have n - 1 gaps; half a pixel absorbs sub-pixel widths that would not show.
+    const available = bar.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight) + gap + 0.5;
+
+    const moved = fitGroups(widths, available, MOVABLE);
+    for (const name of moved) {
+      if (name === "page") (pageAlone ? pageGroup : addPage).classList.add("moved");
+      else this.groups.get(name)?.classList.add("moved");
+    }
+    bar.classList.remove("measuring");
+    if (bar.dataset.moved !== moved.join(" ")) bar.dataset.moved = moved.join(" ");
+    this.moved = moved;
+    // A menu opened from a tile that just left the bar would hang from nothing.
+    const menu = this.app.menu;
+    if (menu.open && menu.owner && menu.owner !== this.moreBtn && menu.owner.offsetParent === null) menu.hide();
   }
 
   /** Bring every button's label, icon and enabled state up to date, in place. */
@@ -159,9 +225,7 @@ export class Toolbar {
     this.setText(this.bookmarkBtn, b ? b.title : "Bookmarks");
     this.bookmarkBtn.classList.toggle("none", !b);
 
-    const width = WIDTHS.find((w) => w[1] === app.penWidth);
-    const label = width ? width[0] : `${app.penWidth} pt`;
-    const icon = strokeIcon(app.penColor, width ? width[3] : Math.min(7, 1 + app.penWidth * 1.5));
+    const { label, icon } = this.styleLook();
     const key = `${label}|${icon}`;
     if (this.styleBtn.dataset.shown !== key) {
       this.styleBtn.dataset.shown = key;
@@ -176,6 +240,16 @@ export class Toolbar {
     for (const id of ["btn-copy", "btn-cut", "btn-delete"]) this.tiles.get(id)!.disabled = !sel;
     this.tiles.get("btn-undo")!.disabled = app.undoStack.length === 0;
     this.tiles.get("btn-redo")!.disabled = app.redoStack.length === 0;
+  }
+
+  /** The Pen style tile's label (the width's name) and icon (a stroke in the pen's colour and width). */
+  private styleLook(): { label: string; icon: string } {
+    const app = this.app;
+    const width = WIDTHS.find((w) => w[1] === app.penWidth);
+    return {
+      label: width ? width[0] : `${app.penWidth} pt`,
+      icon: strokeIcon(app.penColor, width ? width[3] : Math.min(7, 1 + app.penWidth * 1.5)),
+    };
   }
 
   /** Fetch the notebook list for the File menu; `redraw` reopens a File menu still showing its top level. */
@@ -275,9 +349,37 @@ export class Toolbar {
     ];
   }
 
+  /** Rows for the groups that left the bar: Pen style and Add page share one, the clipboard has its own. */
+  private movedRows(): MenuItem[] {
+    const app = this.app;
+    const rows: MenuItem[] = [];
+    const first: IconAction[] = [];
+    if (this.moved.includes("style")) {
+      const { label, icon } = this.styleLook();
+      first.push({ label, icon, action: () => this.openMenu(this.moreBtn, () => this.styleItems()) });
+    }
+    if (this.moved.includes("page")) first.push({ label: "Add page", icon: icons.addPage, action: () => void app.addPage() });
+    if (first.length) rows.push({ kind: "row", labelled: true, items: first });
+    if (this.moved.includes("clipboard")) {
+      const none = !app.hasSelection;
+      rows.push({
+        kind: "row",
+        labelled: true,
+        items: [
+          { label: "Copy", icon: icons.copy, disabled: none, action: () => app.copy() },
+          { label: "Cut", icon: icons.cut, disabled: none, action: () => app.cut() },
+          { label: "Paste", icon: icons.paste, action: () => void app.pasteFromButton() },
+          { label: "Delete", icon: icons.trash, disabled: none, action: () => app.deleteSelection() },
+        ],
+      });
+    }
+    return rows;
+  }
+
   private moreItems(): MenuItem[] {
     const app = this.app;
     return [
+      ...this.movedRows(),
       { kind: "label", label: "View" },
       {
         kind: "row",

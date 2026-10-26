@@ -1,5 +1,5 @@
 import { test } from "@playwright/test";
-import { expect, line, openApp, pasteKey, penStroke, state, waitReady } from "./helpers";
+import { barTile, expect, line, openApp, pasteKey, penStroke, state, waitReady } from "./helpers";
 
 async function drawThree(page: import("@playwright/test").Page) {
   await penStroke(page, 0, line(100, 100, 200, 100));
@@ -46,10 +46,10 @@ test.describe("select / copy / cut / paste", () => {
     await drawThree(page);
     await page.click("#tool-select");
     await penStroke(page, 0, line(50, 50, 250, 350));
-    await page.click("#btn-copy");
+    await barTile(page, "btn-copy");
     expect((await state(page)).clip).toMatchObject({ strokes: 3 });
     await penStroke(page, 0, [[300, 600]]);
-    await page.click("#btn-paste");
+    await barTile(page, "btn-paste");
     await page.waitForFunction(() => window.__pdfink.pages[0].strokes.length === 6);
     let s = await state(page);
     expect(s.selection?.strokes).toHaveLength(3);
@@ -62,7 +62,7 @@ test.describe("select / copy / cut / paste", () => {
   test("paste across pages and undo", async ({ page }) => {
     await openApp(page);
     await drawThree(page);
-    await page.click("#btn-addpage");
+    await barTile(page, "btn-addpage");
     await page.waitForFunction(() => window.__pdfink.pages.length === 2);
     await waitReady(page);
     await page.click("#tool-select");

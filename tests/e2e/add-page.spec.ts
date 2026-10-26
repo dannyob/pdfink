@@ -1,5 +1,5 @@
 import { test } from "@playwright/test";
-import { expect, openApp, openLocalApp, state } from "./helpers";
+import { barTile, expect, openApp, openLocalApp, state } from "./helpers";
 
 test.describe("Add page button under the last page", () => {
   test("sits centred under the last page and adds a page when tapped", async ({ page }) => {
@@ -54,7 +54,7 @@ test.describe("Add page button under the last page", () => {
 
   test("Add page from the toolbar still brings the new page into view", async ({ page }) => {
     await openApp(page);
-    await page.click("#btn-addpage");
+    await barTile(page, "btn-addpage");
     await expect.poll(async () => (await state(page)).pages.length).toBe(2);
     await expect(page.locator("#pages .page").nth(1)).toBeInViewport();
   });
