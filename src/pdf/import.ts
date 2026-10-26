@@ -14,6 +14,7 @@ import { rgbToHex } from "./color.ts";
 import { displaySize, normalizeRotate, pdfToDisplay, type PageGeom } from "./geom.ts";
 import { extractLinks } from "./links.ts";
 import { readOutline } from "./outline.ts";
+import { THINNED_INK_VERSION, thinPoints } from "./thin.ts";
 import { readNotebookTag, readTexts, stripLayer } from "./text.ts";
 
 export interface ImportedDocument {
@@ -56,6 +57,8 @@ function extractInk(doc: PDFDocument, annots: PDFArray, geom: PageGeom): { strok
       continue;
     }
     const inkList = dict.lookup(PDFName.of("InkList"));
+    const version = dict.lookup(PDFName.of("PdfinkInk"));
+    const thinned = version instanceof PDFNumber && version.asNumber() >= THINNED_INK_VERSION;
     const color = rgbToHex(numArray(doc, dict.get(PDFName.of("C"))));
     let width = 1;
     const bs = dict.lookup(PDFName.of("BS"));
@@ -80,7 +83,7 @@ function extractInk(doc: PDFDocument, annots: PDFArray, geom: PageGeom): { strok
           const pr = pressures && pressures.length * 2 === nums.length ? pressures[k / 2] : DEFAULT_PRESSURE;
           points.push({ x: d.x, y: d.y, p: Math.max(0, Math.min(1, pr)) });
         }
-        if (points.length) strokes.push({ id: newId("i"), points, color, width, opacity });
+        if (points.length) strokes.push({ id: newId("i"), points: thinned ? points : thinPoints(points, width), color, width, opacity });
       }
     }
     if (raw instanceof PDFRef) {

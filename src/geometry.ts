@@ -48,9 +48,45 @@ export function rectsIntersect(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
-/** A stroke is "in" a selection rect when any of its points lies inside it. */
+/**
+ * A stroke is "in" a selection rect when its line touches it: a point inside,
+ * or a segment crossing it. Strokes are thinned (src/pdf/thin.ts), so a
+ * straight stretch may have no point near the middle of its run.
+ */
 export function strokeInRect(s: Stroke, r: Rect): boolean {
-  return s.points.some((p) => pointInRect(p, r));
+  const pts = s.points;
+  if (pts.some((p) => pointInRect(p, r))) return true;
+  for (let i = 0; i + 1 < pts.length; i++) if (segmentCrossesRect(pts[i], pts[i + 1], r)) return true;
+  return false;
+}
+
+/** Whether the segment a–b passes through rect `r` (Liang–Barsky clipping). */
+function segmentCrossesRect(a: Point, b: Point, r: Rect): boolean {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  let t0 = 0;
+  let t1 = 1;
+  const edges: [number, number][] = [
+    [-dx, a.x - r.x],
+    [dx, r.x + r.w - a.x],
+    [-dy, a.y - r.y],
+    [dy, r.y + r.h - a.y],
+  ];
+  for (const [p, q] of edges) {
+    if (p === 0) {
+      if (q < 0) return false;
+      continue;
+    }
+    const t = q / p;
+    if (p < 0) {
+      if (t > t1) return false;
+      if (t > t0) t0 = t;
+    } else {
+      if (t < t0) return false;
+      if (t < t1) t1 = t;
+    }
+  }
+  return t0 <= t1;
 }
 
 /** An image is "in" a selection rect when the rect covers its centre. */

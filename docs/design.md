@@ -73,6 +73,18 @@ rest of the catalog.
   list removes `/Outlines`; a save that sends no list leaves the file's
   outline alone.
 
+## File size
+
+Saves are compact. `src/pdf/thin.ts` thins every stroke as it enters the model
+(pen up, `addStrokes`, and on import of ink without `/PdfinkInk 2`):
+Ramer–Douglas–Peucker over (x, y, pressure × width) with a 0.05 pt tolerance,
+coordinates rounded to 0.01 pt and pressure to 0.001. Thinning is idempotent,
+and pdfink's own ink is marked `/PdfinkInk 2` so a reload never thins it again
+(which keeps OCR line signatures stable). Export writes coordinates to 0.01 pt,
+draws runs of equal rounded width as one path in the appearance stream, and
+saves with object streams. Selection tests stroke segments, not just points,
+since a thinned straight stretch can have no point inside a marquee.
+
 ## Handwriting text
 
 `docs/superpowers/specs/2026-10-25-handwriting-text-design.md` has the full

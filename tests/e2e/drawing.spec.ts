@@ -17,7 +17,7 @@ test.describe("pen drawing", () => {
     await penStroke(page, 0, line(100, 200, 300, 220));
     const s = await state(page);
     expect(s.pages[0].strokes).toHaveLength(2);
-    expect(s.pages[0].strokes[0].n).toBe(21);
+    expect(s.pages[0].strokes[0].n).toBe(2); // a straight line, thinned to its ends
     expect(s.pages[0].strokes[0].bounds.x).toBeCloseTo(99.5, 0);
     expect(s.dirty).toBe(true);
     const px = await inkPixel(page, 0, 200, 110);
@@ -200,7 +200,10 @@ test.describe("barrel-button heuristic", () => {
     await penStroke(page, 0, path);
     const s = await state(page);
     expect(s.pages[0].strokes).toHaveLength(2);
-    expect(s.pages[0].strokes[1].n).toBe(20);
+    // The new stroke is all there, from its first inked sample to its last (thinned, so check its ends).
+    const pts = await page.evaluate(() => window.pdfink.strokes(0)[1].points);
+    expect(pts[0].x).toBeCloseTo(205, 0); // the zero-pressure first sample is dropped; the second is at x 205
+    expect(pts[pts.length - 1].x).toBeCloseTo(300, 0);
   });
 
   test("switched off, full pressure no longer erases, and the choice is remembered", async ({ page }) => {
@@ -292,7 +295,7 @@ test.describe("finger drawing", () => {
     await penStroke(page, 0, line(100, 100, 300, 120), { pointerType: "touch" });
     const s = await state(page);
     expect(s.pages[0].strokes).toHaveLength(1);
-    expect(s.pages[0].strokes[0].n).toBe(21);
+    expect(s.pages[0].strokes[0].n).toBe(2); // a straight line, thinned to its ends
   });
 
   test("a second finger cancels the stroke and pans", async ({ page }) => {

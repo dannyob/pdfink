@@ -7,10 +7,12 @@ import { displayToPdf, type PageGeom } from "./geom.ts";
 import { pageGeom } from "./import.ts";
 import { addLinkAnnotation } from "./links.ts";
 import { writeOutline } from "./outline.ts";
+import { THINNED_INK_VERSION } from "./thin.ts";
 import { addLayer, layerFont, notesText, stripLayer, writeNotebookTag, writeTexts } from "./text.ts";
 
+/** Numbers in saved ink: hundredths of a point are far finer than any pen. */
 function fmt(n: number): string {
-  return (Math.round(n * 1000) / 1000).toString();
+  return (Math.round(n * 100) / 100).toString();
 }
 
 interface Group {
@@ -49,8 +51,8 @@ function addInkAnnotation(doc: PDFDocument, pageIndex: number, geom: PageGeom, g
     const pts: { x: number; y: number }[] = [];
     for (const p of s.points) {
       const q = displayToPdf(geom, p.x, p.y);
-      const x = Math.round(q.x * 1000) / 1000;
-      const y = Math.round(q.y * 1000) / 1000;
+      const x = Math.round(q.x * 100) / 100;
+      const y = Math.round(q.y * 100) / 100;
       nums.push(x, y);
       pts.push({ x, y });
       if (x < minX) minX = x;
@@ -66,18 +68,26 @@ function addInkAnnotation(doc: PDFDocument, pageIndex: number, geom: PageGeom, g
       if (pts.length === 1) ops.push(`${fmt(pts[0].x)} ${fmt(pts[0].y)} l`); // a dot: round caps make a disc
       ops.push("S");
     } else {
-      // Pressure: one short stroked segment per step, each at its own width.
+      // Pressure: each segment at its own width; consecutive segments whose
+      // widths round the same are drawn as one path.
       anyPressure = true;
       if (pts.length === 1) {
         ops.push(`${fmt(g.width * pressureFactor(s.points[0].p))} w`, `${fmt(pts[0].x)} ${fmt(pts[0].y)} m`, `${fmt(pts[0].x)} ${fmt(pts[0].y)} l`, "S");
       }
+      let runWidth: string | null = null;
       for (let i = 0; i + 1 < pts.length; i++) {
-        const w = g.width * pressureFactor((s.points[i].p + s.points[i + 1].p) / 2);
-        ops.push(`${fmt(w)} w`, `${fmt(pts[i].x)} ${fmt(pts[i].y)} m`, `${fmt(pts[i + 1].x)} ${fmt(pts[i + 1].y)} l`, "S");
+        const w = fmt(g.width * pressureFactor((s.points[i].p + s.points[i + 1].p) / 2));
+        if (w !== runWidth) {
+          if (runWidth !== null) ops.push("S");
+          ops.push(`${w} w`, `${fmt(pts[i].x)} ${fmt(pts[i].y)} m`);
+          runWidth = w;
+        }
+        ops.push(`${fmt(pts[i + 1].x)} ${fmt(pts[i + 1].y)} l`);
       }
+      if (runWidth !== null) ops.push("S");
     }
     inkList.push(nums);
-    pressureList.push(s.points.map((p) => Math.round(p.p * 10000) / 10000));
+    pressureList.push(s.points.map((p) => Math.round(p.p * 1000) / 1000));
   }
   if (!inkList.length) return;
   const rect = [minX - half, minY - half, maxX + half, maxY + half];
@@ -117,6 +127,7 @@ function addInkAnnotation(doc: PDFDocument, pageIndex: number, geom: PageGeom, g
     CreationDate: now,
     NM: PDFString.of(`pdfink-${Math.random().toString(36).slice(2)}`),
     T: PDFString.of("pdfink"),
+    PdfinkInk: THINNED_INK_VERSION,
     AP: { N: apRef },
     ...(anyPressure ? { PDFTron_Pressure_Thickness: pressureList } : {}),
   });
@@ -191,7 +202,7 @@ export async function exportPdf(baseBytes: Uint8Array, pages: PageModel[], bookm
   doc.setProducer("pdfink");
   if (opts.notebook !== undefined) writeNotebookTag(doc, opts.notebook);
   doc.setModificationDate(new Date());
-  return doc.save({ useObjectStreams: false });
+  return doc.save({ useObjectStreams: true });
 }
 
 export async function createBlankPdf(pageCount = 1, opts: { notebook?: boolean } = {}): Promise<Uint8Array> {
@@ -199,7 +210,7 @@ export async function createBlankPdf(pageCount = 1, opts: { notebook?: boolean }
   for (let i = 0; i < pageCount; i++) doc.addPage([LETTER.width, LETTER.height]);
   doc.setProducer("pdfink");
   if (opts.notebook !== undefined) writeNotebookTag(doc, opts.notebook);
-  return doc.save({ useObjectStreams: false });
+  return doc.save({ useObjectStreams: true });
 }
 
 /** Append a blank Letter page (same size as the last page, if any) and return new bytes. */
@@ -213,5 +224,5 @@ export async function appendBlankPage(baseBytes: Uint8Array): Promise<Uint8Array
   } else {
     doc.addPage([LETTER.width, LETTER.height]);
   }
-  return doc.save({ useObjectStreams: false });
+  return doc.save({ useObjectStreams: true });
 }

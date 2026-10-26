@@ -29,7 +29,7 @@ describe("pressure round trip", () => {
       Subtype: "Ink",
       Rect: [0, 0, 100, 100],
       InkList: [[10, 700, 20, 700, 30, 700]],
-      PDFTron_Pressure_Thickness: [[0.1, 0.5, 0.9]],
+      PDFTron_Pressure_Thickness: [[0.1, 0.9, 0.2]], // not a straight ramp, so thinning keeps the middle point
       C: [0, 0, 0],
       BS: { W: 12.7 },
     });
@@ -37,7 +37,7 @@ describe("pressure round trip", () => {
     const imported = await importPdf(await doc.save({ useObjectStreams: false }));
     const s = imported.pages[0].strokes[0];
     expect(s.width).toBe(12.7);
-    expect(s.points.map((p) => p.p)).toEqual([0.1, 0.5, 0.9]);
+    expect(s.points.map((p) => p.p)).toEqual([0.1, 0.9, 0.2]);
   });
 
   it("exports variable-width strokes segment by segment and writes the pressure array back", async () => {

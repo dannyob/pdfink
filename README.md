@@ -83,7 +83,7 @@ Handwriting can carry text (see `tools/ocr-page.py` below). The text is kept in 
 
 Pressure is drawn as nominal width x (0.4 + pressure). That is an empirical fit to how Xodo renders, which is the app I write notes in. Mice and fingers draw at nominal width.
 
-To prevent large PDFs, on import, objects unreachable from the trailer are deleted. Xodo saves with incremental updates and keeps every superseded annotation, so one real 300 MB notebook came out at 14 MB with no visible change. `docs/design.md` has the data model and the import, render and export steps.
+To prevent large PDFs, on import, objects unreachable from the trailer are deleted. Xodo saves with incremental updates and keeps every superseded annotation, so one real 300 MB notebook came out at 14 MB with no visible change. Saves also keep files small: strokes are thinned to the points the line needs (no point strays more than 0.05 pt from the pen's path, and pressure counts too), coordinates are kept to hundredths of a point, runs of equal width are drawn as one path, and objects are written into compressed object streams. A 27 MB, 19-page notebook saves at 3.3 MB, a 193 MB 100-page one at 9.6 MB. Ink another app wrote is thinned once when it is opened; ink pdfink saved carries `/PdfinkInk 2` and is left as it is. `docs/design.md` has the data model and the import, render and export steps.
 
 ## Editing
 

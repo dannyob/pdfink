@@ -1,5 +1,6 @@
 import * as pdfjs from "pdfjs-dist";
 import { pdfjsAssetOptions } from "./pdf/pdfjs-assets.ts";
+import { thinPoints } from "./pdf/thin.ts";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { Bookmark, ClipContent, ImageItem, LinkItem, PageModel, Point, Rect, Stroke, TextItem } from "./model";
 import { DEFAULT_PRESSURE, newId, strokesSig } from "./model";
@@ -1374,8 +1375,10 @@ export class App {
     this.paintToolButtons();
     const page = ptr.page;
     if (ptr.mode === "draw" && ptr.stroke) {
-      const s = ptr.stroke;
-      if (!cancelled || s.points.length > 1) {
+      const drawn = ptr.stroke;
+      if (!cancelled || drawn.points.length > 1) {
+        // Keep only the points the line needs (src/pdf/thin.ts); it looks the same.
+        const s = { ...drawn, points: thinPoints(drawn.points, drawn.width) };
         const before = this.snapshot(page);
         this.commit(page, before, { ...before, strokes: [...before.strokes, s] });
         this.emit("stroke", { page, stroke: s });
@@ -2086,7 +2089,7 @@ export class App {
       ids.add(s.id);
     });
     if (!strokes.length) return [];
-    const added: Stroke[] = strokes.map((s) => ({ ...s, id: s.id ?? newId() }));
+    const added: Stroke[] = strokes.map((s) => ({ ...s, points: thinPoints(s.points, s.width), id: s.id ?? newId() }));
     const before = this.snapshot(page);
     this.commit(page, before, { ...before, strokes: [...before.strokes, ...added] });
     return added.map((s) => s.id);

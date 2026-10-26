@@ -34,3 +34,20 @@ describe("geometry", () => {
     expect(normalizeRect(10, 20, 0, 5)).toEqual({ x: 0, y: 5, w: 10, h: 15 });
   });
 });
+
+describe("strokeInRect with thinned strokes", () => {
+  const s = (pts: [number, number][]) => ({ id: "s", color: "#000", width: 1, opacity: 1, points: pts.map(([x, y]) => ({ x, y, p: 0.6 })) });
+  it("counts a stroke whose line crosses the rect even when no point is inside", () => {
+    expect(strokeInRect(s([[0, 50], [300, 50]]), { x: 100, y: 40, w: 50, h: 20 })).toBe(true);
+  });
+  it("counts a diagonal crossing a corner of the rect", () => {
+    expect(strokeInRect(s([[90, 50], [110, 30]]), { x: 100, y: 40, w: 50, h: 20 })).toBe(true);
+  });
+  it("does not count a line that passes beside the rect", () => {
+    expect(strokeInRect(s([[0, 10], [300, 10]]), { x: 100, y: 40, w: 50, h: 20 })).toBe(false);
+    expect(strokeInRect(s([[90, 30], [99, 39]]), { x: 100, y: 40, w: 50, h: 20 })).toBe(false);
+  });
+  it("still counts a single dot inside", () => {
+    expect(strokeInRect(s([[120, 50]]), { x: 100, y: 40, w: 50, h: 20 })).toBe(true);
+  });
+});
