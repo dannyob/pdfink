@@ -112,9 +112,12 @@ button:disabled { opacity: 0.4; cursor: default; }
 #ctx-menu .menuitem .text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #ctx-menu .menuitem .detail { margin-left: auto; padding-left: 12px; flex: none; font-size: 13px; color: #4a515c; text-align: right; }
 #ctx-menu .submenu .chev { margin-left: auto; opacity: .5; padding-left: 12px; }
-#ctx-menu .back { background: #e8effc; color: #1d3f7a; }
-#ctx-menu .context { background: #e8effc; color: #1d3f7a; }
-#ctx-menu .command { background: #f7f2e8; }
+/* Tinted rows. The button selector outranks the plain-row rule above, and the
+   hover and disabled rules still outrank these. Back and the rows about the
+   thing under the pen also carry a dark left edge, which survives a
+   greyscale screen where the tint may not. */
+#ctx-menu button.back, #ctx-menu button.context { background: #e8effc; color: #1d3f7a; border-left: 3px solid #1d3f7a; }
+#ctx-menu button.command { background: #f7f2e8; }
 #ctx-menu .row { display: flex; gap: 8px; }
 #ctx-menu .row .tile { flex: 1; min-width: 0; }
 /* A labelled tile alone in its row (Add page moved into More on its own) stays tile-sized. */

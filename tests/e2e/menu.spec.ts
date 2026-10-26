@@ -364,6 +364,43 @@ test.describe("menu pieces for the bar", () => {
     expect(on.boxBg).not.toBe("rgb(255, 255, 255)");
   });
 
+  test("Back, context and command rows are tinted and edged apart from plain rows; hover and disabled still apply", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => {
+      window.__pdfink.menu.show(100, 100, [
+        { label: "Plain" },
+        { label: "About this", tint: "context" },
+        { label: "My command", tint: "command" },
+        { label: "Off command", tint: "command", disabled: true },
+        { kind: "submenu", label: "Deeper", items: [{ label: "Inside" }] },
+      ]);
+    });
+    const look = (sel: string) =>
+      page.locator(sel).first().evaluate((el) => {
+        const s = getComputedStyle(el);
+        return { bg: s.backgroundColor, left: parseFloat(s.borderLeftWidth), leftColor: s.borderLeftColor, opacity: s.opacity };
+      });
+    const plain = await look("#ctx-menu .menuitem:not(.context):not(.command):not(.submenu)");
+    expect(plain.bg).toBe("rgb(255, 255, 255)");
+    const context = await look("#ctx-menu .context");
+    expect(context.bg).not.toBe(plain.bg);
+    expect(context.left).toBeGreaterThanOrEqual(2);
+    expect(context.leftColor).toBe("rgb(29, 63, 122)");
+    const command = await look("#ctx-menu .command:not(:disabled)");
+    expect(command.bg).not.toBe(plain.bg);
+    expect(command.bg).not.toBe(context.bg);
+    expect((await look("#ctx-menu .command:disabled")).opacity).toBe("0.35");
+    // Hover still changes a tinted row.
+    await page.locator("#ctx-menu .context").hover();
+    expect((await look("#ctx-menu .context")).bg).not.toBe(context.bg);
+
+    await page.locator("#ctx-menu .submenu").click();
+    const back = await look("#ctx-menu .back");
+    expect(back.bg).not.toBe(plain.bg);
+    expect(back.left).toBeGreaterThanOrEqual(2);
+    expect(back.leftColor).toBe("rgb(29, 63, 122)");
+  });
+
   test("tiles: white with a grey edge at rest, no fill or edge when disabled, solid accent when checked", async ({ page }) => {
     await openApp(page);
     await showMenu(page, 200, 200);

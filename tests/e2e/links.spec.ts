@@ -224,6 +224,16 @@ test.describe("links", () => {
     const items = page.locator("#ctx-menu .menuitem");
     await expect(items.nth(0)).toHaveText("Open example.org");
     await expect(items.nth(1)).toHaveText("Edit URL…");
+    // The rows about the link stand apart from plain rows: tinted, with a dark left edge.
+    const look = (i: number) =>
+      items.nth(i).evaluate((el) => ({ bg: getComputedStyle(el).backgroundColor, left: getComputedStyle(el).borderLeftWidth }));
+    const plain = await look(await items.count() - 1);
+    expect(plain.bg).toBe("rgb(255, 255, 255)");
+    for (const i of [0, 1]) {
+      const c = await look(i);
+      expect(c.bg).not.toBe(plain.bg);
+      expect(parseFloat(c.left)).toBeGreaterThanOrEqual(2);
+    }
     await expect(page.locator("#ctx-menu .row").first().locator(".tile").first()).toHaveAttribute("aria-label", "Pen");
 
     await menuAction(page, "Edit URL…");
