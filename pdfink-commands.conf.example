@@ -38,6 +38,14 @@ reload = true
 command = uv run --script tools/describe-selection.py
 timeout = 300
 
+[Recognise handwriting]
+# Groups the page's ink into lines, has a vision model read them (llm), and
+# keeps the words in the PDF as invisible, searchable text; see
+# tools/ocr-page.py. Only lines that changed since the last run are sent;
+# with a selection, only the lines inside it.
+command = uv run --script tools/ocr-page.py "$PAGE"
+timeout = 300
+
 [Journal this page]
 # Transcribes the page with a vision model (simonw's llm) and files it in a
 # journal; see tools/journal-page.py. Slow, so it asks first and gets time.

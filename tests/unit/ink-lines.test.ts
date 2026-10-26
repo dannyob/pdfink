@@ -10,3 +10,9 @@ describe.skipIf(!haveUv)("tools/ink_lines.py", () => {
     execFileSync("uv", ["run", "--script", path.resolve("tools/tests/test_ink_lines.py")], { encoding: "utf8", stdio: "pipe", timeout: 120_000 });
   }, 130_000);
 });
+
+describe.skipIf(!haveUv)("tools/ocr-page.py helpers", () => {
+  it("pass their own unittest suite", () => {
+    execFileSync("uv", ["run", "--script", path.resolve("tools/tests/test_ocr_page.py")], { encoding: "utf8", stdio: "pipe", timeout: 120_000 });
+  }, 130_000);
+});

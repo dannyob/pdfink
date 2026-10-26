@@ -48,11 +48,10 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
-import threading
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import llm_call  # noqa: E402
 import pdfink_page  # noqa: E402
 
 DEFAULT_MODEL = "openrouter/google/gemini-3.7-flash"
@@ -185,44 +184,8 @@ LLM_TIMEOUT = int(os.environ.get("PDFINK_JOURNAL_LLM_TIMEOUT", "240"))
 
 
 def ask(model, prompt: str, pdf_bytes: bytes, attempts: int = 2) -> str:
-    """One model call with a hard timeout. The HTTP client underneath can sit
-    on a half-closed connection for ten minutes per retry, so the call runs
-    in a daemon thread we are free to abandon and try again."""
-    import llm
-
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-        f.write(pdf_bytes)
-        tmp = f.name
-    try:
-        text = ""
-        for attempt in range(1, attempts + 1):
-            box: dict[str, object] = {}
-
-            def call() -> None:
-                try:
-                    box["text"] = model.prompt(prompt, attachments=[llm.Attachment(path=tmp)], stream=False).text()
-                except Exception as e:  # noqa: BLE001 - reported below
-                    box["error"] = e
-
-            t = threading.Thread(target=call, daemon=True)
-            t.start()
-            t.join(LLM_TIMEOUT)
-            if "text" in box:
-                text = str(box["text"])
-                break
-            why = f"{box['error']}" if "error" in box else f"no answer after {LLM_TIMEOUT}s"
-            if attempt < attempts:
-                log(f"model call failed ({why}); trying again…")
-            else:
-                raise SystemExit(f"model call failed: {why}")
-    finally:
-        os.unlink(tmp)
-    text = text.strip()
-    # Some models wrap the answer in a fence.
-    m = re.match(r"^```(?:markdown|md)?\s*\n(.*)\n```$", text, re.S)
-    if m:
-        text = m.group(1).strip()
-    return text
+    """One model call on a PDF, with a hard timeout and a retry (llm_call.ask)."""
+    return llm_call.ask(model, prompt, pdf_bytes, ".pdf", attempts=attempts, timeout=LLM_TIMEOUT)
 
 
 def pages_used(text: str, first: int) -> tuple[str, int]:
