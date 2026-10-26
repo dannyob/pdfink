@@ -6,6 +6,7 @@
 """Recognise a page's handwriting into text the PDF carries.
 
     ocr-page.py PAGE [--model M] [--all] [--dry-run]
+    ocr-page.py --watch [--quiet SECONDS] [--model M]
 
 Run from pdfink's pen menu (command = ocr-page.py "$PAGE", PAGE 1-based): it
 needs the page bridge ($PDFINK_SOCKET). It groups the page's strokes into
@@ -25,6 +26,14 @@ exits 1. It prints "N lines" (the
 lines newly given text), or "up to date" when there was nothing to send.
 --dry-run prints the numbered lines it would send and stops there.
 
+--watch is automatic mode, for a `detach = true` menu entry: it stays with
+the tab and recognises a page once its ink has been quiet for --quiet seconds
+(default 20) after a change, or when you arrive on a page (the visible one
+at the start too) that has lines without text. One page at a time, as quiet
+updates (no undo step), showing "Reading page N…" while busy and printing
+nothing per page. A failed page is logged and tried again only after new
+ink. It exits 0 when the page goes away or the run is stopped.
+
 Keys come from `llm keys set ...` as usual (the shared llm user directory).
 Model: --model, else $PDFINK_OCR_MODEL, else openrouter/google/gemini-3.7-flash.
 Each model call is given $PDFINK_OCR_LLM_TIMEOUT seconds (default 120) and one
@@ -39,7 +48,8 @@ import math
 import os
 import re
 import sys
-from typing import Any
+import time
+from typing import Any, Callable
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm_call  # noqa: E402
@@ -47,6 +57,7 @@ import pdfink_page  # noqa: E402
 from ink_lines import Line, group  # noqa: E402
 
 DEFAULT_MODEL = "openrouter/google/gemini-3.7-flash"
+DEFAULT_QUIET = 20.0  # s of no ink on a page before --watch reads it
 LLM_TIMEOUT = int(os.environ.get("PDFINK_OCR_LLM_TIMEOUT", "120"))
 SCALE = 2  # page render scale, pixels per point
 LEFT_EDGE = 20  # pt: a line starting this close to the left edge is labelled on its right
@@ -199,16 +210,19 @@ def recognise(
     within: Rect | None = None,
     model=None,
     dry_run: bool = False,
+    report: bool = True,
 ) -> int:
     """Recognise the handwriting on page `page_index` (0-based) and set it as
     the page's text. With `within`, only lines inside it (all forced) and only
     texts inside it. `model` is an llm model or its id (None: the default).
-    Returns the number of lines newly set. RecogniseError, with the page's
-    text untouched, when the model fails or answers for none of the lines."""
+    Returns the number of lines newly set, and prints it unless not `report`.
+    RecogniseError, with the page's text untouched, when the model fails or
+    answers for none of the lines."""
     lines = group(page_api.strokes(page_index))
     todo = changed_lines(lines, page_api.ink_text(page_index), force or within is not None, within)
     if not todo:
-        print("up to date")
+        if report:
+            print("up to date")
         return 0
     numbers = list(range(1, len(todo) + 1))
     if dry_run:
@@ -236,17 +250,121 @@ def recognise(
     items = merge(lines_now, texts, results)
     page_api.set_ink_text(page_index, items, quiet=quiet, within=within)
     n = sum(1 for ln in lines_now if results.get(ln.sig))
-    print(f"{n} line{'' if n == 1 else 's'}")
+    if report:
+        print(f"{n} line{'' if n == 1 else 's'}")
     return n
+
+
+class Scheduler:
+    """Which pages --watch should read, and when. Pure: callers pass `now`.
+
+    A page is due `quiet_s` seconds after its last ink, or at once when you
+    arrive on it and it has lines without text. due() hands each page out
+    once, oldest first; after that, only new ink makes it due again (so a
+    page whose recognition failed is not retried in a loop)."""
+
+    def __init__(self, quiet_s: float) -> None:
+        self.quiet_s = quiet_s
+        self._ink: dict[int, float] = {}  # page -> time of its last ink
+        self._arrived: dict[int, float] = {}  # page -> when it was arrived on
+        self._done: set[int] = set()  # handed out, no ink since
+
+    def ink(self, page: int, now: float) -> None:
+        self._ink[page] = now
+        self._arrived.pop(page, None)  # wait for the ink to settle instead
+        self._done.discard(page)
+
+    def arrived(self, page: int, now: float, has_untexted: bool) -> None:
+        if has_untexted and page not in self._done and page not in self._ink:
+            self._arrived.setdefault(page, now)
+
+    def due(self, now: float) -> list[int]:
+        ready = [(t + self.quiet_s, p) for p, t in self._ink.items() if now - t >= self.quiet_s]
+        ready += [(t, p) for p, t in self._arrived.items()]
+        ready.sort()
+        out = [p for _, p in ready]
+        for p in out:
+            self._ink.pop(p, None)
+            self._arrived.pop(p, None)
+            self._done.add(p)
+        return out
+
+
+def has_untexted(page_api: pdfink_page.Page, page_index: int) -> bool:
+    """Whether the page has lines that no text item matches."""
+    lines = group(page_api.strokes(page_index))
+    return bool(changed_lines(lines, page_api.ink_text(page_index), False, None))
+
+
+def watch(
+    page_api: pdfink_page.Page,
+    quiet_s: float = DEFAULT_QUIET,
+    model=None,
+    clock: Callable[[], float] = time.monotonic,
+    recognise_fn: Callable[..., int] = recognise,
+) -> int:
+    """Automatic mode (see the module doc). Returns 0 when the page goes
+    away or the run gets its exit/gone event."""
+    sched = Scheduler(quiet_s)
+
+    def page_of(data: Any) -> int | None:
+        p = data.get("page") if isinstance(data, dict) else None
+        return p if isinstance(p, int) and p >= 0 else None
+
+    def arrive(p: int) -> None:
+        try:
+            sched.arrived(p, clock(), has_untexted(page_api, p))
+        except (pdfink_page.PageError, TimeoutError) as e:
+            log(f"ocr-page: page {p + 1}: {e}")
+
+    try:
+        page_api.subscribe("ink", "page")
+        try:
+            current = page_of({"page": page_api.state().get("currentPage")})
+        except (pdfink_page.PageError, TimeoutError) as e:
+            log(f"ocr-page: {e}")
+            current = None
+        if current is not None:
+            arrive(current)
+        last_tick = None
+        while True:
+            for name, data in page_api.events(timeout=1.0):
+                if name in ("exit", "gone"):
+                    return 0
+                p = page_of(data)
+                if p is None:
+                    pass
+                elif name == "ink":
+                    sched.ink(p, clock())
+                elif name == "page":
+                    arrive(p)
+                if last_tick is not None and clock() - last_tick < 1.0:
+                    continue
+                break  # a second has passed: see what is due
+            last_tick = clock()
+            for p in sched.due(last_tick):
+                page_api.progress(f"Reading page {p + 1}…")
+                try:
+                    recognise_fn(page_api, p, quiet=True, model=model, report=False)
+                except (RecogniseError, pdfink_page.PageError, TimeoutError) as e:
+                    log(f"ocr-page: page {p + 1}: {e}")
+                finally:
+                    page_api.progress(None)
+    except pdfink_page.PageGone:
+        return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("page", type=int, help="1-based page number ($PAGE)")
+    ap.add_argument("page", type=int, nargs="?", help="1-based page number ($PAGE); not with --watch")
     ap.add_argument("--model", default=os.environ.get("PDFINK_OCR_MODEL", DEFAULT_MODEL))
     ap.add_argument("--all", action="store_true", help="recognise every line, not only changed ones")
     ap.add_argument("--dry-run", action="store_true", help="print the numbered lines it would send; no model, no text set")
+    ap.add_argument("--watch", action="store_true", help="automatic mode: keep recognising pages as you write")
+    ap.add_argument("--quiet", type=float, default=DEFAULT_QUIET, metavar="SECONDS", help="--watch: seconds of no ink before a page is read (default 20)")
     a = ap.parse_args()
+    if (a.page is None) != a.watch:
+        ap.error("give a PAGE, or --watch")
 
     if not os.environ.get("PDFINK_SOCKET"):
         print("ocr-page: needs the pdfink page (run it from the pen menu)", file=sys.stderr)
@@ -257,6 +375,9 @@ def main() -> int:
         print(f"ocr-page: {e}", file=sys.stderr)
         return 1
     assert page is not None
+    if a.watch:
+        with page:
+            return watch(page, a.quiet, model=a.model)
     index = a.page - 1
     with page:
         try:

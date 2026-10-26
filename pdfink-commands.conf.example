@@ -47,6 +47,13 @@ timeout = 300
 command = uv run --script tools/ocr-page.py "$PAGE"
 timeout = 300
 
+[Recognise handwriting automatically]
+# The same, by itself: stays with the tab (dismiss its chip to stop it) and
+# reads a page once its ink has been still for 20 seconds, or when you turn
+# to a page with lines that have no text yet. --quiet SECONDS changes the wait.
+command = uv run --script tools/ocr-page.py --watch
+detach = true
+
 [Journal this page]
 # Transcribes the page with a vision model (simonw's llm) and files it in a
 # journal; see tools/journal-page.py. Slow, so it asks first and gets time.

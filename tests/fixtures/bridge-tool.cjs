@@ -1,6 +1,6 @@
 // A pen-menu command that talks to the page through the bridge, for the
 // end-to-end tests. CommonJS, Node >= 20, no dependencies. Usage:
-//   node bridge-tool.cjs selection | ask | draw | buttons
+//   node bridge-tool.cjs selection | ask | draw | buttons | watch
 "use strict";
 const net = require("node:net");
 
@@ -80,6 +80,20 @@ const commands = {
       events(["button"], (event, data) => {
         if (event === "button" && data && data.id === "hello") void toast("hello pressed");
         if ((event === "button" && data && data.id === "bye") || event === "exit" || event === "gone") resolve();
+      });
+    });
+  },
+  // Detached: waits for the first ink event, then labels that page's text
+  // quietly and finishes, like a tiny ocr-page.py --watch.
+  async watch() {
+    await new Promise((resolve, reject) => {
+      events(["ink", "page"], (event, data) => {
+        if (event === "exit" || event === "gone") return resolve();
+        if (event !== "ink") return;
+        const text = `watched page ${data.page + 1}`;
+        call("setInkText", data.page, [{ text, x: 20, y: 20, w: 100, h: 12 }], { quiet: true })
+          .then(() => toast(text))
+          .then(resolve, reject);
       });
     });
   },

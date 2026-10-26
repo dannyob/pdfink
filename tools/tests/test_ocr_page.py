@@ -255,5 +255,178 @@ class Recognise(unittest.TestCase):
         self.assertEqual(self.page.set_calls, [])
 
 
+class SchedulerTests(unittest.TestCase):
+    def test_ink_is_due_after_the_quiet_time(self):
+        s = ocr.Scheduler(20)
+        s.ink(0, now=100)
+        self.assertEqual(s.due(119.9), [])
+        self.assertEqual(s.due(120), [0])
+
+    def test_debounce_resets_on_new_ink(self):
+        s = ocr.Scheduler(20)
+        s.ink(0, now=100)
+        s.ink(0, now=115)
+        self.assertEqual(s.due(125), [])
+        self.assertEqual(s.due(135), [0])
+
+    def test_two_pages_queued_oldest_first(self):
+        s = ocr.Scheduler(20)
+        s.ink(3, now=100)
+        s.ink(1, now=105)
+        self.assertEqual(s.due(130), [3, 1])
+
+    def test_each_due_page_is_given_once(self):
+        s = ocr.Scheduler(20)
+        s.ink(0, now=100)
+        self.assertEqual(s.due(120), [0])
+        self.assertEqual(s.due(200), [])
+
+    def test_arrival_with_untexted_lines_is_due_at_once(self):
+        s = ocr.Scheduler(20)
+        s.arrived(2, now=100, has_untexted=True)
+        self.assertEqual(s.due(100), [2])
+
+    def test_arrival_without_untexted_lines_is_not_due(self):
+        s = ocr.Scheduler(20)
+        s.arrived(2, now=100, has_untexted=False)
+        self.assertEqual(s.due(1000), [])
+
+    def test_arrival_and_ink_mix_oldest_first(self):
+        s = ocr.Scheduler(20)
+        s.ink(0, now=100)  # due at 120
+        s.arrived(4, now=110, has_untexted=True)  # due at 110
+        self.assertEqual(s.due(130), [4, 0])
+
+    def test_a_page_is_not_due_again_until_new_ink(self):
+        s = ocr.Scheduler(20)
+        s.ink(0, now=100)
+        self.assertEqual(s.due(120), [0])
+        # Say recognition failed: arriving on it again does not retry it...
+        s.arrived(0, now=130, has_untexted=True)
+        self.assertEqual(s.due(130), [])
+        # ...new ink does, after the quiet time.
+        s.ink(0, now=140)
+        self.assertEqual(s.due(150), [])
+        self.assertEqual(s.due(160), [0])
+
+    def test_new_ink_on_an_arrived_page_waits_for_quiet(self):
+        s = ocr.Scheduler(20)
+        s.arrived(0, now=100, has_untexted=True)
+        s.ink(0, now=100)
+        self.assertEqual(s.due(105), [])
+        self.assertEqual(s.due(120), [0])
+
+
+class WatchPage(FakePage):
+    """A FakePage whose events() plays a script against a fake clock.
+    Each script item is (at, name, data): the clock jumps to `at`, then the
+    event is yielded; when the script runs out the client says PageGone."""
+
+    def __init__(self, strokes, texts, script, current=0):
+        super().__init__(strokes, texts)
+        self.script = list(script)
+        self.t = 0.0
+        self.current = current
+        self.progress_calls = []
+        self.subscribed = []
+
+    def clock(self):
+        return self.t
+
+    def strokes(self, page, space="page"):
+        # A dict gives each page its own strokes; a list is every page's.
+        return self._strokes.get(page, []) if isinstance(self._strokes, dict) else self._strokes
+
+    def state(self):
+        return {"currentPage": self.current}
+
+    def subscribe(self, *names):
+        self.subscribed.extend(names)
+
+    def events(self, *names, timeout=None):
+        if names:
+            self.subscribe(*names)
+        while self.script:
+            at, name, data = self.script[0]
+            if timeout is not None and at > self.t + timeout:
+                self.t += timeout
+                return  # nothing within the timeout
+            self.script.pop(0)
+            self.t = max(self.t, at)
+            if name is None:
+                continue  # just a clock step
+            yield name, data
+        raise ocr.pdfink_page.PageGone("page connection closed")
+
+    def progress(self, msg):
+        self.progress_calls.append(msg)
+
+
+class Watch(unittest.TestCase):
+    def run_watch(self, page, recognise):
+        with redirect_stderr(io.StringIO()) as err, redirect_stdout(io.StringIO()) as out:
+            code = ocr.watch(page, quiet_s=20, model=object(), clock=page.clock, recognise_fn=recognise)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_ink_then_quiet_reads_the_page_quietly(self):
+        page = WatchPage([], [], [(1, "ink", {"page": 2}), (30, None, None), (40, "exit", None)])
+        calls = []
+
+        def rec(p, i, quiet, model=None, report=True):
+            calls.append((i, quiet, report, p.t))
+            return 1
+
+        code, out, _ = self.run_watch(page, rec)
+        self.assertEqual(code, 0)
+        self.assertEqual([c[:3] for c in calls], [(2, True, False)])
+        self.assertGreaterEqual(calls[0][3], 21)
+        self.assertEqual(page.progress_calls, ["Reading page 3…", None])
+        self.assertEqual(out, "")
+        self.assertIn("ink", page.subscribed)
+        self.assertIn("page", page.subscribed)
+
+    def test_arriving_on_a_page_with_untexted_lines_reads_it(self):
+        strokes = {0: [zig(100, 100, "s1")]}  # page 9, visible at the start, has none
+        page = WatchPage(strokes, [], [(1, "page", {"page": 0}), (5, None, None), (6, "gone", None)], current=9)
+        calls = []
+        code, _, _ = self.run_watch(page, lambda p, i, quiet, model=None, report=True: calls.append(i) or 1)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [0])
+
+    def test_the_visible_page_at_start_counts_as_arrived(self):
+        page = WatchPage([zig(100, 100, "s1")], [], [(5, None, None)], current=0)
+        calls = []
+        code, _, _ = self.run_watch(page, lambda p, i, quiet, model=None, report=True: calls.append(i) or 1)
+        self.assertEqual(code, 0)  # PageGone at the end of the script
+        self.assertEqual(calls, [0])
+
+    def test_survives_a_recognise_error_and_does_not_retry(self):
+        page = WatchPage(
+            [], [],
+            [(1, "ink", {"page": 0}), (1, "ink", {"page": 1}), (30, None, None), (60, None, None), (61, "exit", None)],
+        )
+        calls = []
+
+        def rec(p, i, quiet, model=None, report=True):
+            calls.append(i)
+            if i == 0:
+                raise ocr.RecogniseError("model said no")
+            return 1
+
+        code, _, err = self.run_watch(page, rec)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [0, 1])
+        self.assertIn("model said no", err)
+        self.assertEqual(page.progress_calls, ["Reading page 1…", None, "Reading page 2…", None])
+
+
+class RecogniseReport(unittest.TestCase):
+    def test_report_false_prints_nothing(self):
+        page = FakePage([], [])
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(ocr.recognise(page, 0, quiet=True, model=object(), report=False), 0)
+        self.assertEqual(out.getvalue(), "")
+
+
 if __name__ == "__main__":
     unittest.main()

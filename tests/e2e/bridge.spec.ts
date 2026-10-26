@@ -147,6 +147,24 @@ test.describe("page bridge", () => {
     expect((await state(page)).buttons).toEqual([]);
   });
 
+  test("a detached command and an ordinary one run on one tab at once, both applied", async ({ page }) => {
+    await openNotebook(page, "both");
+    await openMenuAt(page, 0, 300, 400);
+    await runMenu(page, "Watch ink");
+    await expect(page.locator("#runs .run")).toHaveText(/Watch ink/, { timeout: 10_000 });
+    await expect(page.locator("#status")).toHaveText("Watch ink attached");
+    // The watcher waits for an ink event; the ordinary command makes one.
+    await openMenuAt(page, 0, 300, 400);
+    await runMenu(page, "Draw via bridge");
+    await expect(page.locator("#status")).toContainText(/drew|watched/, { timeout: 10_000 });
+    await expect.poll(async () => (await state(page)).pages[0].texts.map((t) => t.text), { timeout: 10_000 }).toEqual(["watched page 1"]);
+    const after = await state(page);
+    expect(after.pages[0].strokes).toHaveLength(1);
+    expect(after.pages[0].strokes[0].color).toBe("#ff0000");
+    // The watcher finishes by itself once it has set the text.
+    await expect(page.locator("#runs .run")).toHaveCount(0, { timeout: 10_000 });
+  });
+
   test("a detached command that finishes by itself clears its chip", async ({ page }) => {
     await openNotebook(page, "finish");
     await openMenuAt(page, 0, 300, 400);
