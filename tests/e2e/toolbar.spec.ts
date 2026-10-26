@@ -2,7 +2,7 @@ import { test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { PDFDocument } from "pdf-lib";
 import { createBlankPdf } from "../../src/pdf/export";
-import { barMenu, expect, inkAnnots, line, menuAction, menuOutline, openApp, openLocalApp, penStroke, state, waitReady } from "./helpers";
+import { barMenu, expect, fakeClipboard, inkAnnots, line, menuAction, menuOutline, openApp, openLocalApp, penStroke, state, waitReady } from "./helpers";
 
 const API = "http://127.0.0.1:5176";
 const DIR = "test-results/notebooks";
@@ -437,6 +437,27 @@ test.describe("fitting the width", () => {
       await expectMovedInMore(page);
     });
 
+    test("a toolbar command button added later makes the bar refit", async ({ page }) => {
+      await openLongNotebook(page);
+      expect(await moved(page)).toEqual([]);
+      await page.evaluate(() => window.__pdfink.addButton("tb-wide", "A wide command button", "toolbar"));
+      await expect(page.locator("#cmd-buttons .cmd")).toBeVisible();
+      await expect.poll(() => moved(page)).toContain("page");
+      await expectOneRow(page);
+    });
+
+    test("an open More menu follows a change in what has moved", async ({ page }) => {
+      // (A window resize closes any menu, so the change here comes from a command button.)
+      await openLongNotebook(page);
+      await barMenu(page, "more");
+      expect((await menuOutline(page))[0]).toBe("[View]");
+      await page.evaluate(() => window.__pdfink.addButton("tb-wide", "A wide command button", "toolbar"));
+      await expect.poll(() => moved(page)).toContain("page");
+      await expect(page.locator("#ctx-menu")).toBeVisible();
+      await expect.poll(async () => (await menuOutline(page))[0]).toContain("Add page");
+      await expect(page.locator("#bar-more")).toHaveAttribute("aria-expanded", "true");
+    });
+
     test("short names: nothing moves", async ({ page }) => {
       await openApp(page);
       expect(await moved(page)).toEqual([]);
@@ -496,6 +517,22 @@ test.describe("fitting the width", () => {
         STAYS.filter((id) => id !== "bar-commands"),
       );
       await expect(page.locator('#bar > .group[data-group="page"]')).toBeHidden();
+    });
+
+    test("server mode with no notebook open: measured once the Commands tile shows", async ({ page }) => {
+      await fakeClipboard(page);
+      // Storage detection answers late, after the bar has settled with Commands hidden.
+      await page.route("**/api/status", async (route) => {
+        await new Promise((r) => setTimeout(r, 1000));
+        await route.continue();
+      });
+      await page.goto("/?nofs=1");
+      await page.waitForFunction(() => document.body.dataset.storage === "server");
+      await expect(page.locator("#bar-commands")).toBeVisible();
+      await expect.poll(() => moved(page), { timeout: 3000 }).toContain("page");
+      // The name has room for itself: not squeezed into an ellipsis.
+      expect(await page.locator("#bar-file .txt").evaluate((t) => t.scrollWidth <= t.clientWidth)).toBe(true);
+      await expectOneRow(page);
     });
 
     test("widening the window brings the groups back", async ({ page }) => {

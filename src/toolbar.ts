@@ -85,6 +85,8 @@ export class Toolbar {
   private readonly groups = new Map<string, HTMLDivElement>();
   /** Groups now in More rather than on the bar, in MOVABLE order. */
   private moved: string[] = [];
+  /** True while the open menu is More's own list (not the pen style menu opened from it). */
+  private moreListOpen = false;
 
   constructor(
     private readonly app: App,
@@ -106,7 +108,7 @@ export class Toolbar {
     this.styleBtn.title = "Pen style";
     this.commandsBtn = this.tile("bar-commands", "Commands", icons.commands, () => this.openCommands(), true);
     this.commandsBtn.classList.add("server-only");
-    this.moreBtn = this.tile("bar-more", "More", icons.more, () => this.openMenu(this.moreBtn, () => this.moreItems()), true);
+    this.moreBtn = this.tile("bar-more", "More", icons.more, () => this.openMenu(this.moreBtn, this.moreItemsFn), true);
 
     this.colorInput = document.createElement("input");
     this.colorInput.type = "color";
@@ -169,6 +171,8 @@ export class Toolbar {
     // `fit` changes only classes and attributes, which these do not watch.
     new ResizeObserver(() => this.fit()).observe(root);
     new MutationObserver(() => this.fit()).observe(root, { childList: true, subtree: true, characterData: true });
+    // The storage mode, learnt after the bar is built, shows or hides the server-only tiles (Commands).
+    new MutationObserver(() => this.fit()).observe(document.body, { attributes: true, attributeFilter: ["data-storage"] });
     window.addEventListener("resize", () => this.fit());
     void document.fonts?.ready.then(() => this.fit());
     this.fit();
@@ -209,11 +213,14 @@ export class Toolbar {
       else this.groups.get(name)?.classList.add("moved");
     }
     bar.classList.remove("measuring");
+    const changed = moved.join(" ") !== this.moved.join(" ");
     if (bar.dataset.moved !== moved.join(" ")) bar.dataset.moved = moved.join(" ");
     this.moved = moved;
     // A menu opened from a tile that just left the bar would hang from nothing.
     const menu = this.app.menu;
     if (menu.open && menu.owner && menu.owner !== this.moreBtn && menu.owner.offsetParent === null) menu.hide();
+    // An open More list shows the moved groups: keep it in step (a rotation, say).
+    if (changed && this.moreListOpen && menu.owner === this.moreBtn) this.redraw(this.moreBtn, this.moreItemsFn);
   }
 
   /** Bring every button's label, icon and enabled state up to date, in place. */
@@ -269,7 +276,11 @@ export class Toolbar {
 
   private openMenu(button: HTMLButtonElement, items: () => MenuItem[]): void {
     this.app.menu.showFor(button, items());
+    this.moreListOpen = button === this.moreBtn && this.app.menu.open && items === this.moreItemsFn;
   }
+
+  /** The More list's items, as one function so `openMenu` can tell it from the pen style menu opened from More. */
+  private readonly moreItemsFn = (): MenuItem[] => this.moreItems();
 
   /** Re-render `button`'s menu if it is open at its top level (its items changed). */
   private redraw(button: HTMLButtonElement, items: () => MenuItem[]): void {
