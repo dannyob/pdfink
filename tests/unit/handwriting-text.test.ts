@@ -109,12 +109,13 @@ describe("handwriting text in the PDF", () => {
     expect(Math.abs(item.width - 120)).toBeLessThanOrEqual(2);
   });
 
-  it("the layer sits inside each line's box on a page rotated 90 degrees", async () => {
+  it.each([90, 180, 270])("the layer sits inside each line's box on a page rotated %i degrees", async (rot) => {
     const doc = await PDFDocument.create();
-    doc.addPage([612, 792]).setRotation(degrees(90));
+    doc.addPage([612, 792]).setRotation(degrees(rot));
     const base = await doc.save({ useObjectStreams: false });
     const box = { id: "r1", x: 300, y: 200, w: 150, h: 24, text: "hello there" };
-    const bytes = await exportPdf(base, [page([box], [], 792, 612)], undefined, { textLayers: [true] });
+    const [dw, dh] = rot % 180 ? [792, 612] : [612, 792];
+    const bytes = await exportPdf(base, [page([box], [], dw, dh)], undefined, { textLayers: [true] });
     const [p] = await pdfjsText(bytes);
     const item = p.items.find((it) => it.str === "hello there")!;
     expect(item).toBeDefined();
@@ -239,5 +240,22 @@ describe("handwriting text in the PDF", () => {
     const item = p.items.find((it) => it.str === "hello there")!;
     expect(Math.abs(item.transform[4] - 72)).toBeLessThanOrEqual(1);
     expect(Math.abs(item.width - 120)).toBeLessThanOrEqual(2);
+  });
+
+  it("a coalesced /Contents (one stream holding the page content and the layer) keeps the page content", async () => {
+    const doc0 = await PDFDocument.create();
+    doc0.addPage([612, 792]).drawRectangle({ x: 50, y: 50, width: 100, height: 40, color: rgb(1, 0, 0) });
+    const layered = await PDFDocument.load(await exportPdf(await doc0.save({ useObjectStreams: false }), [page([HELLO])], undefined, { textLayers: [true] }));
+    const parts = contentData(layered);
+    expect(parts.length).toBeGreaterThan(1);
+    // Another tool merges the content array into one stream (qpdf --coalesce-contents style).
+    layered.getPage(0).node.set(PDFName.of("Contents"), layered.context.register(layered.context.flateStream(parts.join("\n"))));
+    const r = await importPdf(await layered.save({ useObjectStreams: false }));
+    expect(r.pages[0].texts.map((t) => t.text)).toEqual(["hello there"]);
+    const back = contentData(await PDFDocument.load(r.baseBytes));
+    expect(back.join("\n")).toContain("1 0 0 rg");
+    // And it still exports.
+    const again = await exportPdf(r.baseBytes, r.pages, undefined, { textLayers: [true] });
+    expect(contentData(await PDFDocument.load(again)).join("\n")).toContain("1 0 0 rg");
   });
 });

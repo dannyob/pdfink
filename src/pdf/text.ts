@@ -82,6 +82,16 @@ export function writeTexts(doc: PDFDocument, page: PDFPage, geom: PageGeom, text
   page.node.set(TEXT_KEY, doc.context.obj(entries));
 }
 
+/** The marked leading stream, exactly. */
+const LEAD_BODY = `${LAYER_MARKER}\nq`;
+/** The layer stream: marker, Q, q, zero or more invisible text lines, Q. */
+const LAYER_BODY = new RegExp(`^${LAYER_MARKER}\\nQ\\nq(\\nBT 3 Tr /PdfinkF1 [^\\n]* Tj ET)*\\nQ$`);
+
+/**
+ * True only for a stream that is wholly ours: the lead or the layer. A
+ * stream that merely begins with the marker (another tool coalesced
+ * /Contents into one stream) also holds the page's own content and stays.
+ */
 function isLayer(doc: PDFDocument, o: unknown): boolean {
   const s = o instanceof PDFRef ? doc.context.lookup(o) : o;
   if (!(s instanceof PDFRawStream)) return false;
@@ -91,8 +101,8 @@ function isLayer(doc: PDFDocument, o: unknown): boolean {
   } catch {
     return false;
   }
-  const head = new TextDecoder("latin1").decode(data.subarray(0, LAYER_MARKER.length));
-  return head === LAYER_MARKER;
+  const body = new TextDecoder("latin1").decode(data).replace(/\r\n?/g, "\n").trim();
+  return body === LEAD_BODY || LAYER_BODY.test(body);
 }
 
 /**
