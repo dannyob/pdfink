@@ -15,7 +15,8 @@ Daylight DC-1 tablet) use.
 ## Approach
 
 - **Model**: per page, a list of strokes (points in page space: points, origin
-  top-left, y down), a list of pasted images and a list of link boxes; per
+  top-left, y down), a list of pasted images, a list of link boxes and a list
+  of handwriting text lines (`TextItem`, below); per
   document, a flat list of bookmarks (title, 0-based page or null, level).
   Page geometry comes from the PDF crop box and `/Rotate`.
 - **Import** (pdf-lib): load bytes, pull every `/Ink` annotation into the
@@ -49,8 +50,9 @@ Daylight DC-1 tablet) use.
 
 ## What pdfink reads and writes
 
-Three things round-trip through the model: ink (`/Ink` annotations), web
-links (`/Link` annotations whose action is `/URI`), and the outline. Every
+Four things round-trip through the model: ink (`/Ink` annotations), web
+links (`/Link` annotations whose action is `/URI`), handwriting text
+(`/PdfinkText`), and the outline. Every
 other PDF structure stays in the base untouched: other annotations,
 including `/GoTo` and named-destination links, page content, forms, and the
 rest of the catalog.
@@ -70,6 +72,42 @@ rest of the catalog.
   action, a missing name) is kept title-only, with no destination. An empty
   list removes `/Outlines`; a save that sends no list leaves the file's
   outline alone.
+
+## Handwriting text
+
+`docs/superpowers/specs/2026-10-25-handwriting-text-design.md` has the full
+design; this is the shape of the data.
+
+- **Model** (`src/model.ts`): each page has `texts: TextItem[]`,
+  `{ id, x, y, w, h, text, sig?, note? }` in page space, one item per line of
+  handwriting, its box over the line's ink. `sig` fingerprints the shape of
+  the strokes the line was read from (points relative to their top-left,
+  rounded to 0.1 pt), so a reader can tell which lines changed and a line
+  moved by cut and paste keeps its text. Items with the same `note` form one
+  paragraph. Selection, move, cut, copy, paste, delete and undo treat text
+  items like links (selected when wholly inside the rectangle, moved with the
+  strokes).
+- **`/PdfinkText`** (`src/pdf/text.ts`), the source of truth: a page
+  dictionary entry, an array of `[x0 y0 x1 y1 (text) (sig) note]` in PDF user
+  space. Import reads it into `texts` (malformed entries are skipped); export
+  writes it from `texts`, and removes it when there are none.
+- **Invisible text layer**, on notebook pages only: export wraps the page's
+  content between a leading stream `% pdfink handwriting text` / `q` and a
+  trailing stream that begins with the same marker line, restores the
+  graphics state (`Q q`) and draws each line as render-mode-3 (invisible)
+  Helvetica (`/PdfinkF1`, embedded once per document), font size the box
+  height and horizontal scaling stretched to the box width. Import strips
+  both marked streams and the font resource from the base, as it strips ink,
+  so saves never stack layers.
+- **`/Contents`**: on every page with text, export sets the first `/Ink`
+  annotation's `/Contents` to the page's notes: each note's lines top to
+  bottom joined by spaces, notes in reading order separated by blank lines.
+- **`/PdfinkNotebook`** in the document information dictionary: `true` or
+  `false` forces every page to be (or not be) a notebook page; absent, a page
+  is a notebook page when pdf.js finds no text of its own in the base.
+- **Recognition** is outside the app: `tools/ocr-page.py` reads strokes and
+  sets `texts` through the page bridge (`inkText`, `setInkText`, `strokes`),
+  grouping strokes into lines and notes with `tools/ink_lines.py`.
 
 ## Pressure
 
