@@ -79,32 +79,70 @@ class ParseAnswer(unittest.TestCase):
 class Merge(unittest.TestCase):
     def test_new_result_added_with_its_line_box(self):
         a = line("a", x=5, y=6, w=7, h=8, note=2)
-        out = ocr.merge([a], [], {"a": "hello"})
+        out = ocr.merge([a], [], [(a, "hello")])
         self.assertEqual(out, [{"text": "hello", "x": 5, "y": 6, "w": 7, "h": 8, "sig": "a", "note": 2}])
 
     def test_stale_result_dropped_when_its_line_changed(self):
         # "a" was sent, but was redrawn as "a2" while the model worked.
-        self.assertEqual(ocr.merge([line("a2")], [], {"a": "hello"}), [])
+        self.assertEqual(ocr.merge([line("a2")], [], [(line("a"), "hello")]), [])
 
     def test_existing_unsigned_item_kept(self):
-        out = ocr.merge([line("a")], [text(None, "typed", id="t1")], {"a": "hello"})
+        out = ocr.merge([line("a")], [text(None, "typed", id="t1", y=300)], [(line("a"), "hello")])
         self.assertIn("typed", [o["text"] for o in out])
         self.assertIn("hello", [o["text"] for o in out])
         self.assertTrue(all("id" not in o for o in out))
 
     def test_existing_item_of_unchanged_line_kept(self):
-        out = ocr.merge([line("a"), line("b", y=130)], [text("a", "old")], {"b": "new"})
+        out = ocr.merge([line("a"), line("b", y=130)], [text("a", "old")], [(line("b", y=130), "new")])
         self.assertEqual(sorted(o["text"] for o in out), ["new", "old"])
 
     def test_vanished_lines_item_dropped(self):
-        self.assertEqual(ocr.merge([line("b")], [text("a", "gone")], {}), [])
+        self.assertEqual(ocr.merge([line("b")], [text("a", "gone")], []), [])
 
     def test_empty_results_dropped(self):
-        self.assertEqual(ocr.merge([line("a")], [], {"a": ""}), [])
+        self.assertEqual(ocr.merge([line("a")], [], [(line("a"), "")]), [])
 
     def test_result_replaces_existing_text_for_the_same_line(self):
-        out = ocr.merge([line("a")], [text("a", "old")], {"a": "new"})
+        out = ocr.merge([line("a")], [text("a", "old")], [(line("a"), "new")])
         self.assertEqual([o["text"] for o in out], ["new"])
+
+    def test_results_are_per_line_so_a_copys_empty_answer_leaves_the_original(self):
+        # Two lines with the same sig (a pasted copy): the original has text,
+        # the copy was sent and read as "".
+        orig, copy = line("a", y=100), line("a", y=300)
+        out = ocr.merge([orig, copy], [text("a", "hello", y=100)], [(copy, "")])
+        self.assertEqual([(o["text"], o["y"]) for o in out], [("hello", 100)])
+
+    def test_two_sent_lines_with_one_sig_each_get_their_own_answer(self):
+        one, two = line("a", y=100), line("a", y=300)
+        out = ocr.merge([one, two], [], [(one, "first"), (two, "second")])
+        self.assertEqual(sorted((o["y"], o["text"]) for o in out), [(100, "first"), (300, "second")])
+
+    def test_a_new_result_replaces_an_unsigned_item_on_its_line(self):
+        a = line("a", x=100, y=100, w=80, h=14)
+        out = ocr.merge([a], [text(None, "old", x=102, y=101, w=75, h=12, id="t1")], [(a, "new")])
+        self.assertEqual([o["text"] for o in out], ["new"])
+
+    def test_an_unsigned_item_stays_when_its_line_gets_no_text(self):
+        a = line("a", x=100, y=100, w=80, h=14)
+        out = ocr.merge([a], [text(None, "old", x=102, y=101, w=75, h=12, id="t1")], [(a, "")])
+        self.assertEqual([o["text"] for o in out], ["old"])
+
+
+class RecognisePastedCopy(unittest.TestCase):
+    def test_the_copys_answer_does_not_touch_the_original(self):
+        strokes = [zig(100, 100, "s1"), zig(100, 300, "s2")]
+        orig, copy = sorted(group(strokes), key=lambda ln: ln.y)
+        self.assertEqual(orig.sig, copy.sig)
+        page = FakePage(strokes, [text(orig.sig, "hello", x=orig.x, y=orig.y, w=orig.w, h=orig.h)])
+        ask = ocr.llm_call.ask
+        ocr.llm_call.ask = lambda *a, **k: '{"1": ""}'
+        try:
+            with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+                ocr.recognise(page, 0, quiet=True, model=object())
+        finally:
+            ocr.llm_call.ask = ask
+        self.assertEqual([(i["text"], i["y"]) for i in page.set_calls[0]], [("hello", orig.y)])
 
 
 def png(w: int, h: int) -> bytes:
@@ -142,7 +180,7 @@ class MovedLine(unittest.TestCase):
         (after,) = group([zig(300, 400, "s3"), zig(312, 400, "s4")])  # pasted: new ids, new place
         texts = [text(before.sig, "hello", x=before.x, y=before.y, w=before.w, h=before.h)]
         self.assertEqual(ocr.changed_lines([after], texts, force=False, within=None), [])
-        out = ocr.merge([after], texts, {})
+        out = ocr.merge([after], texts, [])
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["text"], "hello")
         self.assertEqual((out[0]["x"], out[0]["y"]), (after.x, after.y))
@@ -153,7 +191,7 @@ class MovedLine(unittest.TestCase):
         self.assertEqual(orig.sig, copy.sig)
         texts = [text(orig.sig, "hello", x=orig.x, y=orig.y, w=orig.w, h=orig.h)]
         self.assertEqual(ocr.changed_lines([orig, copy], texts, force=False, within=None), [copy])
-        out = ocr.merge([copy, orig], texts, {})
+        out = ocr.merge([copy, orig], texts, [])
         self.assertEqual([(o["text"], o["y"]) for o in out], [("hello", orig.y)])
 
 
@@ -191,7 +229,7 @@ class FakePage:
 class Recognise(unittest.TestCase):
     def setUp(self):
         # Two lines of different shapes (so different sigs).
-        self.page = FakePage([zig(100, 100, "s1"), zig(100, 200, "s2", step=3.5)], [text(None, "typed", id="t1")])
+        self.page = FakePage([zig(100, 100, "s1"), zig(100, 200, "s2", step=3.5)], [text(None, "typed", y=600, id="t1")])
         self._ask = ocr.llm_call.ask
 
     def tearDown(self):

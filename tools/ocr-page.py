@@ -180,18 +180,54 @@ def _item(ln: Line, text: str) -> dict[str, Any]:
     return {"text": text, "x": ln.x, "y": ln.y, "w": ln.w, "h": ln.h, "sig": ln.sig, "note": ln.note}
 
 
-def merge(lines_now: list[Line], texts: list[dict], results: dict[str, str]) -> list[dict]:
-    """The page's new handwriting text. `results` maps a sent line's sig to
-    what the model read. Keeps existing items with no sig, and items matched
-    to a current line (match_texts) whose sig has no new result, moved to that
-    line's box; gives every current line with a result its text; drops empty
-    results, results whose line changed meanwhile, and items whose line is gone."""
-    out: list[dict] = [{k: v for k, v in t.items() if k != "id"} for t in texts if not t.get("sig")]
+def _assign(lines_now: list[Line], results: list[tuple[Line, str]]) -> dict[int, str]:
+    """Which current line each sent line's result belongs to: by index into
+    `lines_now`, one to one, same sig, nearest first. A sent line whose shape
+    changed while the model worked has no current line, so its result is
+    dropped. Keyed by line, not sig, so two sent lines with the same sig (a
+    pasted copy) each get their own answer."""
+    pairs = sorted(
+        (math.hypot(s.x - ln.x, s.y - ln.y), k, j)
+        for k, (s, _) in enumerate(results)
+        for j, ln in enumerate(lines_now)
+        if s.sig == ln.sig
+    )
+    used_k: set[int] = set()
+    out: dict[int, str] = {}
+    for _, k, j in pairs:
+        if k not in used_k and j not in out:
+            used_k.add(k)
+            out[j] = results[k][1]
+    return out
+
+
+def _overlaps(t: dict, ln: Line) -> bool:
+    """An unsigned text item sits on line `ln`: either one's centre is inside the other."""
+    return _centre_inside(t["x"], t["y"], t["w"], t["h"], {"x": ln.x, "y": ln.y, "w": ln.w, "h": ln.h}) or _centre_inside(
+        ln.x, ln.y, ln.w, ln.h, {"x": t["x"], "y": t["y"], "w": t["w"], "h": t["h"]}
+    )
+
+
+def merge(lines_now: list[Line], texts: list[dict], results: list[tuple[Line, str]]) -> list[dict]:
+    """The page's new handwriting text. `results` pairs each sent line with
+    what the model read for it. Keeps existing items with no sig, unless a new
+    result lands on the line they sit on, and items matched to a current line
+    (match_texts) that got no result, moved to that line's box; gives every
+    current line with a result its text; drops empty results, results whose
+    line changed meanwhile, and items whose line is gone."""
+    got = _assign(lines_now, results)
+    landed = [lines_now[j] for j, text in got.items() if text]
+    out: list[dict] = [
+        {k: v for k, v in t.items() if k != "id"}
+        for t in texts
+        if not t.get("sig") and not any(_overlaps(t, ln) for ln in landed)
+    ]
+    index = {id(ln): j for j, ln in enumerate(lines_now)}
     for t, ln in match_texts(lines_now, texts):
-        if ln.sig not in results:
+        if index[id(ln)] not in got:
             out.append({**{k: v for k, v in t.items() if k != "id"}, "x": ln.x, "y": ln.y, "w": ln.w, "h": ln.h, "note": ln.note})
-    for ln in lines_now:
-        text = results.get(ln.sig, "")
+    for j, ln in enumerate(lines_now):
+        text = got.get(j, "")
         if text:
             out.append(_item(ln, text))
     return out
@@ -241,7 +277,7 @@ def recognise(
     except llm_call.LLMError as e:
         raise RecogniseError(str(e)) from e
     answer = parse_answer(reply)
-    results = {todo[n - 1].sig: text for n, text in answer.items() if 1 <= n <= len(todo)}
+    results = [(todo[n - 1], text) for n, text in sorted(answer.items()) if 1 <= n <= len(todo)]
     if not results:
         raise RecogniseError("the model's answer had none of the numbered lines; page text left as it was")
 
@@ -254,7 +290,7 @@ def recognise(
         texts = [t for t in texts if text_inside(t, within)]
     items = merge(lines_now, texts, results)
     page_api.set_ink_text(page_index, items, quiet=quiet, within=within)
-    n = sum(1 for ln in lines_now if results.get(ln.sig))
+    n = sum(1 for text in _assign(lines_now, results).values() if text)
     if report:
         print(f"{n} line{'' if n == 1 else 's'}")
     return n
