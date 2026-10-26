@@ -3,7 +3,8 @@ import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFStream, decodePD
 import { createBlankPdf, exportPdf } from "../../src/pdf/export";
 import { importPdf } from "../../src/pdf/import";
 import { INK_TOLERANCE, thinPoints } from "../../src/pdf/thin";
-import type { PageModel, Point, Stroke } from "../../src/model";
+import { strokesSig, type PageModel, type Point, type Stroke } from "../../src/model";
+import { degrees } from "pdf-lib";
 
 const pt = (x: number, y: number, p = 0.6): Point => ({ x, y, p });
 
@@ -123,8 +124,6 @@ describe("smaller saved PDFs", () => {
     const raw = await exportPdf(await createBlankPdf(1), [page([stroke(denseLine(5))])]);
     // Pretend another app wrote it: drop the marker and give it a dense path.
     const doc = await PDFDocument.load(raw);
-    const [a] = await inkAnnots(await doc.save());
-    void a;
     const annots = doc.getPage(0).node.Annots()!;
     for (let i = 0; i < annots.size(); i++) {
       const d = annots.lookup(i) as PDFDict;
@@ -139,5 +138,36 @@ describe("smaller saved PDFs", () => {
     // Ink pdfink wrote keeps every point it saved, even collinear ones.
     const ours = await exportPdf(await createBlankPdf(1), [page([stroke([pt(0, 0), pt(1, 0), pt(2, 0)])])]);
     expect((await importPdf(ours)).pages[0].strokes[0].points).toHaveLength(3);
+  });
+});
+
+describe("saving and reopening keeps ink exactly as it was", () => {
+  for (const [label, rotate, crop] of [["plain", 0, null], ["rotated 90, odd crop", 90, [0.333, 1.25, 600, 780]], ["rotated 270", 270, null]] as const) {
+    it(`points and stroke fingerprints survive a save and reload (${label})`, async () => {
+      const base = await PDFDocument.load(await createBlankPdf(1));
+      const pg = base.getPage(0);
+      if (rotate) pg.setRotation(degrees(rotate));
+      if (crop) pg.setCropBox(...crop);
+      const baseBytes = await base.save();
+      const w = rotate % 180 ? 792 : 612;
+      const h = rotate % 180 ? 612 : 792;
+      const strokes = Array.from({ length: 30 }, (_, k) => ({
+        id: `s${k}`, color: "#000000", width: 1.5, opacity: 1,
+        points: thinPoints(Array.from({ length: 60 }, (_, i) => pt(40 + k * 3.37 + i * 0.731, 60 + k * 9.13 + 8 * Math.sin(i / 3.3), 0.4 + 0.3 * Math.sin(i / 5))), 1.5),
+      }));
+      const first: PageModel = { width: w, height: h, strokes, images: [], links: [], texts: [] };
+      const back = (await importPdf(await exportPdf(baseBytes, [first]))).pages[0].strokes;
+      expect(back.map((s) => s.points)).toEqual(strokes.map((s) => s.points));
+      expect(strokesSig(back)).toBe(strokesSig(strokes));
+    });
+  }
+});
+
+describe("thinPoints with bad input", () => {
+  it("drops points that are not numbers instead of the whole middle of the stroke", () => {
+    const pts = [pt(NaN, 0), ...Array.from({ length: 10 }, (_, i) => pt(i, i % 2 ? 3 : 0))];
+    const out = thinPoints(pts, 2);
+    expect(out.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))).toBe(true);
+    expect(out.length).toBe(10);
   });
 });

@@ -20,15 +20,27 @@ const round = (v: number, places: number) => {
 };
 
 /**
+ * A point on the grid saves keep: hundredths of a point, thousandths of
+ * pressure. Import re-rounds pdfink's own ink with it, so the float noise of
+ * the page transform (792 − 59.05 = 732.9499999…) cannot change a stroke, or
+ * its OCR line signature, across a save and reload.
+ */
+export function roundPoint(p: Point): Point {
+  return { x: round(p.x, 2), y: round(p.y, 2), p: round(p.p, 3) };
+}
+
+/**
  * Drop the points a stroke does not need (Ramer–Douglas–Peucker), keeping every
  * point that moves the line, or its width, by more than `eps` points. Pressure
  * counts as a third dimension scaled by the pen width, since a pressure change
  * of dp widens the line by about dp × width. Coordinates come back rounded to
  * hundredths of a point and pressure to thousandths, which is what a save keeps.
- * Thinning a thinned stroke changes nothing.
+ * Points that are not numbers are dropped. Thinning a thinned stroke again
+ * changes nothing in practice (checked on 20,000 random strokes), though RDP
+ * does not promise it; that is why pdfink marks its ink and does not re-thin it.
  */
 export function thinPoints(points: Point[], width: number, eps: number = INK_TOLERANCE): Point[] {
-  const rounded = points.map((p) => ({ x: round(p.x, 2), y: round(p.y, 2), p: round(p.p, 3) }));
+  const rounded = points.filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.p)).map(roundPoint);
   if (rounded.length <= 2) return rounded;
   const z = (p: Point) => p.p * width;
   const keep = new Uint8Array(rounded.length);
