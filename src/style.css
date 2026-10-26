@@ -41,6 +41,19 @@ button.tool.active { background: var(--accent); color: #fff; border-color: var(-
   font-size: 12px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); background: #fff;
 }
 #runs .dismiss { border: 0; background: none; min-width: 28px; padding: 2px 6px; color: inherit; }
+/* Icon tiles, shared by the bar and the pen menu. Built for a reflective,
+   greyscale-leaning screen: every state differs in edge or fill, not only shade. */
+.tile {
+  display: flex; align-items: center; justify-content: center; padding: 0;
+  min-width: 44px; min-height: 44px; border: 1px solid #8a9099; border-radius: 8px;
+  background: #fff; color: var(--ink); font: inherit; cursor: pointer;
+}
+.tile:hover:not(:disabled) { background: #eceef1; }
+.tile svg { width: 22px; height: 22px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.tile.checked, .tile.checked:hover:not(:disabled) { background: var(--accent, #2f4a7a); border-color: var(--accent, #2f4a7a); color: #fff; }
+.tile:disabled { background: transparent; border-color: transparent; opacity: .35; cursor: default; }
+.tile.labelled { flex-direction: column; gap: 2px; height: 52px; min-height: 52px; padding: 4px 6px; }
+.tile.labelled .tl { font-size: 11px; line-height: 13px; white-space: nowrap; }
 /* Pen context menu (barrel button when it isn't set to erase, or right-click). */
 #ctx-menu {
   position: fixed; z-index: 50; width: 272px; max-width: calc(100vw - 8px); padding: 8px;
@@ -50,21 +63,25 @@ button.tool.active { background: var(--accent); color: #fff; border-color: var(-
   touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 #ctx-menu[hidden] { display: none; }
-#ctx-menu button {
+#ctx-menu button:not(.tile) {
   border: 0; border-radius: 10px; background: #f1f3f6; color: #1c2330; text-align: left;
-  min-height: 44px; padding: 8px 14px; min-width: 0; font-size: 15px; display: flex; align-items: center;
+  min-height: 44px; padding: 8px 14px 8px calc(14px + var(--indent, 0) * 18px); min-width: 0; font-size: 15px; display: flex; align-items: center;
 }
-#ctx-menu button:hover:not(:disabled) { background: #e4e8ee; }
-#ctx-menu button:disabled { opacity: .35; cursor: default; }
-#ctx-menu .menuitem.checked::before { content: "✓"; margin-right: 8px; color: var(--accent); }
+#ctx-menu button:not(.tile):hover:not(:disabled) { background: #e4e8ee; }
+#ctx-menu button:not(.tile):disabled { opacity: .35; cursor: default; }
+#ctx-menu .menuitem { gap: 8px; }
+#ctx-menu .menuitem.checked::before, #ctx-menu .menuitem.current::before { content: "✓"; margin-right: 0; color: var(--ink); font-weight: 700; }
+#ctx-menu .menuitem.current { box-shadow: inset 3px 0 0 var(--ink); font-weight: 600; }
+#ctx-menu .menuitem .ico { display: inline-flex; flex: none; }
+#ctx-menu .menuitem .ico svg { width: 20px; height: 20px; }
+#ctx-menu .menuitem .text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#ctx-menu .menuitem .detail { margin-left: auto; padding-left: 12px; flex: none; font-size: 13px; color: #4a515c; text-align: right; }
 #ctx-menu .submenu .chev { margin-left: auto; opacity: .5; padding-left: 12px; }
 #ctx-menu .back { background: #e8effc; color: #1d3f7a; }
 #ctx-menu .context { background: #e8effc; color: #1d3f7a; }
 #ctx-menu .command { background: #f7f2e8; }
 #ctx-menu .row { display: flex; gap: 8px; }
-#ctx-menu .tile { flex: 1; justify-content: center; padding: 0; }
-#ctx-menu .tile svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-#ctx-menu .tile.checked, #ctx-menu .tile.checked:hover:not(:disabled) { background: var(--accent, #2f4a7a); color: #fff; }
+#ctx-menu .row .tile { flex: 1; }
 #ctx-menu .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #7a8290; padding: 0 6px; }
 #ctx-menu .sep { border: 0; border-top: 1px solid #e3e6eb; margin: 0 4px; }
 #dialog {

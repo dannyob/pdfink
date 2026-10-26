@@ -183,3 +183,130 @@ test.describe("context menu component", () => {
     expect((await state(page)).selection).not.toBeNull();
   });
 });
+
+test.describe("menu pieces for the bar", () => {
+  test("a labelled row shows each tile's label under its icon", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate((icon) => {
+      window.__pdfink.menu.show(200, 200, [
+        { kind: "row", labelled: true, items: [{ label: "Smaller", icon }, { label: "Fit width", icon }, { label: "Larger", icon }] },
+      ]);
+    }, ICON);
+    const tiles = page.locator("#ctx-menu .row .tile.labelled");
+    await expect(tiles).toHaveCount(3);
+    expect(await tiles.allTextContents()).toEqual(["Smaller", "Fit width", "Larger"]);
+    const geo = await tiles.first().evaluate((el) => {
+      const svg = el.querySelector("svg")!.getBoundingClientRect();
+      const lbl = el.querySelector(".tl")!;
+      return { svgBottom: svg.bottom, lblTop: lbl.getBoundingClientRect().top, size: getComputedStyle(lbl).fontSize, h: el.getBoundingClientRect().height };
+    });
+    expect(geo.lblTop).toBeGreaterThanOrEqual(geo.svgBottom - 0.5);
+    expect(geo.size).toBe("11px");
+    expect(geo.h).toBeCloseTo(52, 0);
+  });
+
+  test("a text row shows its icon, right-aligned detail and indent", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate((icon) => {
+      window.__pdfink.menu.show(100, 100, [
+        { label: "Save", icon, detail: "Ctrl+S" },
+        { label: "Chapter", indent: 2, detail: "p. 4" },
+      ]);
+    }, ICON);
+    const save = page.locator("#ctx-menu .menuitem", { hasText: "Save" });
+    await expect(save.locator(".ico svg")).toHaveCount(1);
+    await expect(save.locator(".detail")).toHaveText("Ctrl+S");
+    const g = await save.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      const d = el.querySelector(".detail")!.getBoundingClientRect();
+      const t = el.querySelector(".text")!.getBoundingClientRect();
+      const i = el.querySelector(".ico")!.getBoundingClientRect();
+      return { right: b.right, pad: parseFloat(getComputedStyle(el).paddingRight), dRight: d.right, dLeft: d.left, tLeft: t.left, tRight: t.right, iRight: i.right };
+    });
+    expect(g.dRight).toBeCloseTo(g.right - g.pad, 0);
+    expect(g.dLeft).toBeGreaterThan(g.tRight);
+    expect(g.tLeft).toBeGreaterThanOrEqual(g.iRight);
+    const pads = await page.locator("#ctx-menu .menuitem").evaluateAll((els) => els.map((e) => parseFloat(getComputedStyle(e).paddingLeft)));
+    expect(pads[1] - pads[0]).toBeCloseTo(36, 0);
+  });
+
+  test("the current entry is ticked and marked aria-current", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => {
+      window.__pdfink.menu.show(100, 100, [{ label: "One" }, { label: "Two", current: true }]);
+    });
+    const two = page.locator("#ctx-menu .menuitem", { hasText: "Two" });
+    await expect(two).toHaveAttribute("aria-current", "true");
+    await expect(page.locator("#ctx-menu .menuitem", { hasText: "One" })).not.toHaveAttribute("aria-current", /.*/);
+    expect(await two.evaluate((el) => getComputedStyle(el, "::before").content)).toContain("✓");
+  });
+
+  test("showFor anchors under its button, and tapping that button again closes it", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => {
+      const b = document.createElement("button");
+      b.id = "test-owner";
+      b.textContent = "Owner";
+      Object.assign(b.style, { position: "fixed", left: "120px", top: "60px", zIndex: "40" });
+      document.body.appendChild(b);
+      b.addEventListener("click", () => window.__pdfink.menu.showFor(b, [{ label: "Alpha" }, { label: "Beta" }]));
+    });
+    const btn = page.locator("#test-owner");
+    await btn.click();
+    const menu = page.locator("#ctx-menu");
+    await expect(menu).toBeVisible();
+    const bb = (await btn.boundingBox())!;
+    const mb = (await menu.boundingBox())!;
+    expect(mb.x).toBeCloseTo(bb.x, 0);
+    expect(mb.y).toBeCloseTo(bb.y + bb.height + 4, 0);
+    expect(await page.evaluate(() => window.__pdfink.menu.owner?.id)).toBe("test-owner");
+    await btn.click();
+    await expect(menu).toBeHidden();
+    await page.waitForTimeout(300);
+    await expect(menu).toBeHidden();
+    expect(await page.evaluate(() => window.__pdfink.menu.owner)).toBeNull();
+    // And it opens again on the next tap.
+    await btn.click();
+    await expect(menu).toBeVisible();
+  });
+
+  test("a pen tap that closes the pen menu leaves no ink", async ({ page }) => {
+    await openApp(page);
+    const [cx, cy] = await toClient(page, 0, 300, 300);
+    await page.mouse.click(cx, cy, { button: "right" });
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    const before = (await state(page)).pages[0].strokes.length;
+    const [tx, ty] = await toClient(page, 0, 150, 500);
+    await page.evaluate(([x, y]) => window.__stylusSim.tap(x, y), [tx, ty] as const);
+    await expect(page.locator("#ctx-menu")).toBeHidden();
+    expect((await state(page)).pages[0].strokes).toHaveLength(before);
+  });
+
+  test("a finger tap that closes the pen menu draws nothing, even with finger drawing on", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => window.__pdfink.setFingerDraws(true));
+    const [cx, cy] = await toClient(page, 0, 300, 300);
+    await page.mouse.click(cx, cy, { button: "right" });
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    const [tx, ty] = await toClient(page, 0, 150, 500);
+    await page.evaluate(([x, y]) => window.__stylusSim.stroke([[x, y], [x + 30, y + 5]], { pointerType: "touch" }), [tx, ty] as const);
+    await expect(page.locator("#ctx-menu")).toBeHidden();
+    expect((await state(page)).pages[0].strokes).toHaveLength(0);
+  });
+
+  test("tiles: white with a grey edge at rest, no fill or edge when disabled, solid accent when checked", async ({ page }) => {
+    await openApp(page);
+    await showMenu(page, 200, 200);
+    const style = (sel: string) =>
+      page.locator(sel).evaluate((el) => {
+        const s = getComputedStyle(el);
+        return { bg: s.backgroundColor, border: s.borderTopColor, width: s.borderTopWidth, color: s.color, opacity: s.opacity };
+      });
+    const rest = await style("#ctx-menu .tile[aria-label='a']");
+    expect(rest).toMatchObject({ bg: "rgb(255, 255, 255)", border: "rgb(138, 144, 153)", width: "1px" });
+    const off = await style("#ctx-menu .tile[aria-label='c']");
+    expect(off).toMatchObject({ bg: "rgba(0, 0, 0, 0)", border: "rgba(0, 0, 0, 0)", opacity: "0.35" });
+    const on = await style("#ctx-menu .tile[aria-label='b']");
+    expect(on).toMatchObject({ bg: "rgb(47, 74, 122)", color: "rgb(255, 255, 255)" });
+  });
+});

@@ -389,7 +389,7 @@ test.describe("barrel-button menu", () => {
     await expect(page.locator("#ctx-menu")).toBeVisible();
   });
 
-  test("mouse right-click opens the menu; a pen stroke elsewhere closes it", async ({ page }) => {
+  test("mouse right-click opens the menu; a pen stroke elsewhere closes it without inking, the next one draws", async ({ page }) => {
     await openApp(page);
     const [cx, cy] = await toClient(page, 0, 300, 300);
     await page.mouse.click(cx, cy, { button: "right" });
@@ -397,6 +397,8 @@ test.describe("barrel-button menu", () => {
     await expect(page.locator("#ctx-menu .tile[aria-label='Copy']")).toBeDisabled();
     await penStroke(page, 0, line(100, 100, 200, 100));
     await expect(page.locator("#ctx-menu")).toBeHidden();
+    expect((await state(page)).pages[0].strokes).toHaveLength(0); // the closing press is swallowed
+    await penStroke(page, 0, line(100, 100, 200, 100));
     expect((await state(page)).pages[0].strokes).toHaveLength(1);
   });
 

@@ -15,6 +15,14 @@ export interface MenuAction {
   checked?: boolean;
   /** Background tint: rows about the thing under the pen, or user commands. */
   tint?: "context" | "command";
+  /** Text rows: inline SVG markup drawn before the label. */
+  icon?: string;
+  /** Text rows: short text at the right, such as a shortcut or a page number. */
+  detail?: string;
+  /** Text rows: nesting depth, 18 px per level (bookmark levels). */
+  indent?: number;
+  /** Text rows: the entry that is current now (ticked, with an ink bar on its left). */
+  current?: boolean;
 }
 
 export interface IconAction extends MenuAction {
@@ -25,7 +33,8 @@ export interface IconAction extends MenuAction {
 export type MenuItem =
   | MenuAction
   | { separator: true; label?: string }
-  | { kind: "row"; items: IconAction[] }
+  /** `labelled` puts each tile's label under its icon instead of only in its tooltip. */
+  | { kind: "row"; items: IconAction[]; labelled?: boolean }
   | { kind: "submenu"; label: string; heading?: string; items: MenuItem[] }
   | { kind: "label"; label: string };
 
@@ -37,6 +46,8 @@ export class ContextMenu {
   private stack: { items: MenuItem[]; heading?: string }[] = [];
   /** Where the menu was asked to appear; each render re-clamps from here. */
   private anchor = { x: 0, y: 0 };
+  /** The button that opened the menu with `showFor`, while it is open. */
+  owner: HTMLElement | null = null;
 
   constructor() {
     this.el = document.createElement("div");
@@ -45,12 +56,18 @@ export class ContextMenu {
     this.el.hidden = true;
     document.body.appendChild(this.el);
     // Close on anything outside, but not on the very press that opened it.
+    // The closing press is swallowed: a pen tap that closes the menu must not
+    // also draw, erase or select, and a palm must not act. A press on the
+    // owning button is left alone; its click toggles the menu shut.
     document.addEventListener(
       "pointerdown",
       (e) => {
         if (this.el.hidden) return;
         if (this.el.contains(e.target as Node)) return;
+        if (this.owner && this.owner.contains(e.target as Node)) return;
         if (e.pointerId === this.triggerPointer && performance.now() - this.openedAt < 1500) return;
+        e.stopPropagation();
+        e.preventDefault();
         this.hide();
       },
       { capture: true },
@@ -76,6 +93,31 @@ export class ContextMenu {
   }
 
   show(x: number, y: number, items: MenuItem[], triggerPointer: number | null = null): void {
+    this.setOwner(null);
+    this.openAt(x, y, items, triggerPointer);
+  }
+
+  /**
+   * Open under a button (its bottom-left, 4 px below). Called again for the
+   * same button while its menu is open, it closes the menu instead.
+   */
+  showFor(button: HTMLElement, items: MenuItem[]): void {
+    if (this.open && this.owner === button) {
+      this.hide();
+      return;
+    }
+    const r = button.getBoundingClientRect();
+    this.openAt(r.left, r.bottom + 4, items, null);
+    this.setOwner(button);
+  }
+
+  private setOwner(button: HTMLElement | null): void {
+    this.owner?.removeAttribute("aria-expanded");
+    this.owner = button;
+    button?.setAttribute("aria-expanded", "true");
+  }
+
+  private openAt(x: number, y: number, items: MenuItem[], triggerPointer: number | null): void {
     this.stack = [{ items }];
     this.anchor = { x, y };
     this.triggerPointer = triggerPointer;
@@ -92,6 +134,7 @@ export class ContextMenu {
   }
 
   hide(): void {
+    this.setOwner(null);
     this.el.hidden = true;
     this.triggerPointer = null;
     this.stack = [];
@@ -127,7 +170,7 @@ export class ContextMenu {
       if (it.kind === "row") {
         const row = document.createElement("div");
         row.className = "row";
-        for (const t of it.items) row.appendChild(this.tile(t));
+        for (const t of it.items) row.appendChild(this.tile(t, !!it.labelled));
         return row;
       }
       const b = this.button(it.label, "menuitem submenu");
@@ -140,19 +183,49 @@ export class ContextMenu {
       return b;
     }
     const b = this.button(it.label, "menuitem");
+    if (it.icon || it.detail || it.indent) {
+      b.replaceChildren();
+      if (it.icon) {
+        const ico = document.createElement("span");
+        ico.className = "ico";
+        ico.innerHTML = it.icon;
+        b.appendChild(ico);
+      }
+      const text = document.createElement("span");
+      text.className = "text";
+      text.textContent = it.label;
+      b.appendChild(text);
+      if (it.detail) {
+        const d = document.createElement("span");
+        d.className = "detail";
+        d.textContent = it.detail;
+        b.appendChild(d);
+      }
+      if (it.indent) b.style.setProperty("--indent", String(it.indent));
+    }
+    if (it.current) {
+      b.classList.add("current");
+      b.setAttribute("aria-current", "true");
+    }
     this.decorate(b, it);
     b.addEventListener("click", () => this.choose(it));
     return b;
   }
 
-  private tile(t: IconAction): HTMLButtonElement {
+  private tile(t: IconAction, labelled = false): HTMLButtonElement {
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "tile";
+    b.className = labelled ? "tile labelled" : "tile";
     b.setAttribute("role", "menuitem");
     b.setAttribute("aria-label", t.label);
     b.title = t.label;
     b.innerHTML = t.icon;
+    if (labelled) {
+      const l = document.createElement("span");
+      l.className = "tl";
+      l.textContent = t.label;
+      b.appendChild(l);
+    }
     this.decorate(b, t);
     b.addEventListener("click", () => this.choose(t));
     return b;
