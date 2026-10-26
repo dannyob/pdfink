@@ -75,6 +75,8 @@ Saving in server mode:
 - Before overwriting, the server compares modification times. If something else changed the file, the app asks first.
 - Writes go to a temp file and are renamed into place, so a synced folder never sees half a file.
 
+A browser-only build can also open PDFs from Google Drive and save them back there, without any pdfink server in between. It needs a Google Cloud project; see [docs/google-drive.md](docs/google-drive.md). Builds without those settings don't show the Drive buttons.
+
 ## What it does to your PDF
 
 Each stroke becomes an `/Ink` annotation with an appearance stream and per-point pressure in `PDFTron_Pressure_Thickness` arrays. Ink annotations already in a PDF you open become editable strokes. Web links (`/Link` annotations with a URI action to an `http`, `https` or `mailto` address) become editable link boxes and are written back as `/Link` annotations with the border and colour they came with, and the PDF's outline becomes the bookmark list. Other annotations (links to another page, squares) are left alone and cannot be edited.

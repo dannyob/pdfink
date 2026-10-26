@@ -3,6 +3,7 @@ import { installDeepLinks } from "./deeplink";
 import { stylusSim } from "./harness/stylus-sim";
 import { PageLink } from "./bridge-client";
 import { createPdfinkApi } from "./pdfink-api";
+import { GoogleDrive, driveConfigFromEnv } from "./gdrive";
 
 const app = new App(document.getElementById("pages") as HTMLElement);
 
@@ -13,6 +14,8 @@ $("btn-new").onclick = () => void (app.storage === "server" ? app.newNotebook() 
 $("btn-save").onclick = () => void app.save();
 $("btn-saveas").onclick = () => void app.saveAs();
 $("btn-addpage").onclick = () => void app.addPage();
+$("btn-drive-open").onclick = () => void app.openFromDrive();
+$("btn-drive-saveas").onclick = () => void app.saveAsToDrive();
 $("btn-import").onclick = () => void app.importLocal();
 $("btn-export").onclick = () => void app.exportLocal();
 $("tool-pen").onclick = () => app.setTool("pen");
@@ -168,7 +171,10 @@ window.addEventListener("pagehide", () => {
   if (app.dirty && app.source.kind === "server") void app.saveToServer();
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden" && app.dirty && app.source.kind === "server") void app.saveToServer();
+  if (document.visibilityState !== "hidden" || !app.dirty) return;
+  if (app.source.kind === "server") void app.saveToServer();
+  // A Drive upload may not finish once the page is gone, so only on hide, not pagehide.
+  else if (app.source.kind === "drive") void app.saveToDrive();
 });
 
 declare global {
@@ -207,6 +213,11 @@ if (params.has("nofs")) app.forceDownload = true;
 void detectStorage(params).then((mode) => {
   app.storage = mode;
   document.body.dataset.storage = mode;
+  const drive = mode === "local" ? driveConfigFromEnv(import.meta.env) : null;
+  if (drive) {
+    app.drive = new GoogleDrive(drive);
+    document.body.dataset.drive = "on";
+  }
   void app.refreshCommands();
   if (mode === "server") {
     const link = new PageLink(app, api);

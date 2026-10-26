@@ -9,3 +9,4 @@ deploy.env
 .worktrees
 .superpowers
 __pycache__/
+.env.local

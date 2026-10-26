@@ -105,6 +105,7 @@ export function createPdfinkApi(app: App): PdfinkApi {
     setTool: (tool) => app.setTool(tool),
     async save() {
       if (app.source.kind === "server") return app.saveToServer();
+      if (app.source.kind === "drive") return app.saveToDrive();
       await app.save();
       return true;
     },

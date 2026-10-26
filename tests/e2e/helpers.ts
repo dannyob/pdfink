@@ -28,7 +28,7 @@ export async function notebookFixture(): Promise<string> {
 export interface State {
   fileName: string;
   storage: "server" | "local";
-  source: { kind: "server"; name: string; mtime: number } | { kind: "local"; name: string };
+  source: { kind: "server"; name: string; mtime: number } | { kind: "drive"; id: string; name: string; version: string } | { kind: "local"; name: string };
   saving: boolean;
   lastSaved: number | null;
   tool: string;

@@ -22,6 +22,7 @@ import {
   unionRect,
 } from "./geometry";
 import { importPdf } from "./pdf/import";
+import type { DriveBackend, DriveFile } from "./gdrive";
 import { linkUrlOk } from "./pdf/links";
 import { appendBlankPage, createBlankPdf, exportPdf } from "./pdf/export";
 import { PageView, drawStroke, pruneImageCache, shortUrl, type SelectionView } from "./render/pageview";
@@ -150,8 +151,13 @@ export class App {
    * "local": no server; files are opened from and saved to this device.
    */
   storage: "server" | "local" = "local";
-  /** Where the current document lives: a notebook on the server, or only in this tab. */
-  source: { kind: "server"; name: string; mtime: number } | { kind: "local"; name: string } = { kind: "local", name: "untitled.pdf" };
+  /** Where the current document lives: a notebook on the server, a file in Google Drive, or only in this tab. */
+  source: { kind: "server"; name: string; mtime: number } | { kind: "drive"; id: string; name: string; version: string } | { kind: "local"; name: string } = {
+    kind: "local",
+    name: "untitled.pdf",
+  };
+  /** Google Drive, when this build has it set up (see gdrive.ts). */
+  drive: DriveBackend | null = null;
   /** Tests set this so Export never opens a native picker. */
   forceDownload = false;
   dirty = false;
@@ -159,6 +165,11 @@ export class App {
   lastSaved: Date | null = null;
   /** Milliseconds of quiet after a change before a server notebook autosaves. */
   autosaveDelay = 10_000;
+  /**
+   * The same for a Drive file. Longer, since every save uploads the whole PDF
+   * and Drive keeps each upload as a revision against the user's quota.
+   */
+  driveAutosaveDelay = 60_000;
   private autosaveTimer: number | null = null;
   /** Bumped on every change so a save knows whether edits arrived while it ran. */
   private revision = 0;
@@ -304,6 +315,118 @@ export class App {
     await this.exportLocal();
   }
 
+  // ---------------------------------------------------------------- Google Drive
+
+  /** Pick a PDF in Google Drive and open it; Save then writes it back there. */
+  async openFromDrive(): Promise<boolean> {
+    if (!this.drive) return false;
+    if (!(await this.readyToLeave())) return false;
+    let loaded: { file: DriveFile; bytes: Uint8Array };
+    try {
+      const picked = await this.drive.pick();
+      if (!picked) return false;
+      this.setStatus(`Loading ${picked.name} from Drive…`);
+      loaded = await this.drive.download(picked.id);
+    } catch (err) {
+      console.error(err);
+      this.setStatus((err as Error).message);
+      return false;
+    }
+    const { file, bytes } = loaded;
+    if (!(await this.loadBytes(bytes, file.name, null))) return false;
+    this.source = { kind: "drive", id: file.id, name: file.name, version: file.version };
+    this.setStatus();
+    this.emit("notebook", { name: file.name });
+    return true;
+  }
+
+  /**
+   * Write the current Drive file back. Asks before overwriting a version
+   * changed elsewhere since it was opened. Returns true when Drive is current.
+   */
+  async saveToDrive(force = false): Promise<boolean> {
+    if (this.source.kind !== "drive" || !this.drive || !this.baseBytes) return false;
+    if (this.saving) {
+      this.scheduleAutosave(500);
+      return false;
+    }
+    this.cancelAutosave();
+    this.saving = true;
+    const { id, name } = this.source;
+    const rev = this.revision;
+    this.setStatus(`Saving ${name} to Drive…`);
+    let outcome: "saved" | "changed" | "gone";
+    try {
+      // Drive first: it may need Google's sign-in popup, which browsers only
+      // allow soon after the click that started the save.
+      const now = force ? this.source.version : await this.drive.version(id);
+      if (now === null) outcome = "gone";
+      else if (now !== this.source.version) outcome = "changed";
+      else {
+        const file = await this.drive.update(id, await this.exportBytes());
+        this.source = { kind: "drive", id: file.id, name: file.name, version: file.version };
+        this.lastSaved = new Date();
+        outcome = "saved";
+      }
+    } catch (err) {
+      console.error(err);
+      this.saving = false;
+      this.setStatus(`Could not save ${name} to Drive: ${(err as Error).message}`);
+      return false;
+    }
+    this.saving = false;
+    if (outcome === "saved") {
+      if (rev === this.revision) this.dirty = false;
+      else this.scheduleAutosave();
+      this.setStatus();
+      this.emit("save", { name });
+      return true;
+    }
+    if (outcome === "gone") {
+      if (await this.confirmFn(`${name} is no longer in Google Drive (deleted or in the trash). Save it as a new file there?`)) {
+        return this.saveAsToDrive(name);
+      }
+      this.setStatus(`Not saved: ${name} is no longer in Drive. Save as… to keep this version on this device.`);
+      return false;
+    }
+    if (await this.confirmFn(`${name} changed in Google Drive since you opened it (perhaps from another device). Overwrite it with this version?`)) {
+      return this.saveToDrive(true);
+    }
+    this.setStatus(`Not saved: ${name} changed in Drive. Save as… to keep this version, or Save again to overwrite.`);
+    return false;
+  }
+
+  /** Store the current document as a new file in Drive; later saves go there. */
+  async saveAsToDrive(suggested = this.fileName): Promise<boolean> {
+    if (!this.drive || !this.baseBytes) return false;
+    const raw = await this.promptFn("Save to Google Drive as", suggested);
+    if (raw === null) return false;
+    let name = raw.trim();
+    if (!name) return false;
+    if (!/\.pdf$/i.test(name)) name += ".pdf";
+    const rev = this.revision;
+    this.saving = true;
+    this.setStatus(`Saving ${name} to Drive…`);
+    try {
+      const file = await this.drive.create(name, await this.exportBytes());
+      this.fileName = file.name;
+      this.fileHandle = null;
+      this.source = { kind: "drive", id: file.id, name: file.name, version: file.version };
+      this.lastSaved = new Date();
+      this.saving = false;
+      if (rev === this.revision) this.dirty = false;
+      else this.scheduleAutosave();
+      this.setStatus();
+      this.emit("save", { name: file.name });
+      return true;
+    } catch (err) {
+      console.error(err);
+      this.saving = false;
+      this.setStatus(`Could not save ${name} to Drive: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
   // ---------------------------------------------------------------- notebooks (server)
 
   async refreshNotebooks(): Promise<NotebookInfo[]> {
@@ -315,6 +438,10 @@ export class App {
     if (!this.dirty || !this.baseBytes) return true;
     if (this.source.kind === "server") {
       await this.saveToServer();
+      return !this.dirty;
+    }
+    if (this.source.kind === "drive") {
+      await this.saveToDrive();
       return !this.dirty;
     }
     return this.confirmFn(`${this.source.name} has unsaved changes that will be lost. Continue?`);
@@ -463,8 +590,9 @@ export class App {
     }
   }
 
-  private scheduleAutosave(delay = this.autosaveDelay): void {
-    if (this.source.kind !== "server") return;
+  private scheduleAutosave(delay?: number): void {
+    if (this.source.kind !== "server" && this.source.kind !== "drive") return;
+    delay ??= this.source.kind === "drive" ? this.driveAutosaveDelay : this.autosaveDelay;
     this.cancelAutosave();
     this.autosaveTimer = window.setTimeout(() => {
       this.autosaveTimer = null;
@@ -473,7 +601,7 @@ export class App {
         this.scheduleAutosave(1000);
         return;
       }
-      void this.saveToServer();
+      void (this.source.kind === "drive" ? this.saveToDrive() : this.saveToServer());
     }, delay);
   }
 
@@ -629,7 +757,7 @@ export class App {
     let state = "";
     if (this.saving) state = " · saving…";
     else if (this.dirty) state = this.source.kind === "server" || this.storage === "local" ? " · unsaved" : " (not in notebooks)";
-    else if (this.lastSaved) state = ` · saved ${this.lastSaved.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    else if (this.lastSaved) state = `${this.source.kind === "drive" ? " · saved to Drive" : " · saved"} ${this.lastSaved.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     else if (this.source.kind === "local" && this.storage === "server") state = " (not in notebooks)";
     this.status.textContent = n ? `${this.fileName}${state} · page ${this.currentPage + 1}/${n}${sel}` : "";
   }
@@ -1648,6 +1776,10 @@ export class App {
     if (!this.baseBytes) return;
     if (this.source.kind === "server") {
       await this.saveToServer();
+      return;
+    }
+    if (this.source.kind === "drive") {
+      await this.saveToDrive();
       return;
     }
     if (this.storage === "local") {

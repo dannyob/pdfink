@@ -21,6 +21,8 @@ body { display: flex; flex-direction: column; }
 /* Toolbar items for one storage mode only; <body data-storage> picks. */
 body:not([data-storage="server"]) .server-only { display: none; }
 body:not([data-storage="local"]) .local-only { display: none; }
+/* Google Drive buttons, only in builds with Drive set up. */
+body:not([data-drive="on"]) .drive-only { display: none; }
 button {
   font: inherit; padding: 6px 10px; border: 1px solid #aaa; border-radius: 6px;
   background: #fff; color: var(--ink); cursor: pointer; min-width: 36px;
