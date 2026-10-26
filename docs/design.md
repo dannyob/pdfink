@@ -85,7 +85,7 @@ design; this is the shape of the data.
   rounded to 0.1 pt), so a reader can tell which lines changed and a line
   moved by cut and paste keeps its text. Items with the same `note` form one
   paragraph. Selection, move, cut, copy, paste, delete and undo treat text
-  items like links (selected when wholly inside the rectangle, moved with the
+  items like links (selected when their centre is inside the rectangle, moved with the
   strokes).
 - **`/PdfinkText`** (`src/pdf/text.ts`), the source of truth: a page
   dictionary entry, an array of `[x0 y0 x1 y1 (text) (sig) note]` in PDF user

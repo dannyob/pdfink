@@ -127,4 +127,22 @@ export function newId(prefix = "s"): string {
   return `${prefix}${Date.now().toString(36)}${counter.toString(36)}`;
 }
 
+/**
+ * A cheap fingerprint of a page's ink for the `ink` event: the stroke count
+ * and a 32-bit FNV-1a hash of every stroke's points rounded to 0.1 pt, the
+ * strokes sorted, so it ignores stroke order, ids, pressure and style. It
+ * changes when the strokes do, and is the same across a reload of an
+ * unchanged file.
+ */
+export function strokesSig(strokes: Stroke[]): string {
+  const keyed = strokes.map((s) => s.points.map((p) => `${Math.round(p.x * 10)},${Math.round(p.y * 10)}`).join(";")).sort();
+  let h = 0x811c9dc5;
+  const all = keyed.join("|");
+  for (let i = 0; i < all.length; i++) {
+    h ^= all.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${strokes.length}-${h.toString(16).padStart(8, "0")}`;
+}
+
 export const LETTER = { width: 612, height: 792 };

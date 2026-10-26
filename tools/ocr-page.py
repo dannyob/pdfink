@@ -31,8 +31,9 @@ the tab and recognises a page once its ink has been quiet for --quiet seconds
 (default 20) after its lines change, or once you have stayed on a page (the
 visible one at the start too) for 3 s and it has lines without text, so
 scrolling past pages reads none of them. Opening or reloading a document
-reads nothing by itself: existing ink is read a page at a time, as you stop
-on it. One page at a time, as quiet updates (no undo step), showing
+reads nothing by itself: an `ink` event whose fingerprint (`sig`) is the one
+last seen for its page fetches nothing, and existing ink is read a page at a
+time, as you stop on it. One page at a time, as quiet updates (no undo step), showing
 "Reading page N…" while busy and printing nothing per page. A page that
 fails, for whatever reason, is logged and tried again only after new ink.
 It exits 0 when the page goes away or the run is stopped.
@@ -314,6 +315,9 @@ class InkBaseline:
     def see(self, page: int, sigs) -> None:
         self._sigs[page] = tuple(sorted(sigs))
 
+    def known(self, page: int) -> bool:
+        return page in self._sigs
+
     def changed(self, page: int, sigs) -> bool:
         new = tuple(sorted(sigs))
         old = self._sigs.get(page)
@@ -348,13 +352,33 @@ def watch(
         except (pdfink_page.PageError, TimeoutError) as e:
             log(f"ocr-page: page {p + 1}: {e}")
 
-    def inked(p: int) -> None:
-        """An ink event on page p: debounce it only if its lines changed."""
+    fingerprints: dict[int, str] = {}  # page -> the ink event's sig last seen
+
+    def inked(p: int, fp: Any) -> None:
+        """An ink event on page p: debounce it only if its lines changed.
+        With the event's fingerprint (`sig`), an unchanged one fetches
+        nothing, and a page first seen that way is only recorded: its
+        strokes are fetched when the fingerprint next changes, which is then
+        new ink."""
+        fp = fp if isinstance(fp, str) else None
+        if fp is not None:
+            old = fingerprints.get(p)
+            if old == fp:
+                return
+            if old is None and not baseline.known(p):
+                fingerprints[p] = fp
+                return
         try:
             sigs = [ln.sig for ln in group(page_api.strokes(p))]
         except (pdfink_page.PageError, TimeoutError) as e:
             log(f"ocr-page: page {p + 1}: {e}")
             return
+        if fp is not None:
+            fingerprints[p] = fp
+            if not baseline.known(p):
+                baseline.see(p, sigs)
+                sched.ink(p, clock())
+                return
         if baseline.changed(p, sigs):
             sched.ink(p, clock())
 
@@ -376,7 +400,7 @@ def watch(
                 if p is None:
                     pass
                 elif name == "ink":
-                    inked(p)
+                    inked(p, data.get("sig"))
                 elif name == "page":
                     arrive(p)
                 if last_tick is not None and clock() - last_tick < 1.0:

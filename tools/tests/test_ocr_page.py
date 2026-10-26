@@ -364,6 +364,7 @@ class WatchPage(FakePage):
 
     def strokes(self, page, space="page"):
         # A dict gives each page its own strokes; a list is every page's.
+        self.strokes_calls = getattr(self, "strokes_calls", 0) + 1
         return self._strokes.get(page, []) if isinstance(self._strokes, dict) else self._strokes
 
     def state(self):
@@ -540,6 +541,47 @@ class WatchInkBaseline(unittest.TestCase):
                                        (2, "_strokes", {1: [zig(100, 100, "s1")]}),
                                        (2, "ink", {"page": 1}), (30, None, None)], current=None)
         self.assertEqual([i for i, _ in self.run_watch(page)], [1])
+
+
+class WatchInkFingerprint(unittest.TestCase):
+    """The app's `ink` events carry `sig`, a fingerprint of the page's strokes:
+    an unchanged one means no strokes() fetch at all."""
+
+    def run_watch(self, page):
+        calls = []
+        with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            code = ocr.watch(page, quiet_s=20, model=object(), clock=page.clock,
+                             recognise_fn=lambda p, i, quiet, model=None, report=True: calls.append((i, p.t)) or 1)
+        self.assertEqual(code, 0)
+        return calls
+
+    def burst(self):
+        return {i: [zig(100, 100 + 10 * i, f"s{i}")] for i in range(5)}
+
+    def test_open_and_reload_bursts_with_unchanged_fingerprints_fetch_no_strokes(self):
+        script = [(0, "ink", {"page": i, "sig": f"fp{i}"}) for i in range(5)]
+        script += [(10, "ink", {"page": i, "sig": f"fp{i}"}) for i in range(5)]
+        script += [(20, "ink", {"page": i, "sig": f"fp{i}"}) for i in range(5)] + [(60, None, None)]
+        page = WatchPage(self.burst(), [], script, current=None)
+        self.assertEqual(self.run_watch(page), [])
+        self.assertEqual(getattr(page, "strokes_calls", 0), 0)
+
+    def test_a_changed_fingerprint_after_the_burst_is_due_after_quiet(self):
+        script = [(0, "ink", {"page": i, "sig": f"fp{i}"}) for i in range(5)]
+        script += [(5, "_strokes", {2: [zig(100, 120, "s2"), zig(100, 300, "new", step=3.5)]}),
+                   (5, "ink", {"page": 2, "sig": "fp2b"}), (40, None, None)]
+        page = WatchPage(self.burst(), [], script, current=None)
+        calls = self.run_watch(page)
+        self.assertEqual([i for i, _ in calls], [2])
+        self.assertGreaterEqual(calls[0][1], 25)
+        self.assertEqual(page.strokes_calls, 1)
+
+    def test_a_changed_fingerprint_with_unchanged_lines_is_not_due(self):
+        # Seen once with strokes (the arrival), the page's line sigs decide.
+        script = [(0, "ink", {"page": 1, "sig": "a"}), (5, "ink", {"page": 1, "sig": "b"}), (40, None, None)]
+        strokes = [zig(100, 100, "s1")]
+        page = WatchPage({1: strokes}, [text(group(strokes)[0].sig, "x")], script, current=1)
+        self.assertEqual(self.run_watch(page), [])
 
 
 class InkBaselineTests(unittest.TestCase):

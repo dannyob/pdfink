@@ -375,4 +375,46 @@ test.describe("handwriting text", () => {
     expect(await page.evaluate((n) => window.__pdfink.reloadNotebook(n), name)).toBe(true);
     expect((await take()).sort()).toEqual([0, 1]);
   });
+
+  test("ink events carry a fingerprint that changes with the ink and is equal across a reload of an unchanged notebook", async ({ page }) => {
+    const name = unique("tx-inksig");
+    await putNotebook(name, await createBlankPdf(2));
+    await openNotebookPage(page, name);
+    await page.evaluate(() => {
+      const w = window as unknown as { __ink: { page: number; sig: string }[] };
+      w.__ink = [];
+      window.__pdfink.on("ink", (d) => w.__ink.push(d as { page: number; sig: string }));
+    });
+    const take = () =>
+      page.evaluate(() => {
+        const w = window as unknown as { __ink: { page: number; sig: string }[] };
+        const out = w.__ink;
+        w.__ink = [];
+        return out;
+      });
+    const bySig = (evs: { page: number; sig: string }[]) => Object.fromEntries(evs.map((e) => [e.page, e.sig]));
+
+    // A blank notebook, reloaded: every page's fingerprint.
+    expect(await page.evaluate((n) => window.__pdfink.reloadNotebook(n), name)).toBe(true);
+    const blank = bySig(await take());
+    expect(Object.keys(blank).sort()).toEqual(["0", "1"]);
+    expect(typeof blank[0]).toBe("string");
+    expect(blank[0].length).toBeGreaterThan(0);
+
+    await penStroke(page, 0, line(80, 100, 260, 100));
+    const [drawn] = await take();
+    expect(drawn.page).toBe(0);
+    expect(drawn.sig).not.toBe(blank[0]);
+    await penStroke(page, 0, line(80, 140, 260, 140));
+    const [second] = await take();
+    expect(second.sig).not.toBe(drawn.sig);
+
+    expect(await page.evaluate(() => window.__pdfink.saveToServer())).toBe(true);
+    expect(await page.evaluate((n) => window.__pdfink.reloadNotebook(n), name)).toBe(true);
+    const first = bySig(await take());
+    expect(first[1]).toBe(blank[1]);
+    expect(first[0]).not.toBe(blank[0]);
+    expect(await page.evaluate((n) => window.__pdfink.reloadNotebook(n), name)).toBe(true);
+    expect(bySig(await take())).toEqual(first);
+  });
 });

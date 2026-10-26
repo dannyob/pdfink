@@ -181,7 +181,7 @@ test.describe("window.pdfink", () => {
     await page.evaluate(() => ((window as unknown as { __sent: string[] }).__sent.length = 0));
     await page.evaluate((s) => window.pdfink.addStrokes(0, [s]), stroke(300, 500, 310, 500));
     const ink = await page.evaluate(() => (window as unknown as { __sent: string[] }).__sent.map((m) => JSON.parse(m)).filter((m) => m.event === "ink"));
-    expect(ink).toEqual([{ event: "ink", data: { page: 0 } }]);
+    expect(ink).toEqual([{ event: "ink", data: { page: 0, sig: expect.any(String) } }]);
   });
 
   test("bookmarks round trip: addBookmark, bookmarks, removeBookmark", async ({ page }) => {

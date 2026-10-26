@@ -2,7 +2,7 @@ import * as pdfjs from "pdfjs-dist";
 import { pdfjsAssetOptions } from "./pdf/pdfjs-assets.ts";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { Bookmark, ClipContent, ImageItem, LinkItem, PageModel, Point, Rect, Stroke, TextItem } from "./model";
-import { DEFAULT_PRESSURE, newId } from "./model";
+import { DEFAULT_PRESSURE, newId, strokesSig } from "./model";
 import { barrelBit, barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
 import { ContextMenu, type MenuItem } from "./menu";
 import { icons } from "./icons";
@@ -295,7 +295,7 @@ export class App {
       this.lastSaved = null;
       this.setStatus();
       this.emit("bookmarks", this.bookmarks);
-      for (let i = 0; i < this.pages.length; i++) this.emit("ink", { page: i });
+      for (let i = 0; i < this.pages.length; i++) this.emit("ink", { page: i, sig: strokesSig(this.pages[i].strokes) });
       void this.ownText(this.currentPage).catch(() => {}); // for the pen menu's Notebook row
       return true;
     } catch (err) {
@@ -1003,7 +1003,7 @@ export class App {
     m.texts = snap.texts;
     this.markDirty();
     this.redraw(page);
-    if (from.strokes !== snap.strokes) this.emit("ink", { page });
+    if (from.strokes !== snap.strokes) this.emit("ink", { page, sig: strokesSig(snap.strokes) });
   }
 
   private markDirty(): void {
