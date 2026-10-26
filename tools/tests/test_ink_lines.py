@@ -120,6 +120,34 @@ class NarrowMarginNote(unittest.TestCase):
         lines = group(a + b)
         self.assertEqual([l.note for l in lines], [0, 0, 1, 1])
 
+    def test_question_mark_hook_above_the_last_line_joins_it(self) -> None:
+        # A note ending in "?": the hook sits high at the end of the last
+        # line, overlapping it (and the line above) only a little.
+        rows = [word(500, 100, 3), word(500, 120, 3), word(500, 140, 5)]
+        hook = stroke([(556, 137), (559, 134), (563, 136), (562, 140), (559, 143)])  # 7 x 9
+        lines = group([s for row in rows for s in row] + [hook])
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(set(lines[2].stroke_ids), ids(rows[2]) | {hook["id"]})
+        self.assertEqual({l.note for l in lines}, {0})
+
+    def test_note_below_with_a_tall_letter_stays_apart(self) -> None:
+        # A two-line note, then two median heights lower a one-word note
+        # whose tall first letter makes its line nearly three heights tall.
+        above = word(500, 100, 4) + word(505, 118, 5)
+        decoder = word(510, 186, 4) + [zigzag(560, 160, h=40)]
+        lines = group(above + decoder)
+        self.assertEqual(len(lines), 3)
+        self.assertEqual([l.note for l in lines], [0, 0, 1])
+
+    def test_underlined_line_keeps_its_note_across_the_gap(self) -> None:
+        # A line with a tall letter, underlined, then the next line about 1.4
+        # median heights lower: still one note.
+        first = word(500, 100, 3) + [zigzag(536, 90, h=24)]
+        underline = stroke([(498, 120), (525, 120.5), (550, 120)])
+        second = word(505, 133, 3)
+        lines = group(first + [underline] + second)
+        self.assertEqual([l.note for l in lines], [0, 0])
+
 
 class Connectors(unittest.TestCase):
     def test_dash_and_arc_are_excluded_and_do_not_widen_lines(self) -> None:

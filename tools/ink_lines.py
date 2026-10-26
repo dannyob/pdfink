@@ -13,6 +13,9 @@ Rules (see docs/superpowers/specs/2026-10-25-handwriting-text-design.md):
   so notes level with each other on opposite sides of a figure stay apart.
 - Dots (and commas) join the nearest line, if it is close; stray ones are
   left out.
+- A mark too small to be a line of its own (the hook of a "?" written high
+  at the end of a line) joins a line it touches, if it sits on that line's
+  right half.
 - Lines stacked closely with overlapping horizontal extents form one note.
 
 The thresholds below are starting values; tune them here.
@@ -44,8 +47,15 @@ LINE_MAX_GAP = 2.5  # x the line's height
 DOT_MAX = 0.3
 # A dot joins the nearest line only within this many of its line heights.
 DOT_MAX_DIST = 1.5
-# Notes.
-NOTE_MAX_GAP = 1.2  # x the taller line's height
+# Marks: a would-be line no bigger than this both ways (x median height) ...
+MARK_MAX = 1.25
+# ... joins a line it is within this distance of (x median height).
+MARK_MAX_DIST = 0.25
+# Notes: the gap between stacked lines is at most NOTE_MAX_GAP x the taller
+# line's height and at most NOTE_MAX_GAP_MEDIAN x the median height (a tall
+# capital or ascender must not stretch the reach to the next note).
+NOTE_MAX_GAP = 1.2
+NOTE_MAX_GAP_MEDIAN = 1.7
 # Notes whose tops are within this many median heights read left to right.
 LEVEL_TOLERANCE = 1.0
 # Used by is_connector when no median is given.
@@ -220,6 +230,29 @@ def _lines(items: list[tuple[str, Box]]) -> list[_Group]:
     return groups
 
 
+def _merge_marks(lines: list[_Group], median_h: float) -> list[_Group]:
+    """Fold each mark (a line no bigger than MARK_MAX median heights either
+    way) into the nearest proper line within MARK_MAX_DIST median heights
+    whose horizontal middle is not right of the mark's."""
+    def small(g: _Group) -> bool:
+        b = g.box
+        return b[2] - b[0] <= MARK_MAX * median_h and b[3] - b[1] <= MARK_MAX * median_h
+
+    big = [g for g in lines if not small(g)]
+    kept = list(big)
+    for g in (g for g in lines if small(g)):
+        mid = (g.box[0] + g.box[2]) / 2
+        near = [o for o in big
+                if (o.box[0] + o.box[2]) / 2 <= mid and _dist(g.box, o.box) <= MARK_MAX_DIST * median_h]
+        if near:
+            target = min(near, key=lambda o: _dist(g.box, o.box))
+            target.ids += g.ids
+            target.box = _union(target.box, g.box)
+        else:
+            kept.append(g)
+    return kept
+
+
 def _notes(lines: list[_Group], median_h: float) -> list[list[_Group]]:
     notes: list[list[_Group]] = []
     for ln in sorted(lines, key=lambda g: (g.box[1], g.box[0])):
@@ -229,7 +262,10 @@ def _notes(lines: list[_Group], median_h: float) -> list[list[_Group]]:
             gap = ln.box[1] - last.box[3]
             taller = max(ln.box[3] - ln.box[1], last.box[3] - last.box[1])
             overlaps = min(ln.box[2], last.box[2]) - max(ln.box[0], last.box[0]) > 0
-            if overlaps and gap <= NOTE_MAX_GAP * taller:
+            reach = NOTE_MAX_GAP * taller
+            if median_h > 0:
+                reach = min(reach, NOTE_MAX_GAP_MEDIAN * median_h)
+            if overlaps and gap <= reach:
                 if best is None or gap < best[0]:
                     best = (gap, note)
         if best is None:
@@ -272,6 +308,8 @@ def group(strokes: list[dict]) -> list[Line]:
     if not words:  # nothing but dots: group them like words
         words, dots = dots, []
     lines = _lines(words)
+    if m > 0:
+        lines = _merge_marks(lines, m)
     for sid, b in dots:
         near = min(lines, key=lambda g: _dist(b, g.box))
         if _dist(b, near.box) <= DOT_MAX_DIST * (near.box[3] - near.box[1]):
