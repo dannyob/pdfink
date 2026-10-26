@@ -118,6 +118,10 @@ test.describe("window.pdfink", () => {
         await expect(page.evaluate(([l, sp]) => window.pdfink.setInkText(0, [l as never], { space: sp as "page" | "pdf" }), [bad, space] as const)).rejects.toThrow(/lines\[0\]/);
       }
     }
+    // note matches the server's rule (a whole number ≥ 0), so an accepted line never fails a save.
+    for (const note of [1.5, -3, Number.NaN]) {
+      await expect(page.evaluate((l) => window.pdfink.setInkText(0, [l]), { ...line, note })).rejects.toThrow(/lines\[0\]\.note must be a whole number ≥ 0/);
+    }
     await expect(page.evaluate((l) => window.pdfink.setInkText(3, [l]), line)).rejects.toThrow(/No page 3/);
     await expect(page.evaluate(() => window.pdfink.inkText(3))).rejects.toThrow(/No page 3/);
     await expect(page.evaluate(() => window.pdfink.pageText(3))).rejects.toThrow(/No page 3/);

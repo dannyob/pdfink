@@ -265,7 +265,7 @@ function checkTexts(texts: unknown, i: number): void {
     for (const f of ["x", "y", "w", "h"]) if (typeof t[f] !== "number" || !Number.isFinite(t[f])) throw new Error(`${where}.${f} must be a finite number`);
     if (typeof t.text !== "string") throw new Error(`${where}.text must be a string`);
     if (t.sig !== undefined && typeof t.sig !== "string") throw new Error(`${where}.sig must be a string`);
-    if (t.note !== undefined && !Number.isInteger(t.note)) throw new Error(`${where}.note must be a whole number`);
+    if (t.note !== undefined && !(Number.isInteger(t.note) && (t.note as number) >= 0)) throw new Error(`${where}.note must be a whole number ≥ 0`);
   });
 }
 

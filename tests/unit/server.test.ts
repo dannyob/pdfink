@@ -501,6 +501,7 @@ describe("texts and the notebook tag over the wire", () => {
       [wire([{ ...HELLO, sig: 1 }]), "pages[0].texts[0].sig must be a string"],
       [wire([{ ...HELLO, note: 1.5 }]), "pages[0].texts[0].note must be a whole number"],
       [wire([{ ...HELLO, note: "0" }]), "pages[0].texts[0].note must be a whole number"],
+      [wire([{ ...HELLO, note: -3 }]), "pages[0].texts[0].note must be a whole number ≥ 0"],
       [wire([null]), "pages[0].texts[0] must be an object"],
       [wire("nope"), "pages[0].texts must be an array"],
       [{ ...wire([HELLO]), textLayers: true }, "textLayers must be an array of booleans"],

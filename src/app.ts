@@ -150,7 +150,7 @@ function checkTextLine(t: unknown, i: number): void {
   if ((w as number) < 0 || (h as number) < 0) throw new TypeError(`${at}.w and .h must not be negative`);
   if (typeof text !== "string") throw new TypeError(`${at}.text must be a string`);
   if (sig !== undefined && typeof sig !== "string") throw new TypeError(`${at}.sig must be a string`);
-  if (note !== undefined && (typeof note !== "number" || !Number.isFinite(note))) throw new TypeError(`${at}.note must be a finite number`);
+  if (note !== undefined && !(Number.isInteger(note) && (note as number) >= 0)) throw new TypeError(`${at}.note must be a whole number ≥ 0`);
 }
 
 export class App {
