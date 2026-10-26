@@ -138,11 +138,16 @@ def is_connector(stroke: dict, median_h: float | None = None) -> bool:
 
 
 def signature(strokes: list[dict]) -> str:
-    """Fingerprint of the strokes' geometry: sha1 (first 16 hex chars) of the
-    sorted strokes' points rounded to 0.1 pt. Independent of stroke order and
+    """Fingerprint of the strokes' shape: sha1 (first 16 hex chars) of the
+    sorted strokes' points relative to their top-left (the least x and y of
+    all their points), rounded to 0.1 pt. Independent of where the strokes
+    are (a line moved by cut and paste keeps its sig), of stroke order and of
     ids; pressure and style are ignored."""
+    pts = [p for s in strokes for p in s.get("points") or []]
+    x0 = min((p["x"] for p in pts), default=0.0)
+    y0 = min((p["y"] for p in pts), default=0.0)
     keyed = sorted(
-        ";".join(f"{round(p['x'] * 10)},{round(p['y'] * 10)}" for p in s.get("points") or [])
+        ";".join(f"{round((p['x'] - x0) * 10)},{round((p['y'] - y0) * 10)}" for p in s.get("points") or [])
         for s in strokes
     )
     return hashlib.sha1("|".join(keyed).encode()).hexdigest()[:16]

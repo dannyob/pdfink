@@ -17,6 +17,10 @@ import threading
 LLM_TIMEOUT = 240  # seconds per attempt
 
 
+class LLMError(Exception):
+    """Every attempt at a model call failed (an error, or no answer in time)."""
+
+
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
@@ -26,7 +30,7 @@ def ask(model, prompt: str, data: bytes, suffix: str, attempts: int = 2, timeout
     ".pdf" or ".png") and return the answer, stripped, without a markdown fence
     around it. The HTTP client underneath can sit on a half-closed connection
     for ten minutes per retry, so each attempt runs in a daemon thread we are
-    free to abandon after `timeout` seconds. SystemExit when every attempt fails."""
+    free to abandon after `timeout` seconds. LLMError when every attempt fails."""
     import llm
 
     # The system temp directory, never Desktop/Documents/Downloads: macOS asks
@@ -55,7 +59,7 @@ def ask(model, prompt: str, data: bytes, suffix: str, attempts: int = 2, timeout
             if attempt < attempts:
                 log(f"model call failed ({why}); trying again…")
             else:
-                raise SystemExit(f"model call failed: {why}")
+                raise LLMError(f"model call failed: {why}")
     finally:
         os.unlink(tmp)
     text = text.strip()

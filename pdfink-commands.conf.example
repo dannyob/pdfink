@@ -40,7 +40,8 @@ timeout = 300
 
 [Recognise handwriting]
 # Groups the page's ink into lines, has a vision model read them (llm), and
-# keeps the words in the PDF as invisible, searchable text; see
+# keeps the words in the PDF: as invisible, searchable text on notebook
+# pages, and in the ink annotations' /Contents on document pages; see
 # tools/ocr-page.py. Only lines that changed since the last run are sent;
 # with a selection, only the lines inside it.
 command = uv run --script tools/ocr-page.py "$PAGE"

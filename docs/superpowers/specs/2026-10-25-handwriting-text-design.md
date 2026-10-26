@@ -98,7 +98,8 @@ interface TextItem { id: string; x: number; y: number; w: number; h: number; tex
 
 Page space like links (top-left origin, display points). One item per line of
 handwriting. `sig` is a fingerprint of the strokes the line was read from
-(their points rounded to 0.1 pt, so it survives a save and reload), set by
+(their points relative to the line's top-left, rounded to 0.1 pt, so it
+survives a save and reload, and a cut-and-paste move), set by
 the OCR so a later run can tell which lines changed. Selection, move, cut, copy, paste, delete and undo treat text
 items like links: an item is selected when the selection rectangle contains
 it, and moves with the strokes.

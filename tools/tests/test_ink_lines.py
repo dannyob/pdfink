@@ -274,12 +274,19 @@ class Signature(unittest.TestCase):
         self.assertEqual(len(sig), 16)
         int(sig, 16)
 
-        nudged = [stroke([(p["x"] + 0.03, p["y"] - 0.04) for p in s["points"]], s["id"]) for s in base]
+        # A sub-0.05 pt nudge of one stroke against the other: same shape.
+        nudged = [base[0]] + [stroke([(p["x"] + 0.03, p["y"] - 0.04) for p in base[1]["points"]], base[1]["id"])]
         self.assertEqual(signature(nudged), sig)
         self.assertEqual(signature(list(reversed(base))), sig)
 
+        # One stroke moved 1 pt against the other: a different shape.
         moved = [stroke([(p["x"] + 1.0, p["y"]) for p in base[0]["points"]])] + base[1:]
         self.assertNotEqual(signature(moved), sig)
+
+    def test_same_under_moving_the_whole_line(self) -> None:
+        base = [stroke([(100.0, 200.0), (110.0, 214.0)]), stroke([(120.0, 200.0), (130.0, 214.0)])]
+        shifted = [stroke([(p["x"] + 37.3, p["y"] - 12.6) for p in s["points"]]) for s in base]
+        self.assertEqual(signature(shifted), signature(base))
 
     def test_lines_carry_their_signature(self) -> None:
         w = word(100, 100)

@@ -184,8 +184,12 @@ LLM_TIMEOUT = int(os.environ.get("PDFINK_JOURNAL_LLM_TIMEOUT", "240"))
 
 
 def ask(model, prompt: str, pdf_bytes: bytes, attempts: int = 2) -> str:
-    """One model call on a PDF, with a hard timeout and a retry (llm_call.ask)."""
-    return llm_call.ask(model, prompt, pdf_bytes, ".pdf", attempts=attempts, timeout=LLM_TIMEOUT)
+    """One model call on a PDF, with a hard timeout and a retry (llm_call.ask);
+    SystemExit when it fails."""
+    try:
+        return llm_call.ask(model, prompt, pdf_bytes, ".pdf", attempts=attempts, timeout=LLM_TIMEOUT)
+    except llm_call.LLMError as e:
+        raise SystemExit(str(e)) from None
 
 
 def pages_used(text: str, first: int) -> tuple[str, int]:

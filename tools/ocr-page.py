@@ -19,7 +19,9 @@ With a selection on the page, only the lines inside it are recognised (all of
 them, changed or not) and only the texts inside it are replaced.
 
 Before setting the text it reads the strokes again and drops answers for
-lines that changed while the model was working. It prints "N lines" (the
+lines that changed while the model was working. When the model fails, or
+its answer covers none of the numbered lines, it leaves the text alone and
+exits 1. It prints "N lines" (the
 lines newly given text), or "up to date" when there was nothing to send.
 --dry-run prints the numbered lines it would send and stops there.
 
@@ -33,12 +35,14 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import os
 import re
 import sys
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import llm_call  # noqa: E402
 import pdfink_page  # noqa: E402
 from ink_lines import Line, group  # noqa: E402
 
@@ -49,6 +53,10 @@ LEFT_EDGE = 20  # pt: a line starting this close to the left edge is labelled on
 PROMPT = """The attached page has handwriting on it. Some handwritten lines have a small red number beside them. For each numbered line, transcribe the handwriting on that line exactly as written: keep spelling, capitals and punctuation; mark unreadable words [illegible]. Ignore printed text, the red numbers themselves, underlines, circles, arrows and other marks that are not words. Answer with JSON only: an object mapping each number (as a string) to its line's text, with "" for a numbered line that has no words."""
 
 Rect = dict[str, float]
+
+
+class RecogniseError(Exception):
+    """The model failed or gave no usable answer; the page's text is untouched."""
 
 
 def log(msg: str) -> None:
@@ -68,15 +76,36 @@ def text_inside(t: dict, r: Rect) -> bool:
     return _centre_inside(t["x"], t["y"], t["w"], t["h"], r)
 
 
+def match_texts(lines: list[Line], texts: list[dict]) -> list[tuple[dict, Line]]:
+    """Pair signed texts with lines of the same sig, one to one, nearest first.
+    A sig fixes a line's shape, not its place, so a moved line still matches,
+    and a pasted copy of a line (same sig) does not take the original's text."""
+    pairs = []
+    for t in texts:
+        for ln in lines:
+            if t.get("sig") and t.get("sig") == ln.sig:
+                pairs.append((math.hypot(t["x"] - ln.x, t["y"] - ln.y), id(t), id(ln), t, ln))
+    pairs.sort(key=lambda p: p[0])
+    used_t: set[int] = set()
+    used_l: set[int] = set()
+    out = []
+    for _, it, il, t, ln in pairs:
+        if it not in used_t and il not in used_l:
+            used_t.add(it)
+            used_l.add(il)
+            out.append((t, ln))
+    return out
+
+
 def changed_lines(lines: list[Line], texts: list[dict], force: bool, within: Rect | None) -> list[Line]:
     """The lines to send to the model: those (inside `within`, when given)
-    whose sig matches no existing text item, or all of them when `force`."""
+    that no existing text item matches by sig, or all of them when `force`."""
     if within is not None:
         lines = [ln for ln in lines if line_inside(ln, within)]
     if force:
         return list(lines)
-    known = {t.get("sig") for t in texts if t.get("sig")}
-    return [ln for ln in lines if ln.sig not in known]
+    matched = {id(ln) for _, ln in match_texts(lines, texts)}
+    return [ln for ln in lines if id(ln) not in matched]
 
 
 def label_image(png: bytes, lines: list[Line], numbers: list[int], scale: float = SCALE) -> bytes:
@@ -136,18 +165,15 @@ def _item(ln: Line, text: str) -> dict[str, Any]:
 
 
 def merge(lines_now: list[Line], texts: list[dict], results: dict[str, str]) -> list[dict]:
-    """The page's new handwriting text. `results` maps a line's sig to what the
-    model read. Keeps existing items with no sig, or whose sig is still a line
-    (and has no new result); adds a result only while its line is unchanged;
-    drops empty results and items of lines that are gone."""
-    now = {ln.sig: ln for ln in lines_now}
-    out: list[dict] = []
-    for t in texts:
-        sig = t.get("sig")
-        if not sig:
-            out.append({k: v for k, v in t.items() if k != "id"})
-        elif sig in now and sig not in results:
-            out.append({**{k: v for k, v in t.items() if k != "id"}, "note": now[sig].note})
+    """The page's new handwriting text. `results` maps a sent line's sig to
+    what the model read. Keeps existing items with no sig, and items matched
+    to a current line (match_texts) whose sig has no new result, moved to that
+    line's box; gives every current line with a result its text; drops empty
+    results, results whose line changed meanwhile, and items whose line is gone."""
+    out: list[dict] = [{k: v for k, v in t.items() if k != "id"} for t in texts if not t.get("sig")]
+    for t, ln in match_texts(lines_now, texts):
+        if ln.sig not in results:
+            out.append({**{k: v for k, v in t.items() if k != "id"}, "x": ln.x, "y": ln.y, "w": ln.w, "h": ln.h, "note": ln.note})
     for ln in lines_now:
         text = results.get(ln.sig, "")
         if text:
@@ -156,11 +182,13 @@ def merge(lines_now: list[Line], texts: list[dict], results: dict[str, str]) -> 
 
 
 def _model(model):
-    import llm
-
     if model is None:
         model = os.environ.get("PDFINK_OCR_MODEL") or DEFAULT_MODEL
-    return llm.get_model(model) if isinstance(model, str) else model
+    if not isinstance(model, str):
+        return model
+    import llm
+
+    return llm.get_model(model)
 
 
 def recognise(
@@ -175,9 +203,8 @@ def recognise(
     """Recognise the handwriting on page `page_index` (0-based) and set it as
     the page's text. With `within`, only lines inside it (all forced) and only
     texts inside it. `model` is an llm model or its id (None: the default).
-    Returns the number of lines newly set."""
-    from llm_call import ask
-
+    Returns the number of lines newly set. RecogniseError, with the page's
+    text untouched, when the model fails or answers for none of the lines."""
     lines = group(page_api.strokes(page_index))
     todo = changed_lines(lines, page_api.ink_text(page_index), force or within is not None, within)
     if not todo:
@@ -190,8 +217,14 @@ def recognise(
         return 0
 
     png = label_image(page_api.page_png(page_index, SCALE), todo, numbers)
-    answer = parse_answer(ask(_model(model), PROMPT, png, ".png", attempts=2, timeout=LLM_TIMEOUT))
+    try:
+        reply = llm_call.ask(_model(model), PROMPT, png, ".png", attempts=2, timeout=LLM_TIMEOUT)
+    except llm_call.LLMError as e:
+        raise RecogniseError(str(e)) from e
+    answer = parse_answer(reply)
     results = {todo[n - 1].sig: text for n, text in answer.items() if 1 <= n <= len(todo)}
+    if not results:
+        raise RecogniseError("the model's answer had none of the numbered lines; page text left as it was")
 
     # The ink may have changed while the model worked: regroup, and keep only
     # results whose line is still there as it was.
@@ -231,7 +264,7 @@ def main() -> int:
             within = sel["rect"] if sel and sel.get("page") == index else None
             page.progress("Recognising handwriting…")
             recognise(page, index, quiet=False, force=a.all, within=within, model=a.model, dry_run=a.dry_run)
-        except (pdfink_page.PageGone, pdfink_page.PageError, TimeoutError) as e:
+        except (pdfink_page.PageGone, pdfink_page.PageError, TimeoutError, RecogniseError) as e:
             print(f"ocr-page: {e}", file=sys.stderr)
             return 1
         finally:
