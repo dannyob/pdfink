@@ -28,8 +28,10 @@ lines newly given text), or "up to date" when there was nothing to send.
 
 --watch is automatic mode, for a `detach = true` menu entry: it stays with
 the tab and recognises a page once its ink has been quiet for --quiet seconds
-(default 20) after a change, or when you arrive on a page (the visible one
-at the start too) that has lines without text. One page at a time, as quiet
+(default 20) after its lines change, or when you arrive on a page (the
+visible one at the start too) that has lines without text. Opening or
+reloading a document reads nothing by itself: existing ink is read a page
+at a time, as you turn to it. One page at a time, as quiet
 updates (no undo step), showing "Reading page N…" while busy and printing
 nothing per page. A failed page is logged and tried again only after new
 ink. It exits 0 when the page goes away or the run is stopped.
@@ -290,10 +292,24 @@ class Scheduler:
         return out
 
 
-def has_untexted(page_api: pdfink_page.Page, page_index: int) -> bool:
-    """Whether the page has lines that no text item matches."""
-    lines = group(page_api.strokes(page_index))
-    return bool(changed_lines(lines, page_api.ink_text(page_index), False, None))
+class InkBaseline:
+    """The line sigs --watch last saw on each page, so that an `ink` event
+    counts only when a page's lines really changed. A document load or
+    reload fires `ink` for every page; those pages are either new to it
+    (first sight: recorded, not a change) or unchanged. Sigs are kept as a
+    multiset, so a pasted copy of a line (same sig) is a change."""
+
+    def __init__(self) -> None:
+        self._sigs: dict[int, tuple[str, ...]] = {}
+
+    def see(self, page: int, sigs) -> None:
+        self._sigs[page] = tuple(sorted(sigs))
+
+    def changed(self, page: int, sigs) -> bool:
+        new = tuple(sorted(sigs))
+        old = self._sigs.get(page)
+        self._sigs[page] = new
+        return old is not None and old != new
 
 
 def watch(
@@ -306,16 +322,32 @@ def watch(
     """Automatic mode (see the module doc). Returns 0 when the page goes
     away or the run gets its exit/gone event."""
     sched = Scheduler(quiet_s)
+    baseline = InkBaseline()
 
     def page_of(data: Any) -> int | None:
         p = data.get("page") if isinstance(data, dict) else None
         return p if isinstance(p, int) and p >= 0 else None
 
     def arrive(p: int) -> None:
+        """You are on page p: read it now if it has lines without text. Also
+        its baseline, so the first stroke drawn after this counts as new ink."""
         try:
-            sched.arrived(p, clock(), has_untexted(page_api, p))
+            lines = group(page_api.strokes(p))
+            baseline.see(p, (ln.sig for ln in lines))
+            untexted = bool(changed_lines(lines, page_api.ink_text(p), False, None))
+            sched.arrived(p, clock(), untexted)
         except (pdfink_page.PageError, TimeoutError) as e:
             log(f"ocr-page: page {p + 1}: {e}")
+
+    def inked(p: int) -> None:
+        """An ink event on page p: debounce it only if its lines changed."""
+        try:
+            sigs = [ln.sig for ln in group(page_api.strokes(p))]
+        except (pdfink_page.PageError, TimeoutError) as e:
+            log(f"ocr-page: page {p + 1}: {e}")
+            return
+        if baseline.changed(p, sigs):
+            sched.ink(p, clock())
 
     try:
         page_api.subscribe("ink", "page")
@@ -335,7 +367,7 @@ def watch(
                 if p is None:
                     pass
                 elif name == "ink":
-                    sched.ink(p, clock())
+                    inked(p)
                 elif name == "page":
                     arrive(p)
                 if last_tick is not None and clock() - last_tick < 1.0:

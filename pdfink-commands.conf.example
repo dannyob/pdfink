@@ -49,8 +49,9 @@ timeout = 300
 
 [Recognise handwriting automatically]
 # The same, by itself: stays with the tab (dismiss its chip to stop it) and
-# reads a page once its ink has been still for 20 seconds, or when you turn
-# to a page with lines that have no text yet. --quiet SECONDS changes the wait.
+# reads a page once its new ink has been still for 20 seconds, or when you
+# turn to a page with lines that have no text yet (so opening a document does
+# not read every page). --quiet SECONDS changes the wait.
 command = uv run --script tools/ocr-page.py --watch
 detach = true
 

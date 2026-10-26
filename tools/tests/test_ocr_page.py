@@ -338,7 +338,7 @@ class WatchPage(FakePage):
         return self._strokes.get(page, []) if isinstance(self._strokes, dict) else self._strokes
 
     def state(self):
-        return {"currentPage": self.current}
+        return {"currentPage": self.current}  # None: no page in view
 
     def subscribe(self, *names):
         self.subscribed.extend(names)
@@ -355,6 +355,9 @@ class WatchPage(FakePage):
             self.t = max(self.t, at)
             if name is None:
                 continue  # just a clock step
+            if name == "_strokes":  # the page's ink changes (no event by itself)
+                self._strokes = {**self._strokes, **data}
+                continue
             yield name, data
         raise ocr.pdfink_page.PageGone("page connection closed")
 
@@ -369,7 +372,13 @@ class Watch(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_ink_then_quiet_reads_the_page_quietly(self):
-        page = WatchPage([], [], [(1, "ink", {"page": 2}), (30, None, None), (40, "exit", None)])
+        page = WatchPage(
+            {2: [zig(100, 100, "s1")]}, [],
+            [(0, "ink", {"page": 2}),  # first sight: the baseline
+             (1, "_strokes", {2: [zig(100, 100, "s1"), zig(100, 200, "s2", step=3.5)]}),
+             (1, "ink", {"page": 2}), (30, None, None), (40, "exit", None)],
+            current=9,
+        )
         calls = []
 
         def rec(p, i, quiet, model=None, report=True):
@@ -402,8 +411,10 @@ class Watch(unittest.TestCase):
 
     def test_survives_a_recognise_error_and_does_not_retry(self):
         page = WatchPage(
-            [], [],
-            [(1, "ink", {"page": 0}), (1, "ink", {"page": 1}), (30, None, None), (60, None, None), (61, "exit", None)],
+            {}, [],
+            [(0, "ink", {"page": 0}), (0, "ink", {"page": 1}),
+             (1, "_strokes", {0: [zig(100, 100, "s1")], 1: [zig(100, 100, "s1")]}),
+             (1, "ink", {"page": 0}), (1, "ink", {"page": 1}), (30, None, None), (60, None, None), (61, "exit", None)],
         )
         calls = []
 
@@ -418,6 +429,74 @@ class Watch(unittest.TestCase):
         self.assertEqual(calls, [0, 1])
         self.assertIn("model said no", err)
         self.assertEqual(page.progress_calls, ["Reading page 1…", None, "Reading page 2…", None])
+
+
+class WatchInkBaseline(unittest.TestCase):
+    """The load/reload burst of ink events must not schedule pages."""
+
+    def run_watch(self, page):
+        calls = []
+        with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            code = ocr.watch(page, quiet_s=20, model=object(), clock=page.clock,
+                             recognise_fn=lambda p, i, quiet, model=None, report=True: calls.append((i, p.t)) or 1)
+        self.assertEqual(code, 0)
+        return calls
+
+    def burst(self):
+        return {i: [zig(100, 100 + 10 * i, f"s{i}")] for i in range(5)}  # all untexted
+
+    def test_load_burst_schedules_nothing(self):
+        page = WatchPage(self.burst(), [], [(0, "ink", {"page": i}) for i in range(5)] + [(100, None, None)], current=None)
+        self.assertEqual(self.run_watch(page), [])
+
+    def test_new_strokes_after_the_burst_are_due_after_quiet(self):
+        script = [(0, "ink", {"page": i}) for i in range(5)]
+        script += [(5, "_strokes", {2: [zig(100, 120, "s2"), zig(100, 300, "new", step=3.5)]}),
+                   (5, "ink", {"page": 2}), (40, None, None)]
+        calls = self.run_watch(WatchPage(self.burst(), [], script, current=None))
+        self.assertEqual([i for i, _ in calls], [2])
+        self.assertGreaterEqual(calls[0][1], 25)
+
+    def test_ink_event_with_unchanged_strokes_is_ignored(self):
+        script = [(0, "ink", {"page": i}) for i in range(5)] + [(5, "ink", {"page": 3}), (40, None, None)]
+        self.assertEqual(self.run_watch(WatchPage(self.burst(), [], script, current=None)), [])
+
+    def test_a_reload_burst_after_start_schedules_nothing(self):
+        script = [(0, "ink", {"page": i}) for i in range(5)] + [(10, "ink", {"page": i}) for i in range(5)] + [(60, None, None)]
+        self.assertEqual(self.run_watch(WatchPage(self.burst(), [], script, current=None)), [])
+
+    def test_startup_reads_the_current_page_with_untexted_lines_only(self):
+        script = [(0, "ink", {"page": i}) for i in range(5)] + [(5, None, None)]
+        calls = self.run_watch(WatchPage(self.burst(), [], script, current=3))
+        self.assertEqual([i for i, _ in calls], [3])
+
+    def test_first_ink_on_an_arrived_page_counts(self):
+        # Arriving records the baseline, so the first stroke drawn after it is new ink.
+        page = WatchPage({1: []}, [], [(1, "page", {"page": 1}),
+                                       (2, "_strokes", {1: [zig(100, 100, "s1")]}),
+                                       (2, "ink", {"page": 1}), (30, None, None)], current=None)
+        self.assertEqual([i for i, _ in self.run_watch(page)], [1])
+
+
+class InkBaselineTests(unittest.TestCase):
+    def test_first_sight_records_unchanged_is_ignored_changed_counts(self):
+        b = ocr.InkBaseline()
+        self.assertFalse(b.changed(0, {"a"}))
+        self.assertFalse(b.changed(0, {"a"}))
+        self.assertTrue(b.changed(0, {"a", "b"}))
+        self.assertFalse(b.changed(0, {"a", "b"}))
+        self.assertFalse(b.changed(1, set()))
+        self.assertTrue(b.changed(1, {"c"}))
+
+    def test_a_pasted_copy_of_a_line_is_a_change(self):
+        b = ocr.InkBaseline()
+        b.see(0, ["a"])
+        self.assertTrue(b.changed(0, ["a", "a"]))
+
+    def test_seen_records_without_reporting(self):
+        b = ocr.InkBaseline()
+        b.see(4, {"x"})
+        self.assertTrue(b.changed(4, {"y"}))
 
 
 class RecogniseReport(unittest.TestCase):
