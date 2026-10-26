@@ -55,7 +55,7 @@ Server mode is the default:
 npm start -- --notebooks /path/to/folder
 ```
 
-Open http://127.0.0.1:5173/. The folder is created if it is missing. The toolbar has Open notebook... (a menu of the PDFs in the folder), New, Save, + Page, Import... (copy a PDF from the device into the folder) and Export... (download the current notebook).
+Open http://127.0.0.1:5173/. The folder is created if it is missing. The notebook's name at the left of the toolbar opens the File menu: Open notebook... (the PDFs in the folder), New notebook, Save, Notebook pages, Import a PDF... (copy a PDF from the device into the folder) and Export as PDF... (download the current notebook).
 
 Browser-only mode:
 
@@ -65,9 +65,19 @@ npm start -- --mode browser
 
 You can also serve the static HTML/javascript build in `dist/` from any static host. 
 
-The toolbar has Open..., New, Save, Save as... and + Page. Chromium writes back to the file you opened through the File System Access API. Other browsers download the result.
+The File menu (the file's name at the left of the toolbar) has Open..., New, Save, Save as... and Notebook pages. Chromium writes back to the file you opened through the File System Access API. Other browsers download the result.
 
-In either mode, the toolbar also has pen, eraser and rectangle select; pen colour and width; copy, cut, paste; undo, redo; zoom; and a Bookmarks… list. New makes a blank Letter PDF.
+In either mode the toolbar is one row of labelled tiles, in groups:
+
+- The notebook's name ▾ (File menu) and the current bookmark ▾ (Bookmarks menu).
+- Pen, Eraser and Select.
+- Pen style: one tile showing the current colour and width. Its menu has six colour swatches, Custom colour... and Thin, Normal, Thick and Marker.
+- Copy, Cut, Paste and Delete.
+- Undo and Redo.
+- Add page; in server mode also Commands, the buttons commands have added, and chips for running detached commands.
+- More ⋯ at the right: View (Smaller, Fit width, Larger), Barrel button erases, Finger draws, and a link to the source.
+
+New makes a blank Letter PDF. Under the bar, a status line shows messages and progress on the left, and on the right the save state (Saving..., Saved 10:42, Unsaved), how many things are selected, "page 6 of 19", and "writing on 6" when the page in view is not the one the bookmark follows. The bar stays on one row. When it is too narrow, Add page, then the Copy to Delete group, then Pen style move into the top of the More menu, still labelled.
 
 Saving in server mode:
 
@@ -87,7 +97,7 @@ To prevent large PDFs, on import, objects unreachable from the trailer are delet
 
 ## Editing
 
-- Pen draws. Fingers scroll, except with **finger draws** on (the default on phones and pen-less tablets, switched off as soon as a pen appears): then one finger draws and a second finger scrolls. Eraser end or barrel button erases whole strokes. Many EMR pens don't report their barrel button to the browser; with **barrel button erase** ticked (the default), a pen whose pressure is pinned to exactly 0 while hovering or exactly 1 while touching is taken as a barrel press. Unticked, a barrel press (or a mouse right-click) opens the pen menu instead: three rows of icon tiles (Pen, Eraser, Select; Copy, Cut, Paste, Delete; Undo, Redo), then Add link…, Bookmark this page…, Notebook (see below), Add page and Save, then a **Commands ›** row that opens your pen-menu commands in place, with a Back row at the top; buttons added by attached commands live there too (their toolbar buttons are unchanged), and the row is hidden when there is nothing in it. Every tile and row is 44 px tall and nothing opens on hover. `/stylus-test.html` shows what your pen reports.
+- Pen draws. Fingers scroll, except with **Finger draws** on (the default on phones and pen-less tablets, switched off as soon as a pen appears): then one finger draws and a second finger scrolls. Eraser end or barrel button erases whole strokes. Many EMR pens don't report their barrel button to the browser; with **Barrel button erases** ticked (the default), a pen whose pressure is pinned to exactly 0 while hovering or exactly 1 while touching is taken as a barrel press. unticked, a barrel press (or a mouse right-click) opens the pen menu instead: three rows of icon tiles (Pen, Eraser, Select; Copy, Cut, Paste, Delete; Undo, Redo), then Add link…, Bookmark this page…, Notebook (see below), Add page and Save, then a **Commands ›** row that opens your pen-menu commands in place, with a Back row at the top; buttons added by attached commands live there too (their toolbar buttons are unchanged), and the row is hidden when there is nothing in it. Every tile and row is 44 px tall and nothing opens on hover. `/stylus-test.html` shows what your pen reports.
 - Select drags a rectangle and picks every stroke with a point inside it, and every handwriting text line whose centre is inside it, so the text moves, cuts and pastes with its ink. Ctrl+C, Ctrl+X and Ctrl+V work on the selection. Delete removes it.
 - Paste an image from the system clipboard, or drop an image file on the page.
 - Dropping a PDF imports it (server mode) or opens it (browser mode).
@@ -111,7 +121,7 @@ A link shows as a faint blue box captioned, when there is room, with its label o
 - Select picks up a link whose centre is inside the rectangle, so copy, cut, paste and Delete carry links with the strokes. The eraser leaves links alone; select and delete them instead.
 - Adding, editing and deleting links are undo steps.
 
-Bookmarks are the PDF's outline. The toolbar's Bookmarks… list shows them, indented by level; picking one jumps to its page. If the current page has a top-level bookmark, the list ends with Remove "*title*". **Bookmark this page…** (in the pen menu) asks for a title, today's date by default, and files the bookmark in page order. Removing a top-level bookmark removes the entries nested under it too. Bookmark changes are saved with the notebook but are not undo steps; until the outline is changed in pdfink, saving leaves it exactly as the file had it. An outline entry whose page pdfink cannot find is greyed out in the list and saved back as a title with no destination.
+Bookmarks are the PDF's outline. The bookmark button in the toolbar shows the current bookmark and opens the list of them, indented by level, with the current one ticked; picking one jumps to its page. The current bookmark is the last one at or before the page the pen last touched; until the pen touches a page it is the one you last picked, and after opening a notebook, the one covering page 1. Scrolling does not change it. With no such bookmark the button reads Bookmarks, greyed. If the current page has a top-level bookmark, the list ends with Remove "*title*". **Bookmark this page…** (in the pen menu) asks for a title, today's date by default, and files the bookmark in page order. Removing a top-level bookmark removes the entries nested under it too. Bookmark changes are saved with the notebook but are not undo steps; until the outline is changed in pdfink, saving leaves it exactly as the file had it. An outline entry whose page pdfink cannot find is greyed out in the list and saved back as a title with no destination.
 
 ## Deep links
 

@@ -124,6 +124,42 @@ design; this is the shape of the data.
   sets `texts` through the page bridge (`inkText`, `setInkText`, `strokes`),
   grouping strokes into lines and notes with `tools/ink_lines.py`.
 
+## Toolbar
+
+`src/toolbar.ts` builds one row of labelled 52 px tiles from data and wires
+them to the App. Left to right: the notebook's name ▾ (File menu) and the
+current bookmark ▾ (Bookmarks menu); Pen, Eraser, Select; Pen style; Copy, Cut,
+Paste, Delete; Undo, Redo; Add page, Commands (server mode only), command
+buttons and run chips; More ⋯ at the right.
+
+- **Menus.** File, Bookmarks, Pen style, Commands and More all open through the
+  one `ContextMenu` the pen menu uses, anchored under their button, so only one
+  menu is open at a time. A tap on the button whose menu is open closes it.
+  File shows Open notebook… (a submenu of the folder's PDFs), New notebook,
+  Save (Ctrl+S), Notebook pages, Import a PDF… (Ctrl+O) and Export as PDF…. In
+  browser-only storage it shows Open… (Ctrl+O), New, Save, Save as… and
+  Notebook pages. More holds View (Smaller, Fit width, Larger), Barrel button
+  erases, Finger draws and the source link; the two options are remembered in
+  `localStorage`.
+- **Status line.** A fixed-height line under the bar. Left: status messages and
+  the progress line (`#status`, `#progress`). Right: save state, selection
+  count, "page N of M", and "writing on N" while the page in view is not the
+  one the bookmark follows.
+- **Overflow into More.** The bar never wraps or scrolls and labels never drop.
+  `fit()` measures every group with all of them shown, and `fitGroups`
+  (`src/fit.ts`) picks which movable groups to hide, in order: Add page, the
+  clipboard group, Pen style. They reappear as labelled tile rows at the top of
+  the More menu. The name, bookmark, tools, Undo/Redo, Commands and More stay.
+  Measuring repeats when the bar resizes or its contents change.
+- **Current bookmark** (`src/current-bookmark.ts`). The last bookmark, in
+  outline order, whose page is at or before the page the pen last touched. With
+  no ink yet, the one last picked from the menu; failing that, the one covering
+  page 1. Scrolling does not change it. With none, the button reads
+  "Bookmarks", greyed.
+- **The closing tap.** A pen tap on the page that closes an open menu is
+  swallowed: it leaves no ink, and a finger or palm touch while a menu is open
+  closes it without acting.
+
 ## Pressure
 
 Per-point pressure is kept through import, rendering and export. Drawn width

@@ -12,9 +12,10 @@ the Daylight DC-1's reflective screen and work by stylus with no hover.
 ## Layout, left to right
 
 1. **The notebook's name ▾** (max ≈190 px, ellipsis) opens the File menu:
-   Open notebook… (Ctrl+O), New notebook, Save (Ctrl+S), ✓ Notebook pages,
-   Import a PDF…, Export as PDF…. In browser-only storage: Open…, New, Save,
-   Save as…, ✓ Notebook pages. Shortcuts show at the right of each row.
+   Open notebook…, New notebook, Save (Ctrl+S), ✓ Notebook pages,
+   Import a PDF… (Ctrl+O), Export as PDF…. In browser-only storage: Open…
+   (Ctrl+O), New, Save, Save as…,
+   ✓ Notebook pages. Shortcuts show at the right of each row.
 2. **The current bookmark ▾** (max ≈210 px, ellipsis) opens the Bookmarks
    menu: the outline (nested entries indented, page numbers at the right, the
    current one ticked and marked with an ink bar), then "Bookmark this
