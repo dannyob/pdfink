@@ -6,6 +6,7 @@ import { currentBookmark } from "./current-bookmark";
 import type { Bookmark, ClipContent, ImageItem, LinkItem, PageModel, Point, Rect, Stroke, TextItem } from "./model";
 import { DEFAULT_PRESSURE, newId, strokesSig } from "./model";
 import { barrelBit, barrelHeuristic, heuristicOnly, hoverErase, wantsErase, writingPressure } from "./stylus";
+import { DoublePress } from "./double-press";
 import { ContextMenu, type MenuItem } from "./menu";
 import { icons } from "./icons";
 import { dialog } from "./dialog";
@@ -1151,6 +1152,7 @@ export class App {
     const c = this.container;
     c.addEventListener("pointerdown", (e) => this.onPointerDown(e), { passive: false });
     c.addEventListener("pointermove", (e) => this.onPointerMove(e), { passive: false });
+    document.addEventListener("pointermove", (e) => this.watchBarrel(e), { capture: true });
     c.addEventListener("pointerup", (e) => this.onPointerUp(e));
     c.addEventListener("pointercancel", (e) => this.onPointerUp(e, true));
     c.addEventListener("contextmenu", (e) => {
@@ -1265,6 +1267,37 @@ export class App {
     this.paintToolButtons();
   }
 
+  /** Pen whose barrel is held while hovering, to see each new press once. */
+  private barrelHeld: number | null = null;
+  /** Pen whose current barrel press was a double-click's second: it does nothing else until released. */
+  private barrelSwitched: number | null = null;
+  private readonly barrelClicks = new DoublePress();
+
+  /**
+   * A barrel double-click while hovering switches between pen and eraser.
+   * Watched on the whole document (capture), because the first click may
+   * open the pen menu right under the tip, and the second is then reported
+   * over the menu, not the page. The first click still does what a single
+   * click does (erase, or open the menu); the second switches and does
+   * nothing else until the button is released.
+   */
+  private watchBarrel(e: PointerEvent): void {
+    if (e.pointerType !== "pen") return;
+    const down = !this.pointers.has(e.pointerId) && hoverErase(e, true);
+    if (down && this.barrelHeld !== e.pointerId) {
+      this.barrelHeld = e.pointerId;
+      if (this.barrelClicks.press(e.timeStamp, e.clientX, e.clientY)) {
+        this.barrelSwitched = e.pointerId;
+        if (this.hoverErase) this.endHoverErase();
+        this.menu.hide();
+        this.setTool(this.tool === "eraser" ? "pen" : "eraser");
+      }
+    } else if (!down && this.barrelHeld === e.pointerId) {
+      this.barrelHeld = null;
+      this.barrelSwitched = null;
+    }
+  }
+
   /** One undo step per barrel-button sweep, keyed by pointer. */
   private hoverErase: Pointer | null = null;
 
@@ -1295,6 +1328,7 @@ export class App {
       this.enablePenMode();
       const active = this.pointers.get(e.pointerId);
       if (!active && e.buttons === 0) this.menuPointer = null; // button released
+      if (this.barrelSwitched === e.pointerId) return; // see watchBarrel
       // Barrel held while hovering, with the button set to open the menu.
       if (!active && !this.barrelHeuristic && hoverErase(e, true)) {
         if (this.menuPointer !== e.pointerId && !this.menu.open) {

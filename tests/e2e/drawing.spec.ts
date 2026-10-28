@@ -487,3 +487,79 @@ test.describe("browser context menu", () => {
     expect(prevented).toEqual({ menu: true, toolbar: true, status: true });
   });
 });
+
+test.describe("barrel double-click", () => {
+  const penEvent = (page: import("@playwright/test").Page, type: string, x: number, y: number, init: Record<string, unknown>) =>
+    page.evaluate(
+      ([t, px, py, o]) => {
+        const c = window.__pdfink.views[0].toClient(px, py);
+        const el = document.elementFromPoint(c.clientX, c.clientY)!;
+        el.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, pointerType: "pen", pointerId: 31, isPrimary: true, clientX: c.clientX, clientY: c.clientY, ...o }));
+      },
+      [type, x, y, init] as const,
+    );
+  /** One barrel click while hovering, as the Daylight's pen reports it: contact bit at pressure 0, then released. */
+  const barrelClick = async (page: import("@playwright/test").Page, x: number, y: number, buttons = 1) => {
+    await penEvent(page, "pointermove", x, y, { buttons, pressure: 0, button: -1 });
+    await penEvent(page, "pointermove", x, y, { buttons: 0, pressure: 0, button: -1 });
+  };
+
+  test("double-clicking the barrel switches between pen and eraser", async ({ page }) => {
+    await openApp(page);
+    expect((await state(page)).tool).toBe("pen");
+    await barrelClick(page, 400, 600);
+    await barrelClick(page, 402, 601);
+    expect((await state(page)).tool).toBe("eraser");
+    await barrelClick(page, 400, 600);
+    await barrelClick(page, 400, 600);
+    expect((await state(page)).tool).toBe("pen");
+  });
+
+  test("two slow barrel clicks do not switch", async ({ page }) => {
+    await openApp(page);
+    await barrelClick(page, 400, 600);
+    await page.waitForTimeout(650);
+    await barrelClick(page, 400, 600);
+    expect((await state(page)).tool).toBe("pen");
+  });
+
+  test("two barrel clicks far apart do not switch", async ({ page }) => {
+    await openApp(page);
+    await barrelClick(page, 300, 600);
+    await barrelClick(page, 360, 600);
+    expect((await state(page)).tool).toBe("pen");
+  });
+
+  test("three quick barrel clicks switch once", async ({ page }) => {
+    await openApp(page);
+    await barrelClick(page, 400, 600);
+    await barrelClick(page, 400, 600);
+    await barrelClick(page, 400, 600);
+    expect((await state(page)).tool).toBe("eraser");
+  });
+
+  test("works with a pen that sets the spec's barrel bit", async ({ page }) => {
+    await openApp(page);
+    await barrelClick(page, 400, 600, 2);
+    await barrelClick(page, 400, 600, 2);
+    expect((await state(page)).tool).toBe("eraser");
+  });
+
+  test("with barrel erase off, the first click opens the menu and the second closes it and switches", async ({ page }) => {
+    await openApp(page);
+    await setMoreToggle(page, "Barrel button erases", false);
+    await barrelClick(page, 400, 600);
+    await expect(page.locator("#ctx-menu")).toBeVisible();
+    await barrelClick(page, 400, 600);
+    await expect(page.locator("#ctx-menu")).toBeHidden();
+    expect((await state(page)).tool).toBe("eraser");
+  });
+
+  test("from Select, a double-click goes to the eraser", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => window.__pdfink.setTool("select"));
+    await barrelClick(page, 400, 600);
+    await barrelClick(page, 400, 600);
+    expect((await state(page)).tool).toBe("eraser");
+  });
+});
