@@ -145,12 +145,21 @@ buttons and run chips; More ⋯ at the right.
   the progress line (`#status`, `#progress`). Right: save state, selection
   count, "page N of M", and "writing on N" while the page in view is not the
   one the bookmark follows.
-- **Overflow into More.** The bar never wraps or scrolls and labels never drop.
-  `fit()` measures every group with all of them shown, and `fitGroups`
-  (`src/fit.ts`) picks which movable groups to hide, in order: Add page, the
-  clipboard group, Pen style. They reappear as labelled tile rows at the top of
-  the More menu. The name, bookmark, tools, Undo/Redo, Commands and More stay.
-  Measuring repeats when the bar resizes or its contents change.
+- **Overflow into More.** Labels never drop. `fit()` measures every group on
+  one row with all of them shown, and `fitGroups` (`src/fit.ts`) picks which
+  movable groups to hide, in order: Add page, the clipboard group, Pen style.
+  They reappear as labelled tile rows at the top of the More menu. When even
+  that is not enough (a phone), the name and bookmark, then Undo and Redo, go
+  up into a row of their own above the bar (`#bar-title`), where the names
+  shorten to fit (the notebook's name first), and the movable groups that now
+  fit come back. Only on a screen narrower than any phone does the bar scroll
+  sideways, with More pinned at its right. Tools, Commands and More never
+  leave the bar. Measuring repeats when the bar resizes or its contents
+  change.
+- **Menu placement.** Menus are kept inside the visual viewport (on mobile
+  Chrome, `100vh` and `innerHeight` can include the area under a showing
+  address bar), and placed again whenever the menu or the viewport changes
+  size.
 - **Current bookmark** (`src/current-bookmark.ts`). The last bookmark, in
   outline order, whose page is at or before the page the pen last touched. With
   no ink yet, the one last picked from the menu; failing that, the one covering

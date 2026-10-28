@@ -77,7 +77,7 @@ In either mode the toolbar is one row of labelled tiles, in groups:
 - Add page; in server mode also Commands, the buttons commands have added, and chips for running detached commands.
 - More ⋯ at the right: View (Smaller, Fit width, Larger), Barrel button erases, Finger draws, and a link to the source.
 
-New makes a blank Letter PDF. Under the bar, a status line shows messages and progress on the left, and on the right the save state (Saving..., Saved 10:42, Unsaved), how many things are selected, "page 6 of 19", and "writing on 6" when the page in view is not the one the bookmark follows. The bar stays on one row. When it is too narrow, Add page, then the Copy to Delete group, then Pen style move into the top of the More menu, still labelled.
+New makes a blank Letter PDF. Under the bar, a status line shows messages and progress on the left, and on the right the save state (Saving..., Saved 10:42, Unsaved), how many things are selected, "page 6 of 19", and "writing on 6" when the page in view is not the one the bookmark follows. When the bar is too narrow, Add page, then the Copy to Delete group, then Pen style move into the top of the More menu, still labelled. On a phone, where that is not enough, the notebook name, bookmark, Undo and Redo get a row of their own above the rest.
 
 Saving in server mode:
 

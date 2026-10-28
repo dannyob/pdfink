@@ -16,31 +16,43 @@ body { display: flex; flex-direction: column; }
   display: flex; flex-direction: column; background: var(--bar); border-bottom: 1px solid #9aa0a8;
   user-select: none; -webkit-user-select: none; touch-action: manipulation;
 }
-/* One row of labelled tiles, never wrapped and never scrolled: when it is too
-   narrow, whole groups move into More (toolbar.ts, fit). */
+/* One row of labelled tiles, never wrapped: when it is too narrow, whole groups
+   move into More, then the name, bookmark, Undo and Redo go up into #bar-title,
+   and only then does the bar scroll (toolbar.ts, fit). */
 #bar {
   display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; padding: 6px 8px;
   overflow: hidden;
 }
 #bar .moved { display: none !important; }
+#bar.scroll { overflow-x: auto; scrollbar-width: none; }
+#bar.scroll::-webkit-scrollbar { display: none; }
+#bar.scroll > [data-group="more"] { position: sticky; right: 0; background: var(--bar); box-shadow: -6px 0 6px var(--bar); }
+#bar-title { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; padding: 6px 8px 0; overflow: hidden; }
+#bar-title:empty { display: none; }
+#bar-title > .group { display: flex; gap: 6px; align-items: center; flex: none; }
+#bar-title > [data-group="file"] { flex: 0 1 auto; min-width: 0; }
+#bar-title > [data-group="history"] { margin-left: auto; }
+/* Short of room, the notebook's name gives way before the bookmark, whose date says more on a phone. */
+#bar-title .tile.name:not(.bm) { flex-shrink: 4; min-width: 72px; }
+#bar-title > .group + .group::before { content: ""; width: 1px; height: 28px; background: #9aa0a8; margin: 0 1px 0 0; flex: none; }
 #bar > .group { display: flex; gap: 6px; align-items: center; flex: none; }
 /* Separators between groups: a 1 px rule, 28 px tall, 13 px of gap in all. */
 #bar > .group + .group:not([data-group="more"])::before {
   content: ""; width: 1px; height: 28px; background: #9aa0a8; margin: 0 1px 0 0; flex: none;
 }
 #bar .grow { flex: 1 0 12px; }
-#bar .tile.labelled { min-width: 52px; flex: none; }
-#bar .tile.name {
+#toolbar .tile.labelled { min-width: 52px; flex: none; }
+#toolbar .tile.name {
   flex-direction: row; gap: 6px; height: 52px; padding: 0 12px; font-size: 14px; font-weight: 600;
   max-width: 190px; min-width: 0; flex: 0 1 auto;
 }
 /* Measured at full width; should moving every group still not be enough, the names shrink (ellipsis) rather than spill. */
 #bar.measuring .tile.name { flex: none; }
-#bar .tile.name.bm { font-weight: 500; max-width: 210px; }
-#bar .tile.name svg { width: 18px; height: 18px; }
-#bar .tile.name .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-#bar .tile.name .chev { font-size: 12px; flex: none; color: var(--ink); }
-#bar .tile.name.none .txt, #bar .tile.name.none svg { opacity: .5; }
+#toolbar .tile.name.bm { font-weight: 500; max-width: 210px; }
+#toolbar .tile.name svg { width: 18px; height: 18px; }
+#toolbar .tile.name .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#toolbar .tile.name .chev { font-size: 12px; flex: none; color: var(--ink); }
+#toolbar .tile.name.none .txt, #toolbar .tile.name.none svg { opacity: .5; }
 #bar .tile.tool.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; overflow: hidden; pointer-events: none; }
 /* Toolbar items for one storage mode only; <body data-storage> picks. */

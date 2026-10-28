@@ -8,8 +8,10 @@
  * identity of the button that opened it, so a button must not be replaced
  * while its menu is open.
  *
- * The bar never wraps or scrolls. When it is too narrow, whole groups move to
- * the top of the More menu (see `fit`), in MOVABLE order; labels never drop.
+ * Labels never drop. When the bar is too narrow, whole groups move to the top
+ * of the More menu, in MOVABLE order; when that is not enough (a phone), the
+ * RAISABLE groups go up into a row of their own above the bar; only on a
+ * screen narrower than any phone does the bar scroll (see `fit`).
  */
 import type { App } from "./app";
 import type { NotebookInfo } from "./api";
@@ -40,6 +42,8 @@ export const WIDTHS: readonly [string, number, number, number][] = [
  * group but never leave.
  */
 export const MOVABLE = ["page", "clipboard", "style"];
+/** Groups that go up into the title row above the bar, first to go first, when moving every MOVABLE group is not enough. */
+export const RAISABLE = ["file", "history"];
 
 const SOURCE_URL = "https://github.com/dannyob/pdfink";
 
@@ -88,6 +92,11 @@ export class Toolbar {
   private readonly groups = new Map<string, HTMLDivElement>();
   /** Groups now in More rather than on the bar, in MOVABLE order. */
   private moved: string[] = [];
+  /** Groups now in the title row above the bar (#bar-title), in order. */
+  private raised: string[] = [];
+  /** The row above the bar that takes the name, bookmark, Undo and Redo when the bar is too narrow for them. */
+  private readonly title: HTMLDivElement;
+  private readonly watcher: MutationObserver;
   /** True while the open menu is More's own list (not the pen style menu opened from it). */
   private moreListOpen = false;
 
@@ -125,6 +134,10 @@ export class Toolbar {
     const runs = document.getElementById("runs") ?? Object.assign(document.createElement("div"), { id: "runs" });
     cmdButtons.classList.add("server-only");
     runs.classList.add("server-only");
+
+    this.title = document.createElement("div");
+    this.title.id = "bar-title";
+    root.before(this.title);
 
     const spacer = document.createElement("span");
     spacer.className = "grow";
@@ -173,7 +186,8 @@ export class Toolbar {
     // and bookmark text, the pen style label, command buttons and run chips.
     // `fit` changes only classes and attributes, which these do not watch.
     new ResizeObserver(() => this.fit()).observe(root);
-    new MutationObserver(() => this.fit()).observe(root, { childList: true, subtree: true, characterData: true });
+    this.watcher = new MutationObserver(() => this.fit());
+    for (const el of [root, this.title]) this.watcher.observe(el, { childList: true, subtree: true, characterData: true });
     // The storage mode, learnt after the bar is built, shows or hides the server-only tiles (Commands).
     new MutationObserver(() => this.fit()).observe(document.body, { attributes: true, attributeFilter: ["data-storage"] });
     window.addEventListener("resize", () => this.fit());
@@ -182,14 +196,25 @@ export class Toolbar {
   }
 
   /**
-   * Measure every group with all of them shown, then hide the movable ones
-   * that must go for the rest to fit on one row. A hidden group takes its
-   * separator with it (the separator is the group's own ::before).
+   * Measure every group on one row with all of them shown, then, until the
+   * bar fits: hide the movable groups, first to leave first; raise the name
+   * and bookmark into a row of their own above the bar (where they shorten
+   * to fit), letting moved groups back; raise Undo and Redo beside them; and
+   * last, let the bar scroll sideways with More pinned at its right. A
+   * hidden group takes its separator with it (the separator is the group's
+   * own ::before).
    */
   fit(): void {
     const bar = this.root;
     const addPage = this.tiles.get("btn-addpage")!;
+    const wasRaised = this.raised.join(" ");
+    // Measure from one row: the raised groups go back in place, file first and history after page-style's neighbours.
+    if (this.raised.length) {
+      bar.prepend(this.groups.get("file")!);
+      this.groups.get("clipboard")!.after(this.groups.get("history")!);
+    }
     bar.classList.add("measuring");
+    bar.classList.remove("scroll");
     for (const el of bar.querySelectorAll(".moved")) el.classList.remove("moved");
 
     const css = getComputedStyle(bar);
@@ -210,18 +235,34 @@ export class Toolbar {
     // n groups have n - 1 gaps; half a pixel absorbs sub-pixel widths that would not show.
     const available = bar.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight) + gap + 0.5;
 
+    // Raise groups into the title row until what is left can fit.
+    const total = (w: Record<string, number>) => Object.values(w).reduce((a, b) => a + b, 0);
+    const left = (w: Record<string, number>) => total(w) - MOVABLE.reduce((a, g) => a + (w[g] ?? 0), 0);
+    const raised: string[] = [];
+    for (const name of RAISABLE) {
+      if (left(widths) <= available) break;
+      raised.push(name);
+      delete widths[name];
+    }
     const moved = fitGroups(widths, available, MOVABLE);
+    const scroll = left(widths) > available;
     for (const name of moved) {
       if (name === "page") (pageAlone ? pageGroup : addPage).classList.add("moved");
       else this.groups.get(name)?.classList.add("moved");
     }
     bar.classList.remove("measuring");
+    for (const name of raised) this.title.append(this.groups.get(name)!);
+    this.raised = raised;
+    bar.classList.toggle("scroll", scroll);
+    if (bar.dataset.raised !== raised.join(" ")) bar.dataset.raised = raised.join(" ");
+    // These moves are fit's own, not new contents to refit for.
+    this.watcher.takeRecords();
     const changed = moved.join(" ") !== this.moved.join(" ");
     if (bar.dataset.moved !== moved.join(" ")) bar.dataset.moved = moved.join(" ");
     this.moved = moved;
     // A menu opened from a tile that just left the bar would hang from nothing.
     const menu = this.app.menu;
-    if (menu.open && menu.owner && menu.owner !== this.moreBtn && menu.owner.offsetParent === null) menu.hide();
+    if (menu.open && menu.owner && menu.owner !== this.moreBtn && (menu.owner.offsetParent === null || raised.join(" ") !== wasRaised)) menu.hide();
     // An open More list shows the moved groups: keep it in step (a rotation, say).
     if (changed && this.moreListOpen && menu.owner === this.moreBtn) this.redraw(this.moreBtn, this.moreItemsFn);
   }

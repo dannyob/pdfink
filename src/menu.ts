@@ -95,6 +95,12 @@ export class ContextMenu {
       }
     });
     window.addEventListener("resize", () => this.hide());
+    // Grown since it was placed (a list that arrives late, fonts, a longer
+    // submenu), or the visible area changed (an address bar showing): place
+    // it again. `place` only moves it, so this settles.
+    new ResizeObserver(() => this.open && this.place()).observe(this.el);
+    window.visualViewport?.addEventListener("resize", () => this.open && this.place());
+    window.visualViewport?.addEventListener("scroll", () => this.open && this.place());
   }
 
   get open(): boolean {
@@ -268,11 +274,21 @@ export class ContextMenu {
     return b;
   }
 
-  /** Keep the panel on screen, preferring the point it was opened at. */
+  /**
+   * Keep the panel on screen, preferring the point it was opened at. "On
+   * screen" is the visual viewport: on mobile Chrome, 100vh and innerHeight
+   * can include the space under a showing address bar.
+   */
   private place(): void {
+    const vv = window.visualViewport;
+    const w = vv?.width ?? window.innerWidth;
+    const h = vv?.height ?? window.innerHeight;
+    const x0 = vv?.offsetLeft ?? 0;
+    const y0 = vv?.offsetTop ?? 0;
+    this.el.style.maxHeight = `${h - 8}px`;
     const r = this.el.getBoundingClientRect();
-    const left = Math.max(4, Math.min(this.anchor.x, window.innerWidth - r.width - 4));
-    const top = Math.max(4, Math.min(this.anchor.y, window.innerHeight - r.height - 4));
+    const left = Math.max(x0 + 4, Math.min(this.anchor.x, x0 + w - r.width - 4));
+    const top = Math.max(y0 + 4, Math.min(this.anchor.y, y0 + h - r.height - 4));
     this.el.style.left = `${left}px`;
     this.el.style.top = `${top}px`;
   }

@@ -596,3 +596,93 @@ test.describe("fitting the width", () => {
     });
   });
 });
+
+/** The tiles in the title row (#bar-title), by id. */
+async function titleIds(page: Page): Promise<string[]> {
+  return page.locator("#bar-title .tile").evaluateAll((els) => els.filter((e) => (e as HTMLElement).offsetParent !== null).map((e) => e.id));
+}
+
+/** Every visible tile of `sel` lies inside the window, left to right. */
+async function inWindow(page: Page, sel: string): Promise<boolean> {
+  return page.locator(sel).evaluateAll((els) =>
+    els.filter((e) => (e as HTMLElement).offsetParent !== null).every((e) => {
+      const r = e.getBoundingClientRect();
+      return r.left >= -0.5 && r.right <= window.innerWidth + 0.5;
+    }),
+  );
+}
+
+test.describe("fitting a phone", () => {
+  test.describe("iPhone portrait, 390×844", () => {
+    test.use({ viewport: { width: 390, height: 844 } });
+
+    test("the name, bookmark, Undo and Redo get a row of their own; the tools row fits without scrolling", async ({ page }) => {
+      await openLongNotebook(page);
+      await expect.poll(() => titleIds(page)).toEqual(["bar-file", "bar-bookmark", "btn-undo", "btn-redo"]);
+      await expectOneRow(page, ["tool-pen", "tool-eraser", "tool-select", "bar-commands", "bar-more"]);
+      expect(await inWindow(page, "#bar-title .tile")).toBe(true);
+      // The title row is one row too, the names shortened to fit.
+      const tops = await page.locator("#bar-title .tile").evaluateAll((els) => new Set(els.map((e) => Math.round(e.getBoundingClientRect().top))).size);
+      expect(tops).toBe(1);
+      // No separator before the tools, which now start the bar.
+      expect(await page.locator('#bar > .group[data-group="tools"]').evaluate((g) => getComputedStyle(g, "::before").content)).toBe("none");
+    });
+
+    test("the name's menu opens from its new row", async ({ page }) => {
+      await openLongNotebook(page);
+      await expect.poll(() => titleIds(page)).toContain("bar-file");
+      await barMenu(page, "file");
+      await expect(page.locator("#ctx-menu")).toBeVisible();
+      const below = await page.evaluate(() => document.getElementById("ctx-menu")!.getBoundingClientRect().top >= document.getElementById("bar-file")!.getBoundingClientRect().bottom);
+      expect(below).toBe(true);
+    });
+
+    test("widening to the Daylight puts everything back on one row", async ({ page }) => {
+      await openLongNotebook(page);
+      await expect.poll(() => titleIds(page)).not.toEqual([]);
+      await page.setViewportSize({ width: 947, height: 1103 });
+      await expect.poll(() => titleIds(page)).toEqual([]);
+      await expect(page.locator("#bar-title")).toBeHidden();
+      await expectOneRow(page);
+    });
+  });
+
+  test.describe("narrower than any phone, 280×600", () => {
+    test.use({ viewport: { width: 280, height: 600 } });
+
+    test("the tools row scrolls sideways, with More pinned in view", async ({ page }) => {
+      await openLongNotebook(page);
+      await expect.poll(() => page.locator("#bar").evaluate((b) => b.classList.contains("scroll"))).toBe(true);
+      expect(await page.locator("#bar").evaluate((b) => b.scrollWidth > b.clientWidth)).toBe(true);
+      expect(await inWindow(page, "#bar-more")).toBe(true);
+      await page.locator("#bar").evaluate((b) => (b.scrollLeft = 0));
+      expect(await inWindow(page, "#bar-more")).toBe(true);
+      expect(await inWindow(page, "#bar-title .tile")).toBe(true);
+    });
+  });
+});
+
+test.describe("menu placement", () => {
+  test.use({ viewport: { width: 1000, height: 500 } });
+
+  test("a menu that grows after it opens is moved back on screen", async ({ page }) => {
+    await openApp(page);
+    await barMenu(page, "more");
+    // As when a list arrives late or a submenu is longer than its parent.
+    await page.evaluate(() => {
+      const m = document.getElementById("ctx-menu")!;
+      for (let i = 0; i < 30; i++) m.append(Object.assign(document.createElement("div"), { className: "lbl", textContent: `row ${i}` }));
+    });
+    await expect
+      .poll(() => page.evaluate(() => document.getElementById("ctx-menu")!.getBoundingClientRect().bottom))
+      .toBeLessThanOrEqual(500);
+    expect(await page.evaluate(() => document.getElementById("ctx-menu")!.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
+  });
+
+  test("the menu is no taller than the visible viewport", async ({ page }) => {
+    await openApp(page);
+    await barMenu(page, "more");
+    const maxH = await page.evaluate(() => parseFloat(document.getElementById("ctx-menu")!.style.maxHeight));
+    expect(maxH).toBeLessThanOrEqual((await page.evaluate(() => window.visualViewport!.height)) - 8 + 0.5);
+  });
+});
