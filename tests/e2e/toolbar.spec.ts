@@ -451,24 +451,45 @@ test.describe("fitting the width", () => {
       await expectMovedInMore(page);
     });
 
+    // How much has already moved depends on the fonts (Linux runs wider than macOS),
+    // so these compare with what had moved before the button, not with nothing.
+    const WIDE = "A wide command button";
+
     test("a toolbar command button added later makes the bar refit", async ({ page }) => {
       await openLongNotebook(page);
-      expect(await moved(page)).toEqual([]);
-      await page.evaluate(() => window.__pdfink.addButton("tb-wide", "A wide command button", "toolbar"));
+      const before = await moved(page);
+      await page.evaluate((label) => window.__pdfink.addButton("tb-wide", label, "toolbar"), WIDE);
       await expect(page.locator("#cmd-buttons .cmd")).toBeVisible();
-      await expect.poll(() => moved(page)).toContain("page");
+      await expect.poll(async () => (await moved(page)).length).toBeGreaterThan(before.length);
+      expect(await moved(page)).toEqual(expect.arrayContaining(before));
       await expectOneRow(page);
+    });
+
+    test("a command button with a very long label is shortened, so More stays reachable", async ({ page }) => {
+      await openLongNotebook(page);
+      await page.evaluate(() => window.__pdfink.addButton("tb-huge", "A command button whose label goes on and on far longer than any toolbar can hold", "toolbar"));
+      await expect(page.locator("#cmd-buttons .cmd")).toBeVisible();
+      await expectOneRow(page);
+      const inside = await page.evaluate(() => {
+        const bar = document.getElementById("bar")!.getBoundingClientRect();
+        const more = document.getElementById("bar-more")!.getBoundingClientRect();
+        return more.right <= bar.right + 0.5 && more.left >= bar.left;
+      });
+      expect(inside).toBe(true);
     });
 
     test("an open More menu follows a change in what has moved", async ({ page }) => {
       // (A window resize closes any menu, so the change here comes from a command button.)
       await openLongNotebook(page);
+      const before = await moved(page);
       await barMenu(page, "more");
-      expect((await menuOutline(page))[0]).toBe("[View]");
-      await page.evaluate(() => window.__pdfink.addButton("tb-wide", "A wide command button", "toolbar"));
-      await expect.poll(() => moved(page)).toContain("page");
+      const outline = (await menuOutline(page)).join("|");
+      await page.evaluate((label) => window.__pdfink.addButton("tb-wide", label, "toolbar"), WIDE);
+      await expect.poll(async () => (await moved(page)).length).toBeGreaterThan(before.length);
       await expect(page.locator("#ctx-menu")).toBeVisible();
-      await expect.poll(async () => (await menuOutline(page))[0]).toContain("Add page");
+      // The open list gained the newly moved group's row without being closed.
+      await expect.poll(async () => (await menuOutline(page)).join("|")).not.toBe(outline);
+      expect((await menuOutline(page)).length).toBeGreaterThan(outline.split("|").length);
       await expect(page.locator("#bar-more")).toHaveAttribute("aria-expanded", "true");
     });
 
