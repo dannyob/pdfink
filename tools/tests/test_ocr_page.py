@@ -253,6 +253,17 @@ class Recognise(unittest.TestCase):
         self.assertEqual(n, 2)
         self.assertEqual(sorted(i["text"] for i in self.page.set_calls[0]), ["first", "second", "typed"])
 
+    def test_prompt_names_todays_date_so_years_read_as_recent(self):
+        prompts = []
+        def fake(model, prompt, data, suffix, attempts=2, timeout=0):
+            prompts.append(prompt)
+            return '{"1": "a", "2": "b"}'
+        ocr.llm_call.ask = fake
+        self.run_it()
+        today = ocr.date.today()
+        self.assertIn(today.isoformat(), prompts[0])
+        self.assertIn(str(today.year), prompts[0].split(today.isoformat())[1])
+
     def test_unparseable_answer_raises_and_leaves_texts_alone(self):
         self.answer("sorry, I cannot read this")
         with self.assertRaises(ocr.RecogniseError):

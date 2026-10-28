@@ -50,6 +50,7 @@ import io
 import json
 import math
 import os
+from datetime import date
 import re
 import sys
 import time
@@ -66,9 +67,15 @@ ARRIVAL_DWELL = 3.0  # s you must stay on a page before --watch reads its existi
 LLM_TIMEOUT = int(os.environ.get("PDFINK_OCR_LLM_TIMEOUT", "120"))
 SCALE = 2  # page render scale, pixels per point
 LEFT_EDGE = 20  # pt: a line starting this close to the left edge is labelled on its right
-PROMPT = """The attached page has handwriting on it. Some handwritten lines have a small red number beside them. For each numbered line, transcribe the handwriting on that line exactly as written: keep spelling, capitals and punctuation; mark unreadable words [illegible]. Ignore printed text, the red numbers themselves, underlines, circles, arrows and other marks that are not words. Answer with JSON only: an object mapping each number (as a string) to its line's text, with "" for a numbered line that has no words."""
+PROMPT = """The attached page has handwriting on it. Some handwritten lines have a small red number beside them. For each numbered line, transcribe the handwriting on that line exactly as written: keep spelling, capitals and punctuation; mark unreadable words [illegible]. Ignore printed text, the red numbers themselves, underlines, circles, arrows and other marks that are not words. Answer with JSON only: an object mapping each number (as a string) to its line's text, with "" for a numbered line that has no words. Today is {today}: dates on the page are most likely recent, so read a handwritten year as {year} or close to it unless it clearly says otherwise."""
 
 Rect = dict[str, float]
+
+
+def prompt(today: date | None = None) -> str:
+    """The OCR prompt, with today's date as a hint for handwritten years."""
+    today = today or date.today()
+    return PROMPT.format(today=today.isoformat(), year=today.year)
 
 
 class RecogniseError(Exception):
@@ -276,7 +283,7 @@ def recognise(
 
     png = label_image(page_api.page_png(page_index, SCALE), todo, numbers)
     try:
-        reply = llm_call.ask(_model(model), PROMPT, png, ".png", attempts=2, timeout=LLM_TIMEOUT)
+        reply = llm_call.ask(_model(model), prompt(), png, ".png", attempts=2, timeout=LLM_TIMEOUT)
     except llm_call.LLMError as e:
         raise RecogniseError(str(e)) from e
     answer = parse_answer(reply)
