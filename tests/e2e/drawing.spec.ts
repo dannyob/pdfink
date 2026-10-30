@@ -563,3 +563,45 @@ test.describe("barrel double-click", () => {
     expect((await state(page)).tool).toBe("eraser");
   });
 });
+
+test.describe("a pen that lands without hovering", () => {
+  // With Finger draws off the page lets the browser pan, and turns that off
+  // only when it sees the pen hover. A pen that lands unseen must still not
+  // be taken for a scroll (Chrome would cancel the stroke after a few pixels).
+  async function touchStart(page: import("@playwright/test").Page, touchType: "stylus" | "direct"): Promise<boolean> {
+    return page.evaluate((type) => {
+      const target = document.querySelector(".page canvas.ink")!;
+      const r = target.getBoundingClientRect();
+      const t = new Touch({ identifier: 7, target, clientX: r.left + 50, clientY: r.top + 50, touchType: type } as TouchInit);
+      const ev = new TouchEvent("touchstart", { touches: [t], changedTouches: [t], targetTouches: [t], bubbles: true, cancelable: true });
+      target.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    }, touchType);
+  }
+
+  async function penDown(page: import("@playwright/test").Page): Promise<void> {
+    await page.evaluate(() => {
+      const target = document.querySelector(".page canvas.ink")!;
+      const r = target.getBoundingClientRect();
+      target.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 9, pointerType: "pen", clientX: r.left + 50, clientY: r.top + 50, buttons: 1, pressure: 0.5, bubbles: true, cancelable: true }));
+    });
+  }
+
+  test("Chrome: a pen's touches are never left to the browser to pan", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => window.__pdfink.setFingerDraws(false));
+    // Landed unseen: no hover came first, so panning was still on.
+    expect(await page.locator("#pages").evaluate((el) => el.classList.contains("pen-active"))).toBe(false);
+    await penDown(page);
+    expect(await touchStart(page, "direct")).toBe(true);
+    // Once it lifts, fingers scroll again.
+    await page.evaluate(() => document.querySelector(".page canvas.ink")!.dispatchEvent(new PointerEvent("pointerup", { pointerId: 9, pointerType: "pen", bubbles: true })));
+    expect(await touchStart(page, "direct")).toBe(false);
+  });
+
+  test("a finger still scrolls", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => window.__pdfink.setFingerDraws(false));
+    expect(await touchStart(page, "direct")).toBe(false);
+  });
+});

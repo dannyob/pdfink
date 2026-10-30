@@ -746,6 +746,8 @@ export class App {
   /** Pointer whose held barrel button already opened the menu, so a hover doesn't reopen it. */
   private menuPointer: number | null = null;
   private lastPointerType = "";
+  /** Pens touching the page now (pointerdown to pointerup), whose touches the browser must not pan with. */
+  private readonly pensDown = new Set<number>();
 
   /** Commands from the server's commands file (server mode). */
   commands: CommandInfo[] = [];
@@ -1151,6 +1153,19 @@ export class App {
   private bindPointerEvents(): void {
     const c = this.container;
     c.addEventListener("pointerdown", (e) => this.onPointerDown(e), { passive: false });
+    // touch-action is read when a contact lands, so a pen that lands without
+    // having been seen hovering (pen-active not yet set, Finger draws off)
+    // would be panned by the browser, which then cancels the stroke a few
+    // pixels in. Claiming the pen's touches stops that whatever touch-action
+    // says. Chrome fires the pen's pointerdown before its touchstart and has
+    // no touchType; Safari marks the touch "stylus".
+    const claimStylus = (e: TouchEvent) => {
+      if (this.pensDown.size || [...e.changedTouches].some((t) => (t as Touch & { touchType?: string }).touchType === "stylus")) e.preventDefault();
+    };
+    const penUp = (e: PointerEvent) => void this.pensDown.delete(e.pointerId);
+    for (const t of ["pointerup", "pointercancel"] as const) document.addEventListener(t, penUp, { capture: true });
+    c.addEventListener("touchstart", claimStylus, { passive: false });
+    c.addEventListener("touchmove", claimStylus, { passive: false });
     c.addEventListener("pointermove", (e) => this.onPointerMove(e), { passive: false });
     document.addEventListener("pointermove", (e) => this.watchBarrel(e), { capture: true });
     c.addEventListener("pointerup", (e) => this.onPointerUp(e));
@@ -1182,6 +1197,7 @@ export class App {
   private onPointerDown(e: PointerEvent): void {
     this.lastPointerType = e.pointerType;
     if (e.pointerType === "pen") {
+      this.pensDown.add(e.pointerId);
       this.enablePenMode();
       this.penSeen();
       if (this.barrelMenuPress(e)) {
