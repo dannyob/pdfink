@@ -110,16 +110,31 @@ describe("importing a notebook from a URL", () => {
   let remote: http.Server;
   let r: string;
   let pdf: Uint8Array;
+  let slowWaiting = 0;
+  let releaseSlow: () => void = () => {};
+  const slowGate = new Promise<void>((ok) => (releaseSlow = ok));
 
   beforeAll(async () => {
     pdf = await createBlankPdf(2);
     idir = fs.mkdtempSync(path.join(os.tmpdir(), "pdfink-imp-"));
-    srv = createServer({ mode: "server", notebooksDir: idir, distDir: null, host: "127.0.0.1", port: 0, commandsFile: null });
+    srv = createServer({ mode: "server", notebooksDir: idir, distDir: null, host: "127.0.0.1", port: 0, commandsFile: null, importMaxBytes: pdf.length + 1000 });
     await new Promise<void>((ok) => srv.listen(0, "127.0.0.1", () => ok()));
     b = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    const big = Buffer.concat([Buffer.from(pdf), Buffer.alloc(5000, 32)]);
     // The "other website": no CORS headers, which the server doesn't need.
     remote = http.createServer((req, res) => {
       if (req.url === "/paper.pdf") res.writeHead(200, { "Content-Type": "application/pdf" }).end(pdf);
+      else if (req.url === "/big.pdf") res.writeHead(200, { "Content-Type": "application/pdf" }).end(big);
+      else if (req.url === "/endless.pdf") {
+        // No Content-Length, and it never stops: the server must cut it off.
+        res.writeHead(200, { "Content-Type": "application/pdf" });
+        res.write(pdf);
+        const t = setInterval(() => res.write(Buffer.alloc(1000, 32)), 5);
+        res.on("close", () => clearInterval(t));
+      } else if (req.url === "/slow.pdf") {
+        slowWaiting++;
+        void slowGate.then(() => res.writeHead(200, { "Content-Type": "application/pdf" }).end(pdf));
+      }
       else if (req.url === "/moved") res.writeHead(302, { Location: "/paper.pdf" }).end();
       else if (req.url === "/login.html") res.writeHead(200, { "Content-Type": "text/html" }).end("<html>log in</html>");
       else res.writeHead(404).end("no");
@@ -185,6 +200,31 @@ describe("importing a notebook from a URL", () => {
 
     expect(fs.readdirSync(idir).sort()).toEqual(["moved.pdf", "paper.pdf"]);
   });
+
+  it("refuses a file over the size limit, whether or not it says how big it is", async () => {
+    let res = await importReq("big.pdf", `${r}/big.pdf`, "new");
+    expect(res.status).toBe(413);
+    expect(((await res.json()) as { error: string }).error).toMatch(/too large/);
+    res = await importReq("endless.pdf", `${r}/endless.pdf`, "new");
+    expect(res.status).toBe(413);
+    expect(fs.existsSync(path.join(idir, "big.pdf"))).toBe(false);
+    expect(fs.existsSync(path.join(idir, "endless.pdf"))).toBe(false);
+  });
+
+  it("runs at most two imports at once", async () => {
+    const first = importReq("slow1.pdf", `${r}/slow.pdf`, "new");
+    const second = importReq("slow2.pdf", `${r}/slow.pdf`, "new");
+    for (const t0 = Date.now(); slowWaiting < 2; await new Promise((ok) => setTimeout(ok, 10))) {
+      if (Date.now() - t0 > 5000) throw new Error("the slow imports never started");
+    }
+    const third = await importReq("slow3.pdf", `${r}/paper.pdf`, "new");
+    expect(third.status).toBe(429);
+    releaseSlow();
+    expect((await first).status).toBe(201);
+    expect((await second).status).toBe(201);
+    // Once they are done there is room again.
+    expect((await importReq("slow3.pdf", `${r}/paper.pdf`, "new")).status).toBe(201);
+  });
 });
 
 describe("command line", () => {
@@ -199,6 +239,13 @@ describe("command line", () => {
     expect(d.port).toBe(5173);
     expect(d.notebooksDir.endsWith("/notebooks")).toBe(true);
     expect(() => optionsFrom(["--mode", "cloud"], {})).toThrow(/--mode/);
+  });
+
+  it("takes the URL import size limit in MB, 250 by default", () => {
+    expect(optionsFrom([], {}).importMaxBytes).toBe(250 * 1024 * 1024);
+    expect(optionsFrom(["--import-max", "500"], {}).importMaxBytes).toBe(500 * 1024 * 1024);
+    expect(optionsFrom([], { PDFINK_IMPORT_MAX_MB: "20" }).importMaxBytes).toBe(20 * 1024 * 1024);
+    expect(() => optionsFrom(["--import-max", "lots"], {})).toThrow(/--import-max/);
   });
 });
 

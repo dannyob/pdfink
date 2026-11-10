@@ -10,9 +10,11 @@
  *   --dist DIR      built app to serve (default ./dist; "none" for API only)
  *   --commands FILE pen-menu commands (default <notebooks>/pdfink-commands.conf;
  *                   "none" to disable). See server/commands.ts for the format.
+ *   --import-max MB largest PDF the server will fetch for an import from a
+ *                   URL (default 250)
  *
  * Environment variables PDFINK_MODE, HOST, PORT, NOTEBOOKS_DIR, DIST_DIR and
- * PDFINK_COMMANDS are used when a flag is not given.
+ * PDFINK_COMMANDS and PDFINK_IMPORT_MAX_MB are used when a flag is not given.
  *
  * API (server mode)
  *   GET /api/status               → { mode, notebooksDir }
@@ -41,7 +43,9 @@
  *                                   followed) and stores it as <name>. Header
  *                                   X-If-Mtime: "new" refuses to replace an
  *                                   existing file (409). 400 for a bad url or
- *                                   a fetched file that is not a PDF, 502
+ *                                   a fetched file that is not a PDF, 413
+ *                                   over the --import-max limit, 429 when
+ *                                   two imports are already running, 502
  *                                   when the fetch fails.
  *   GET  /api/commands             → [{ id, label, reload, confirm, detach }]
  *                                   from the commands file (re-read each time)
@@ -91,7 +95,12 @@ export interface ServerOptions {
   socketDir?: string;
   /** How long a page's detached runs outlive it, in ms (Bridge default when absent). */
   graceMs?: number;
+  /** Largest PDF fetched for an import from a URL (DEFAULT_IMPORT_MAX_MB when absent). */
+  importMaxBytes?: number;
 }
+
+export const DEFAULT_IMPORT_MAX_MB = 250;
+const MB = 1024 * 1024;
 
 export interface NotebookInfo {
   name: string;
@@ -563,9 +572,12 @@ class ImportError extends Error {
 }
 
 const IMPORT_TIMEOUT_MS = 5 * 60_000;
+/** Imports fetching at once. Each holds up to importMaxBytes in memory. */
+const MAX_IMPORTS = 2;
+let importsRunning = 0;
 
-/** Fetch the PDF at `url` on the server, up to MAX_BODY bytes. Throws ImportError. */
-async function fetchRemotePdf(url: URL): Promise<Buffer> {
+/** Fetch the PDF at `url` on the server, up to `max` bytes. Throws ImportError. */
+async function fetchRemotePdf(url: URL, max: number): Promise<Buffer> {
   let res: Response;
   try {
     res = await fetch(url, { redirect: "follow", headers: { "User-Agent": "pdfink" }, signal: AbortSignal.timeout(IMPORT_TIMEOUT_MS) });
@@ -574,13 +586,18 @@ async function fetchRemotePdf(url: URL): Promise<Buffer> {
     throw new ImportError(502, `Could not fetch from ${url.host}: ${cause?.code ?? cause?.message ?? (err as Error).message}`);
   }
   if (!res.ok) throw new ImportError(502, `Could not fetch from ${url.host}: HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}`);
-  if (Number(res.headers.get("content-length") ?? 0) > MAX_BODY) throw new ImportError(413, "file too large");
+  const tooLarge = () => new ImportError(413, `The file at ${url.host} is too large: the limit is ${Number((max / MB).toFixed(1))} MB (--import-max).`);
+  if (Number(res.headers.get("content-length") ?? 0) > max) {
+    await res.body?.cancel();
+    throw tooLarge();
+  }
   const chunks: Uint8Array[] = [];
   let total = 0;
   if (res.body) {
+    // Counted as it arrives: a missing or false Content-Length can't get past the limit.
     for await (const c of res.body as AsyncIterable<Uint8Array>) {
       total += c.length;
-      if (total > MAX_BODY) throw new ImportError(413, "file too large");
+      if (total > max) throw tooLarge();
       chunks.push(c);
     }
   }
@@ -590,7 +607,7 @@ async function fetchRemotePdf(url: URL): Promise<Buffer> {
 }
 
 /** POST /api/notebooks/<name>/import: fetch { url } on the server and store it as notebook <name>. */
-async function handleImport(req: http.IncomingMessage, res: http.ServerResponse, name: string, file: string): Promise<void> {
+async function handleImport(opts: ServerOptions, req: http.IncomingMessage, res: http.ServerResponse, name: string, file: string): Promise<void> {
   const refuseExisting = req.headers["x-if-mtime"] === "new";
   const conflict = async (): Promise<boolean> => {
     const st = await fsp.stat(file).catch(() => null);
@@ -607,13 +624,20 @@ async function handleImport(req: http.IncomingMessage, res: http.ServerResponse,
     return;
   }
   if (await conflict()) return;
+  if (importsRunning >= MAX_IMPORTS) {
+    send(res, 429, { error: "Two imports are already running; try again when they have finished." });
+    return;
+  }
   let body: Buffer;
   const t0 = Date.now();
+  importsRunning++;
   try {
-    body = await fetchRemotePdf(url);
+    body = await fetchRemotePdf(url, opts.importMaxBytes ?? DEFAULT_IMPORT_MAX_MB * MB);
   } catch (err) {
     send(res, err instanceof ImportError ? err.status : 502, { error: (err as Error).message });
     return;
+  } finally {
+    importsRunning--;
   }
   // The fetch can take a while: check again before writing.
   if (await conflict()) return;
@@ -674,7 +698,7 @@ async function handleApi(opts: ServerOptions, bridge: Bridge, req: http.Incoming
       send(res, 405, { error: "method not allowed" });
       return;
     }
-    await handleImport(req, res, name, file);
+    await handleImport(opts, req, res, name, file);
     return;
   }
   if (wantOpen) {
@@ -848,12 +872,13 @@ export function optionsFrom(argv: string[], env: NodeJS.ProcessEnv = process.env
       notebooks: { type: "string" },
       dist: { type: "string" },
       commands: { type: "string" },
+      "import-max": { type: "string" },
       help: { type: "boolean", short: "h" },
     },
     strict: true,
   });
   if (values.help) {
-    console.log("usage: node server/index.ts [--mode server|browser] [--host H] [--port P] [--notebooks DIR] [--dist DIR|none] [--commands FILE|none]");
+    console.log("usage: node server/index.ts [--mode server|browser] [--host H] [--port P] [--notebooks DIR] [--dist DIR|none] [--commands FILE|none] [--import-max MB]");
     process.exit(0);
   }
   const here = path.dirname(new URL(import.meta.url).pathname);
@@ -862,6 +887,8 @@ export function optionsFrom(argv: string[], env: NodeJS.ProcessEnv = process.env
   const dist = values.dist ?? (env.DIST_DIR === "" ? "none" : env.DIST_DIR) ?? path.resolve(here, "..", "dist");
   const notebooksDir = path.resolve(values.notebooks ?? env.NOTEBOOKS_DIR ?? "notebooks");
   const commands = values.commands ?? env.PDFINK_COMMANDS ?? defaultCommandsFile(notebooksDir);
+  const importMax = Number(values["import-max"] ?? env.PDFINK_IMPORT_MAX_MB ?? DEFAULT_IMPORT_MAX_MB);
+  if (!(importMax > 0)) throw new Error(`--import-max must be a number of MB, not "${values["import-max"] ?? env.PDFINK_IMPORT_MAX_MB}"`);
   return {
     mode,
     notebooksDir,
@@ -869,6 +896,7 @@ export function optionsFrom(argv: string[], env: NodeJS.ProcessEnv = process.env
     host: values.host ?? env.HOST ?? "127.0.0.1",
     port: Number(values.port ?? env.PORT ?? 5173),
     commandsFile: commands === "none" || commands === "" ? null : path.resolve(commands),
+    importMaxBytes: Math.round(importMax * MB),
   };
 }
 

@@ -142,7 +142,7 @@ The address can be left unencoded, even with its own `?a=1&b=2`, as long as `imp
 javascript:location='https://pdfink.libertyh.dev/?import='+encodeURIComponent(location.href)
 ```
 
-In server mode the server downloads the PDF, so any site works. pdfink asks for a name for it in the notebooks folder, then the address changes to `?f=<name>`.
+In server mode the server downloads the PDF, so any site works, up to 250 MB (`--import-max` changes that) and two imports at a time. pdfink asks for a name for it in the notebooks folder, then the address changes to `?f=<name>`.
 
 In browser-only mode your browser downloads it directly, which only works if the other site allows cross-origin requests (it sends an `Access-Control-Allow-Origin` header). arXiv and raw.githubusercontent.com do; most sites do not, and for those pdfink says so and you have to download the PDF and open it yourself. The PDF opens as an unsaved document; Save downloads it with your ink.
 
@@ -237,6 +237,7 @@ Flags win over environment variables.
 | `--notebooks` | `NOTEBOOKS_DIR` | `./notebooks` | Folder of PDFs. Created if missing. |
 | `--dist` | `DIST_DIR` | `./dist` | Built app to serve. `none` serves the API only. |
 | `--commands` | `PDFINK_COMMANDS` | `<notebooks>/pdfink-commands.conf` | Pen-menu commands file. `none` disables the menu's commands. |
+| `--import-max` | `PDFINK_IMPORT_MAX_MB` | `250` | Largest PDF, in MB, the server will download for File › Import from URL.... |
 
 To force the app's storage mode, add `?storage=local` or `?storage=server` to the URL, or set `VITE_STORAGE=local|server` at build time.
 
@@ -252,7 +253,7 @@ Server mode only. Names are plain basenames ending in `.pdf`; paths are refused.
 | PUT | `/api/notebooks/<name>` | Body is a PDF. `X-If-Mtime: <ms>` must match the file on disk, or be `new` to require that it does not exist. Otherwise 409. |
 | GET | `/api/notebooks/<name>/open` | The notebook parsed on the server: stroke, link and bookmark data plus the PDF with ink and web links removed. |
 | PUT | `/api/notebooks/<name>/save` | Stroke, image, link and bookmark data. The server rebuilds the PDF and writes it; without bookmarks the outline is left alone. Same `X-If-Mtime` rules. |
-| POST | `/api/notebooks/<name>/import` | Body `{ url }`. The server fetches the PDF (http or https, redirects followed) and stores it as `<name>`. `X-If-Mtime: new` refuses to replace an existing file (409). 400 for a bad URL or a file that is not a PDF, 502 when the fetch fails. |
+| POST | `/api/notebooks/<name>/import` | Body `{ url }`. The server fetches the PDF (http or https, redirects followed) and stores it as `<name>`. `X-If-Mtime: new` refuses to replace an existing file (409). 400 for a bad URL or a file that is not a PDF, 413 over `--import-max`, 429 while two imports are already running, 502 when the fetch fails. |
 | GET | `/api/commands` | `[{ id, label, reload, confirm, detach }]` from the commands file, re-read each time. |
 | POST | `/api/commands/<id>` | Body `{ name, page, x, y, session?, selection? }` (pages 0-based, coordinates in display points). Runs the command; returns its run id, exit status, output, and whether the file changed. A detached command answers at once with `detached: true`. |
 | GET | `/api/page?session=<id>` | WebSocket upgrade: the page's end of the command bridge (see `server/bridge.ts`). |
