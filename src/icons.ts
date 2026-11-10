@@ -24,6 +24,7 @@ export const icons = {
   fileNew: svg('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>'),
   save: svg('<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3"/><rect x="8" y="13" width="8" height="8"/>'),
   import: svg('<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v4h16v-4"/>'),
+  link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
   export: svg('<path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 17v4h16v-4"/>'),
   zoomIn: svg('<circle cx="10" cy="10" r="6"/><path d="M15 15l5 5M10 7v6M7 10h6"/>'),
   zoomOut: svg('<circle cx="10" cy="10" r="6"/><path d="M15 15l5 5M7 10h6"/>'),

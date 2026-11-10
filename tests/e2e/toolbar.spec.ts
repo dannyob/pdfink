@@ -97,7 +97,7 @@ test.describe("File menu", () => {
   test("server mode: open, new, save, notebook pages, import, export", async ({ page }) => {
     await openApp(page);
     await barMenu(page, "file");
-    expect(await menuOutline(page)).toEqual(["[untitled.pdf]", "Open notebook…", "New notebook", "—", "Save", "Notebook pages", "—", "Import a PDF…", "Export as PDF…"]);
+    expect(await menuOutline(page)).toEqual(["[untitled.pdf]", "Open notebook…", "New notebook", "—", "Save", "Notebook pages", "—", "Import a PDF…", "Import from URL…", "Export as PDF…"]);
     await expect(page.locator("#ctx-menu .menuitem", { hasText: "Save" }).locator(".detail")).toHaveText("Ctrl+S");
     await expect(page.locator("#ctx-menu .menuitem.checked")).toHaveText(/Notebook pages/);
   });
@@ -105,7 +105,7 @@ test.describe("File menu", () => {
   test("browser-only: Open…, New, Save, Save as…, Notebook pages; no Commands and no empty group", async ({ page }) => {
     await openLocalApp(page);
     await barMenu(page, "file");
-    expect(await menuOutline(page)).toEqual(["[untitled.pdf]", "Open…", "New", "—", "Save", "Save as…", "Notebook pages"]);
+    expect(await menuOutline(page)).toEqual(["[untitled.pdf]", "Open…", "Open from URL…", "New", "—", "Save", "Save as…", "Notebook pages"]);
     await expect(page.locator("#ctx-menu .menuitem", { hasText: "Open…" }).locator(".detail")).toHaveText("Ctrl+O");
     await page.keyboard.press("Escape");
     await expect(page.locator("#bar-commands")).toBeHidden();

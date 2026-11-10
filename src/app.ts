@@ -31,7 +31,8 @@ import { appendBlankPage, createBlankPdf, exportPdf } from "./pdf/export";
 import { PageView, drawStroke, pruneImageCache, shortUrl, type SelectionView } from "./render/pageview";
 import { normalizeUrl, todayIso } from "./links-ui";
 import { displayToPdf, normalizeRotate, type PageGeom } from "./pdf/geom";
-import { ConflictError, listCommands, listNotebooks, loadNotebook, openNotebookParsed, runCommand, saveNotebook, saveNotebookParsed, type CommandInfo, type NotebookInfo } from "./api";
+import { checkImportUrl, fetchPdf, nameFromUrl } from "./import-url";
+import { ConflictError, importNotebookFromUrl, listCommands, listNotebooks, loadNotebook, openNotebookParsed, runCommand, saveNotebook, saveNotebookParsed, type CommandInfo, type NotebookInfo } from "./api";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
@@ -347,6 +348,67 @@ export class App {
   async openFile(file: File): Promise<void> {
     if (!(await this.readyToLeave())) return;
     await this.loadBytes(new Uint8Array(await file.arrayBuffer()), file.name, null);
+  }
+
+  /**
+   * Open the PDF at a web address: File › Open from URL… / Import from URL…,
+   * or `?import=` in the page's address. With no `raw` it asks for one. In
+   * browser-only mode the browser fetches it (only sites that allow
+   * cross-origin requests work) and it opens as an unsaved document; in
+   * server mode the server fetches it into the notebooks folder.
+   */
+  async importUrl(raw?: string): Promise<boolean> {
+    const typed = raw ?? (await this.promptFn("Address of the PDF", "https://"));
+    if (typed === null) return false;
+    let url: URL;
+    try {
+      url = checkImportUrl(typed);
+    } catch (err) {
+      return this.importFailed((err as Error).message);
+    }
+    if (!(await this.readyToLeave())) return false;
+    if (this.storage !== "server") {
+      this.setStatus(`Fetching ${url.host}…`);
+      let bytes: Uint8Array;
+      try {
+        bytes = await fetchPdf(url);
+      } catch (err) {
+        return this.importFailed((err as Error).message);
+      }
+      const name = nameFromUrl(url);
+      if (!(await this.loadBytes(bytes, name, null))) return false;
+      this.emit("notebook", { name }); // so a #page= in the address applies
+      return true;
+    }
+    const rawName = await this.promptFn("Save the imported PDF in the notebooks folder as", nameFromUrl(url));
+    if (rawName === null) return false;
+    const name = App.normalizeNotebookName(rawName);
+    if (!name) return this.importFailed(`"${rawName}" is not a usable notebook name.`);
+    this.setStatus(`Fetching ${url.host}…`);
+    try {
+      try {
+        await importNotebookFromUrl(name, url.href, "new");
+      } catch (err) {
+        if (!(err instanceof ConflictError)) throw err;
+        if (!(await this.confirmFn(`${name} already exists in the notebooks folder. Replace it?`))) {
+          this.setStatus(`Not imported: ${name} already exists.`);
+          return false;
+        }
+        this.setStatus(`Fetching ${url.host}…`);
+        await importNotebookFromUrl(name, url.href, null);
+      }
+    } catch (err) {
+      return this.importFailed((err as Error).message);
+    }
+    this.onNotebooksChanged();
+    return this.openNotebook(name);
+  }
+
+  /** Report a failed import: on the status line, and on the empty page if nothing is open. */
+  private importFailed(message: string): false {
+    this.setStatus(message);
+    if (!this.views.length) this.showEmpty(message);
+    return false;
   }
 
   /** Save as: forget the current file handle so the browser asks where to put it. */

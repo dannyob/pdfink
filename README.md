@@ -55,7 +55,7 @@ Server mode is the default:
 npm start -- --notebooks /path/to/folder
 ```
 
-Open http://127.0.0.1:5173/. The folder is created if it is missing. The notebook's name at the left of the toolbar opens the File menu: Open notebook... (the PDFs in the folder), New notebook, Save, Notebook pages, Import a PDF... (copy a PDF from the device into the folder) and Export as PDF... (download the current notebook).
+Open http://127.0.0.1:5173/. The folder is created if it is missing. The notebook's name at the left of the toolbar opens the File menu: Open notebook... (the PDFs in the folder), New notebook, Save, Notebook pages, Import a PDF... (copy a PDF from the device into the folder), Import from URL... (the server downloads a PDF into the folder) and Export as PDF... (download the current notebook).
 
 Browser-only mode:
 
@@ -65,7 +65,7 @@ npm start -- --mode browser
 
 You can also serve the static HTML/javascript build in `dist/` from any static host. 
 
-The File menu (the file's name at the left of the toolbar) has Open..., New, Save, Save as... and Notebook pages. Chromium writes back to the file you opened through the File System Access API. Other browsers download the result.
+The File menu (the file's name at the left of the toolbar) has Open..., Open from URL..., New, Save, Save as... and Notebook pages. Chromium writes back to the file you opened through the File System Access API. Other browsers download the result.
 
 In either mode the toolbar is one row of labelled tiles, in groups:
 
@@ -126,6 +126,25 @@ Bookmarks are the PDF's outline. The bookmark button in the toolbar shows the cu
 ## Deep links
 
 In server mode the address bar follows you: `?f=2026-10.pdf#page=3` names the notebook and the page you are looking at, and while something is selected the hash carries the selection too, as `#page=3;x=323pdf;y=400pdf;w=200pdf;h=200pdf` (PDF points, origin bottom-left, the same space pen-menu commands see in `$X`/`$Y`). The URL is rewritten in place as you scroll or select, so Back is not flooded. Opening such a link opens the notebook, scrolls to the page and restores the selection.
+
+## Opening a PDF from the web
+
+File › Open from URL... (browser-only mode) or File › Import from URL... (server mode) asks for a web address. You can also put it in pdfink's own address, after `?import=`:
+
+```
+https://pdfink.libertyh.dev/?import=https://arxiv.org/pdf/1706.03762
+https://pdfink.libertyh.dev/?import=https://arxiv.org/pdf/1706.03762#page=3
+```
+
+The address can be left unencoded, even with its own `?a=1&b=2`, as long as `import=` is the last parameter; a percent-encoded one can go anywhere. A `#page=` after it opens at that page. A bookmarklet that sends the PDF you are looking at to pdfink:
+
+```
+javascript:location='https://pdfink.libertyh.dev/?import='+encodeURIComponent(location.href)
+```
+
+In server mode the server downloads the PDF, so any site works. pdfink asks for a name for it in the notebooks folder, then the address changes to `?f=<name>`.
+
+In browser-only mode your browser downloads it directly, which only works if the other site allows cross-origin requests (it sends an `Access-Control-Allow-Origin` header). arXiv and raw.githubusercontent.com do; most sites do not, and for those pdfink says so and you have to download the PDF and open it yourself. The PDF opens as an unsaved document; Save downloads it with your ink.
 
 ## Pen-menu commands
 
@@ -233,6 +252,7 @@ Server mode only. Names are plain basenames ending in `.pdf`; paths are refused.
 | PUT | `/api/notebooks/<name>` | Body is a PDF. `X-If-Mtime: <ms>` must match the file on disk, or be `new` to require that it does not exist. Otherwise 409. |
 | GET | `/api/notebooks/<name>/open` | The notebook parsed on the server: stroke, link and bookmark data plus the PDF with ink and web links removed. |
 | PUT | `/api/notebooks/<name>/save` | Stroke, image, link and bookmark data. The server rebuilds the PDF and writes it; without bookmarks the outline is left alone. Same `X-If-Mtime` rules. |
+| POST | `/api/notebooks/<name>/import` | Body `{ url }`. The server fetches the PDF (http or https, redirects followed) and stores it as `<name>`. `X-If-Mtime: new` refuses to replace an existing file (409). 400 for a bad URL or a file that is not a PDF, 502 when the fetch fails. |
 | GET | `/api/commands` | `[{ id, label, reload, confirm, detach }]` from the commands file, re-read each time. |
 | POST | `/api/commands/<id>` | Body `{ name, page, x, y, session?, selection? }` (pages 0-based, coordinates in display points). Runs the command; returns its run id, exit status, output, and whether the file changed. A detached command answers at once with `detached: true`. |
 | GET | `/api/page?session=<id>` | WebSocket upgrade: the page's end of the command bridge (see `server/bridge.ts`). |

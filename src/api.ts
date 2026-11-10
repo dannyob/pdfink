@@ -194,6 +194,22 @@ export async function saveNotebook(name: string, bytes: Uint8Array, ifMtime: num
   return (await res.json()) as NotebookInfo;
 }
 
+/**
+ * Have the server fetch the PDF at `url` and store it as notebook `name`.
+ * `ifMtime` "new" refuses to replace an existing notebook (ConflictError).
+ */
+export async function importNotebookFromUrl(name: string, url: string, ifMtime: "new" | null): Promise<NotebookInfo> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (ifMtime !== null) headers["X-If-Mtime"] = ifMtime;
+  const res = await fetch(`/api/notebooks/${encodeURIComponent(name)}/import`, { method: "POST", headers, body: JSON.stringify({ url }) });
+  if (res.status === 409) {
+    const j = (await res.json()) as { error: string; mtime: number | null };
+    throw new ConflictError(j.error, j.mtime);
+  }
+  if (!res.ok) throw new Error(`Could not import ${name}: ${await errorMessage(res)}`);
+  return (await res.json()) as NotebookInfo;
+}
+
 /** A pen-menu command the server offers (from its commands file). */
 export interface CommandInfo {
   id: string;

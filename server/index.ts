@@ -36,6 +36,13 @@
  *                                   with the ink and URI links
  *                                   stripped out. Keeps the browser from
  *                                   parsing 300 MB files.
+ *   POST /api/notebooks/<name>/import → body { url }: the server fetches the
+ *                                   PDF at url (http or https, redirects
+ *                                   followed) and stores it as <name>. Header
+ *                                   X-If-Mtime: "new" refuses to replace an
+ *                                   existing file (409). 400 for a bad url or
+ *                                   a fetched file that is not a PDF, 502
+ *                                   when the fetch fails.
  *   GET  /api/commands             → [{ id, label, reload, confirm, detach }]
  *                                   from the commands file (re-read each time)
  *   POST /api/commands/<id>        → body { name, page (0-based), x, y,
@@ -67,6 +74,7 @@ import { displayToPdf, type PageGeom } from "../src/pdf/geom.ts";
 import { defaultCommandsFile, loadCommands, startCommand, type CommandResult, type CommandSpec, type RunningCommand, type SelectionContext } from "./commands.ts";
 import { Bridge, type ExitInfo, type PageSocket } from "./bridge.ts";
 import { exportPdf, type ExportOptions } from "../src/pdf/export.ts";
+import { checkImportUrl, looksLikePdf } from "../src/import-url.ts";
 import type { Bookmark, ImageItem, LinkItem, PageModel, TextItem } from "../src/model.ts";
 
 export type Mode = "server" | "browser";
@@ -545,6 +553,78 @@ function handleUpgrade(opts: ServerOptions, wss: WebSocketServer, bridge: Bridge
   wss.handleUpgrade(req, socket, head, (ws) => bridge.addPage(session, pageSocket(ws)));
 }
 
+class ImportError extends Error {
+  // A plain field, not a parameter property: Node's type stripping can't run those.
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+const IMPORT_TIMEOUT_MS = 5 * 60_000;
+
+/** Fetch the PDF at `url` on the server, up to MAX_BODY bytes. Throws ImportError. */
+async function fetchRemotePdf(url: URL): Promise<Buffer> {
+  let res: Response;
+  try {
+    res = await fetch(url, { redirect: "follow", headers: { "User-Agent": "pdfink" }, signal: AbortSignal.timeout(IMPORT_TIMEOUT_MS) });
+  } catch (err) {
+    const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+    throw new ImportError(502, `Could not fetch from ${url.host}: ${cause?.code ?? cause?.message ?? (err as Error).message}`);
+  }
+  if (!res.ok) throw new ImportError(502, `Could not fetch from ${url.host}: HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}`);
+  if (Number(res.headers.get("content-length") ?? 0) > MAX_BODY) throw new ImportError(413, "file too large");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (res.body) {
+    for await (const c of res.body as AsyncIterable<Uint8Array>) {
+      total += c.length;
+      if (total > MAX_BODY) throw new ImportError(413, "file too large");
+      chunks.push(c);
+    }
+  }
+  const body = Buffer.concat(chunks);
+  if (!looksLikePdf(body)) throw new ImportError(400, `The file at ${url.host} is not a PDF.`);
+  return body;
+}
+
+/** POST /api/notebooks/<name>/import: fetch { url } on the server and store it as notebook <name>. */
+async function handleImport(req: http.IncomingMessage, res: http.ServerResponse, name: string, file: string): Promise<void> {
+  const refuseExisting = req.headers["x-if-mtime"] === "new";
+  const conflict = async (): Promise<boolean> => {
+    const st = await fsp.stat(file).catch(() => null);
+    if (st && refuseExisting) send(res, 409, { error: "already exists", mtime: Math.round(st.mtimeMs) });
+    return !!st && refuseExisting;
+  };
+  let url: URL;
+  try {
+    const j = JSON.parse((await readBody(req)).toString("utf8")) as { url?: unknown };
+    if (typeof j.url !== "string") throw new Error("body must be { url }");
+    url = checkImportUrl(j.url);
+  } catch (err) {
+    send(res, 400, { error: (err as Error).message });
+    return;
+  }
+  if (await conflict()) return;
+  let body: Buffer;
+  const t0 = Date.now();
+  try {
+    body = await fetchRemotePdf(url);
+  } catch (err) {
+    send(res, err instanceof ImportError ? err.status : 502, { error: (err as Error).message });
+    return;
+  }
+  // The fetch can take a while: check again before writing.
+  if (await conflict()) return;
+  const existed = fs.existsSync(file);
+  await atomicWrite(file, body);
+  openCache.delete(name);
+  const st = await fsp.stat(file);
+  console.log(`pdfink: imported ${name} from ${url.host} (${(body.length / 1e6).toFixed(1)} MB) in ${Date.now() - t0} ms`);
+  send(res, existed ? 200 : 201, { name, size: st.size, mtime: Math.round(st.mtimeMs) });
+}
+
 async function handleApi(opts: ServerOptions, bridge: Bridge, req: http.IncomingMessage, res: http.ServerResponse, urlPath: string): Promise<void> {
   if (urlPath === "/api/status") {
     send(res, 200, opts.mode === "server" ? { mode: "server", notebooksDir: path.basename(opts.notebooksDir) } : { mode: "browser" });
@@ -568,7 +648,7 @@ async function handleApi(opts: ServerOptions, bridge: Bridge, req: http.Incoming
     await handleCommand(opts, bridge, req, res, decodeURIComponent(cm[1]));
     return;
   }
-  const m = /^\/api\/notebooks(?:\/([^/]+)(\/open|\/save)?)?$/.exec(urlPath);
+  const m = /^\/api\/notebooks(?:\/([^/]+)(\/open|\/save|\/import)?)?$/.exec(urlPath);
   if (!m) {
     send(res, 404, { error: "not found" });
     return;
@@ -589,6 +669,14 @@ async function handleApi(opts: ServerOptions, bridge: Bridge, req: http.Incoming
     return;
   }
   const file = path.join(opts.notebooksDir, name);
+  if (m[2] === "/import") {
+    if (req.method !== "POST") {
+      send(res, 405, { error: "method not allowed" });
+      return;
+    }
+    await handleImport(req, res, name, file);
+    return;
+  }
   if (wantOpen) {
     if (req.method !== "GET") {
       send(res, 405, { error: "method not allowed" });

@@ -3,6 +3,7 @@ import { installDeepLinks } from "./deeplink";
 import { stylusSim } from "./harness/stylus-sim";
 import { PageLink } from "./bridge-client";
 import { createPdfinkApi } from "./pdfink-api";
+import { importParam } from "./import-url";
 import { Toolbar } from "./toolbar";
 
 const app = new App(document.getElementById("pages") as HTMLElement);
@@ -81,5 +82,7 @@ void detectStorage(params).then((mode) => {
   if (params.has("new")) void app.newDocument();
   installDeepLinks(app);
   const openName = params.get("f") ?? params.get("open");
-  if (openName && mode === "server") void app.openNotebook(openName);
+  const importUrl = importParam(location.search);
+  if (importUrl) void app.importUrl(importUrl);
+  else if (openName && mode === "server") void app.openNotebook(openName);
 });

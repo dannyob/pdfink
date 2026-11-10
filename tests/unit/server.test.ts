@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
 import net, { type AddressInfo } from "node:net";
 import { spawn } from "node:child_process";
 import { createServer, optionsFrom, validName } from "../../server/index";
@@ -99,6 +100,90 @@ describe("notebook API", () => {
   it("reports its mode on /api/status", async () => {
     const res = await fetch(`${base}/api/status`);
     expect(await res.json()).toMatchObject({ mode: "server" });
+  });
+});
+
+describe("importing a notebook from a URL", () => {
+  let idir: string;
+  let srv: ReturnType<typeof createServer>;
+  let b: string;
+  let remote: http.Server;
+  let r: string;
+  let pdf: Uint8Array;
+
+  beforeAll(async () => {
+    pdf = await createBlankPdf(2);
+    idir = fs.mkdtempSync(path.join(os.tmpdir(), "pdfink-imp-"));
+    srv = createServer({ mode: "server", notebooksDir: idir, distDir: null, host: "127.0.0.1", port: 0, commandsFile: null });
+    await new Promise<void>((ok) => srv.listen(0, "127.0.0.1", () => ok()));
+    b = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    // The "other website": no CORS headers, which the server doesn't need.
+    remote = http.createServer((req, res) => {
+      if (req.url === "/paper.pdf") res.writeHead(200, { "Content-Type": "application/pdf" }).end(pdf);
+      else if (req.url === "/moved") res.writeHead(302, { Location: "/paper.pdf" }).end();
+      else if (req.url === "/login.html") res.writeHead(200, { "Content-Type": "text/html" }).end("<html>log in</html>");
+      else res.writeHead(404).end("no");
+    });
+    await new Promise<void>((ok) => remote.listen(0, "127.0.0.1", () => ok()));
+    r = `http://127.0.0.1:${(remote.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise((ok) => srv.close(ok));
+    await new Promise((ok) => remote.close(ok));
+    fs.rmSync(idir, { recursive: true, force: true });
+  });
+
+  const importReq = (name: string, url: string, ifMtime?: string) =>
+    fetch(`${b}/api/notebooks/${encodeURIComponent(name)}/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(ifMtime ? { "X-If-Mtime": ifMtime } : {}) },
+      body: JSON.stringify({ url }),
+    });
+
+  it("fetches the PDF on the server and stores it as a notebook", async () => {
+    const res = await importReq("paper.pdf", `${r}/paper.pdf`, "new");
+    expect(res.status).toBe(201);
+    const j = (await res.json()) as { name: string; size: number; mtime: number };
+    expect(j).toMatchObject({ name: "paper.pdf", size: pdf.length });
+    expect(new Uint8Array(fs.readFileSync(path.join(idir, "paper.pdf")))).toEqual(pdf);
+  });
+
+  it("follows redirects", async () => {
+    const res = await importReq("moved.pdf", `${r}/moved`, "new");
+    expect(res.status).toBe(201);
+    expect(fs.readFileSync(path.join(idir, "moved.pdf")).length).toBe(pdf.length);
+  });
+
+  it("refuses to replace a notebook when asked for a new one, and replaces it otherwise", async () => {
+    let res = await importReq("paper.pdf", `${r}/paper.pdf`, "new");
+    expect(res.status).toBe(409);
+    res = await importReq("paper.pdf", `${r}/paper.pdf`);
+    expect(res.status).toBe(200);
+  });
+
+  it("reports what went wrong and writes nothing", async () => {
+    let res = await importReq("x1.pdf", `${r}/missing.pdf`, "new");
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toMatch(/404/);
+
+    res = await importReq("x2.pdf", `${r}/login.html`, "new");
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not a PDF/);
+
+    res = await importReq("x3.pdf", "file:///etc/passwd", "new");
+    expect(res.status).toBe(400);
+
+    res = await importReq("x4.pdf", "http://127.0.0.1:1/nothing-listens.pdf", "new");
+    expect(res.status).toBe(502);
+
+    res = await fetch(`${b}/api/notebooks/x5.pdf/import`, { method: "POST", body: "not json" });
+    expect(res.status).toBe(400);
+
+    res = await fetch(`${b}/api/notebooks/x6.pdf/import`);
+    expect(res.status).toBe(405);
+
+    expect(fs.readdirSync(idir).sort()).toEqual(["moved.pdf", "paper.pdf"]);
   });
 });
 

@@ -69,6 +69,9 @@ export function installDeepLinks(app: App, initialHash: string = location.hash):
       u.searchParams.set("f", app.source.name);
       u.searchParams.delete("open");
       u.searchParams.delete("new");
+      // Imported into the notebooks folder: from now on it is ?f=, and a
+      // reload must not import it again.
+      u.searchParams.delete("import");
     } else {
       u.searchParams.delete("f");
     }

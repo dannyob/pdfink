@@ -348,6 +348,7 @@ export class Toolbar {
       return [
         head,
         { label: "Open…", icon: icons.folder, detail: "Ctrl+O", action: () => void app.open() },
+        { label: "Open from URL…", icon: icons.link, action: () => void app.importUrl() },
         { label: "New", icon: icons.fileNew, action: () => void app.newDocument() },
         { separator: true },
         { label: "Save", icon: icons.save, detail: "Ctrl+S", action: () => void app.save() },
@@ -368,6 +369,7 @@ export class Toolbar {
       notebookPages,
       { separator: true },
       { label: "Import a PDF…", icon: icons.import, detail: "Ctrl+O", action: () => void app.importLocal() },
+      { label: "Import from URL…", icon: icons.link, action: () => void app.importUrl() },
       { label: "Export as PDF…", icon: icons.export, action: () => void app.exportLocal() },
     ];
   }
